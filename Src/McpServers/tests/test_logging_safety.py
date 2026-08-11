@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 from mcp import ClientSession
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp import Client
 
 from gitmcp.server import mcp as git_mcp
 from qa import judge
@@ -59,8 +59,7 @@ def info_logging():
 
 @asynccontextmanager
 async def _session(server) -> AsyncIterator[ClientSession]:
-    async with create_connected_server_and_client_session(server) as client:
-        await client.initialize()
+    async with Client(server) as client:
         yield client
 
 
@@ -75,8 +74,8 @@ async def test_every_git_tool_logs_without_a_reserved_key_collision(info_logging
     async with _session(git_mcp) as client:
         init = await client.call_tool("git_init", {"repoName": repo_name})
         # The regression: this came back isError with structuredContent None.
-        assert init.isError is False, init.content
-        assert init.structuredContent == {"repoName": repo_name, "created": True}
+        assert init.is_error is False, init.content
+        assert init.structured_content == {"repoName": repo_name, "created": True}
 
         for tool, args in [
             ("git_branch", {"branch": "main", "repoName": repo_name}),
@@ -87,13 +86,13 @@ async def test_every_git_tool_logs_without_a_reserved_key_collision(info_logging
             ("git_status", {"repoName": repo_name}),
         ]:
             result = await client.call_tool(tool, args)
-            assert result.isError is False, (tool, result.content)
-            assert result.structuredContent is not None, tool
+            assert result.is_error is False, (tool, result.content)
+            assert result.structured_content is not None, tool
 
         # Reuse path logs the same record with newly_created=False.
         again = await client.call_tool("git_init", {"repoName": repo_name})
-        assert again.isError is False
-        assert again.structuredContent == {"repoName": repo_name, "created": False}
+        assert again.is_error is False
+        assert again.structured_content == {"repoName": repo_name, "created": False}
 
 
 async def test_git_failure_path_logs_without_a_reserved_key_collision(info_logging):
@@ -102,7 +101,7 @@ async def test_git_failure_path_logs_without_a_reserved_key_collision(info_loggi
     async with _session(git_mcp) as client:
         result = await client.call_tool("git_branch", {"branch": "main", "repoName": "t-nope-log"})
 
-    assert result.isError is True
+    assert result.is_error is True
     # A KeyError from logging would replace the §03 body with a logging error.
     assert '"errorCode": 1000' in "".join(getattr(b, "text", "") for b in result.content)
 
@@ -169,15 +168,15 @@ async def test_every_qa_tool_logs_without_a_reserved_key_collision(info_logging,
         for tool, args in calls:
             current["reply"] = replies[tool]
             result = await client.call_tool(tool, args)
-            assert result.isError is False, (tool, result.content)
-            assert result.structuredContent is not None, tool
+            assert result.is_error is False, (tool, result.content)
+            assert result.structured_content is not None, tool
 
 
 async def test_qa_failure_path_logs_without_a_reserved_key_collision(info_logging):
     async with _session(qa_mcp) as client:
         result = await client.call_tool("establish_qa_policy", {"gameDesign": {}})
 
-    assert result.isError is True
+    assert result.is_error is True
     assert '"errorCode": 1000' in "".join(getattr(b, "text", "") for b in result.content)
 
 
@@ -214,7 +213,7 @@ async def test_qa_llm_success_log_is_safe(info_logging, monkeypatch):
             "verify_prototype_structure", {"gameDesign": _GAME_DESIGN, "build": "{}"}
         )
 
-    assert result.isError is False, result.content
-    assert result.structuredContent["match"] is True
+    assert result.is_error is False, result.content
+    assert result.structured_content["match"] is True
     # The usage record is built and logged on this path too.
-    assert result.structuredContent["usage"]["input_tokens"] == 7
+    assert result.structured_content["usage"]["input_tokens"] == 7

@@ -216,34 +216,32 @@ async def test_generate_2d_sprite_reports_the_images_it_consumed(monkeypatch, tm
 
     monkeypatch.setattr(pixellab_client, "generate_image", _fake_generate)
 
-    from mcp.shared.memory import create_connected_server_and_client_session
+    from mcp import Client
 
-    async with create_connected_server_and_client_session(server.mcp) as client:
-        await client.initialize()
+    async with Client(server.mcp) as client:
         result = await client.call_tool(
             "generate_2d_sprite",
             {"featureId": "f-1", "prompt": "a rock", "gameId": "t-pixellab-images"},
         )
 
-    assert result.isError is False
-    assert result.structuredContent["generatedBy"] == "pixellab"
-    assert result.structuredContent["imagesGenerated"] == 1
-    assert "costUsd" not in result.structuredContent
+    assert result.is_error is False
+    assert result.structured_content["generatedBy"] == "pixellab"
+    assert result.structured_content["imagesGenerated"] == 1
+    assert "costUsd" not in result.structured_content
 
 
 async def test_generate_2d_sprite_without_key_is_a_tool_error(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "ROOT", tmp_path)
     monkeypatch.delenv("PIXELLAB_API_KEY", raising=False)
 
-    from mcp.shared.memory import create_connected_server_and_client_session
+    from mcp import Client
 
-    async with create_connected_server_and_client_session(server.mcp) as client:
-        await client.initialize()
+    async with Client(server.mcp) as client:
         result = await client.call_tool(
             "generate_2d_sprite",
             {"featureId": "f-1", "prompt": "a rock", "gameId": "t-pixellab-nokey"},
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     text = "".join(getattr(block, "text", "") for block in result.content)
     assert '"errorCode": 3000' in text

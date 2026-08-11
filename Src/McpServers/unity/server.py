@@ -74,8 +74,8 @@ def _text_of(result: CallToolResult) -> str:
 def _payload_of(result: CallToolResult) -> dict[str, Any]:
     """Unity 도구 결과를 dict 로 정규화한다."""
 
-    if result.structuredContent is not None:
-        return result.structuredContent
+    if result.structured_content is not None:
+        return result.structured_content
     text = _text_of(result)
     if not text:
         return {}
@@ -104,7 +104,7 @@ async def _call_unity(
         ) from exc
 
     payload = _payload_of(result)
-    if result.isError or payload.get("success") is False:
+    if result.is_error or payload.get("success") is False:
         message = payload.get("message") or _text_of(result) or f"{tool} failed"
         raise tool_error(
             UNITY_BUILD_ERROR if build_error else MCP_ERROR,

@@ -11,8 +11,8 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer as FastMCP
+from mcp.server.mcpserver.exceptions import ToolError
 
 from app.mcp.exceptions import ToolCallError, ToolErrorCode
 from app.mcp.git_client import GitClient

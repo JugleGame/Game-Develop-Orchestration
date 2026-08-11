@@ -9,7 +9,7 @@ requires-python = ">=3.12"
 # strategic/research_repo.py, so omitting it breaks test collection for the
 # whole suite, not just that server.
 dependencies = [
-    "mcp>=1.28.0,<2.0.0",
+    "mcp>=2.0.0,<3.0.0",
     "Pillow>=11.0.0",
     "anthropic>=0.60.0",
     "GitPython>=3.1.40",

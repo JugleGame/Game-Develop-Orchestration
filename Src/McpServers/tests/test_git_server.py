@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 import git as gitpython
 import pytest
 from mcp import ClientSession
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp import Client
 
 from gitmcp import repo
 from gitmcp.server import mcp
@@ -27,8 +27,7 @@ from gitmcp.server import mcp
 
 @asynccontextmanager
 async def session() -> AsyncIterator[ClientSession]:
-    async with create_connected_server_and_client_session(mcp) as client:
-        await client.initialize()
+    async with Client(mcp) as client:
         yield client
 
 
@@ -62,15 +61,15 @@ async def test_contract_tools_use_expected_argument_names():
     async with session() as client:
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
 
-    assert {"repoName"} <= set(tools["git_init"].inputSchema["properties"])
-    assert {"branch"} <= set(tools["git_branch"].inputSchema["properties"])
-    assert {"branch"} <= set(tools["git_pull"].inputSchema["properties"])
-    assert {"branch", "message"} <= set(tools["git_commit"].inputSchema["properties"])
-    assert {"branch"} <= set(tools["git_push"].inputSchema["properties"])
-    assert {"tag"} <= set(tools["git_tag"].inputSchema["properties"])
+    assert {"repoName"} <= set(tools["git_init"].input_schema["properties"])
+    assert {"branch"} <= set(tools["git_branch"].input_schema["properties"])
+    assert {"branch"} <= set(tools["git_pull"].input_schema["properties"])
+    assert {"branch", "message"} <= set(tools["git_commit"].input_schema["properties"])
+    assert {"branch"} <= set(tools["git_push"].input_schema["properties"])
+    assert {"tag"} <= set(tools["git_tag"].input_schema["properties"])
     # git_status has no required args per §03; the schema may still list an
     # optional repoName, which is fine as long as nothing is required.
-    assert tools["git_status"].inputSchema.get("required", []) == []
+    assert tools["git_status"].input_schema.get("required", []) == []
 
 
 @pytest.mark.parametrize(
@@ -88,7 +87,7 @@ async def test_empty_required_argument_carries_error_code_1000(tool, args):
     async with session() as client:
         result = await client.call_tool(tool, args)
 
-    assert result.isError is True
+    assert result.is_error is True
     assert '"errorCode": 1000' in "".join(getattr(b, "text", "") for b in result.content)
 
 
@@ -102,8 +101,8 @@ async def test_git_init_creates_then_reuses_the_same_repo():
         first = await client.call_tool("git_init", {"repoName": "t-idempotent"})
         second = await client.call_tool("git_init", {"repoName": "t-idempotent"})
 
-    assert first.structuredContent == {"repoName": "t-idempotent", "created": True}
-    assert second.structuredContent == {"repoName": "t-idempotent", "created": False}
+    assert first.structured_content == {"repoName": "t-idempotent", "created": True}
+    assert second.structured_content == {"repoName": "t-idempotent", "created": False}
 
 
 # --------------------------------------------------------------------------
@@ -132,10 +131,10 @@ async def test_full_deployment_sequence_produces_a_real_commit_on_the_bare_repo(
         push_result = await client.call_tool("git_push", {"branch": "main", "repoName": repo_name})
         tag_result = await client.call_tool("git_tag", {"tag": "v0", "repoName": repo_name})
 
-    commit_hash = commit_result.structuredContent["commit"]
+    commit_hash = commit_result.structured_content["commit"]
     assert len(commit_hash) == 40  # a real git SHA-1, not a placeholder
-    assert push_result.structuredContent == {"branch": "main", "pushed": True}
-    assert tag_result.structuredContent == {"tag": "v0"}
+    assert push_result.structured_content == {"branch": "main", "pushed": True}
+    assert tag_result.structured_content == {"tag": "v0"}
 
     # Verify independently of the server's own report: clone the bare repo
     # fresh and check the file and tag really landed there.
@@ -164,7 +163,7 @@ async def test_git_commit_is_idempotent_when_nothing_changed():
             "git_commit", {"branch": "main", "message": "m2", "repoName": repo_name}
         )
 
-    assert first.structuredContent["commit"] == second.structuredContent["commit"]
+    assert first.structured_content["commit"] == second.structured_content["commit"]
 
 
 # --------------------------------------------------------------------------
@@ -186,8 +185,8 @@ async def test_retagging_the_same_commit_is_a_no_op():
         first = await client.call_tool("git_tag", {"tag": "v0", "repoName": repo_name})
         second = await client.call_tool("git_tag", {"tag": "v0", "repoName": repo_name})
 
-    assert first.isError is False
-    assert second.isError is False
+    assert first.is_error is False
+    assert second.is_error is False
 
 
 async def test_tag_already_on_the_remote_at_another_commit_is_rejected():
@@ -225,7 +224,7 @@ async def test_tag_already_on_the_remote_at_another_commit_is_rejected():
     async with session() as client:
         result = await client.call_tool("git_tag", {"tag": "v0", "repoName": repo_name})
 
-    assert result.isError is True
+    assert result.is_error is True
     text = "".join(getattr(b, "text", "") for b in result.content)
     assert '"errorCode": 1000' in text
 
@@ -260,7 +259,7 @@ async def test_local_tag_that_was_never_published_gets_pushed():
     async with session() as client:
         result = await client.call_tool("git_tag", {"tag": "v0", "repoName": repo_name})
 
-    assert result.isError is False
+    assert result.is_error is False
     assert "v0" in {t.name for t in gitpython.Repo(repo._bare_path(repo_name)).tags}
 
 
@@ -283,7 +282,7 @@ async def test_retagging_a_different_commit_with_the_same_name_is_rejected():
         )
         conflict = await client.call_tool("git_tag", {"tag": "v0", "repoName": repo_name})
 
-    assert conflict.isError is True
+    assert conflict.is_error is True
     assert '"errorCode": 1000' in "".join(getattr(b, "text", "") for b in conflict.content)
 
 
@@ -307,8 +306,8 @@ async def test_status_reports_dirty_then_clean_after_commit():
         )
         clean = await client.call_tool("git_status", {"repoName": repo_name})
 
-    assert dirty.structuredContent == {"clean": False}
-    assert clean.structuredContent == {"clean": True}
+    assert dirty.structured_content == {"clean": False}
+    assert clean.structured_content == {"clean": True}
 
 
 # --------------------------------------------------------------------------
@@ -327,7 +326,7 @@ async def test_omitting_repo_name_falls_back_to_the_most_recently_initialized_re
         commit = await client.call_tool("git_commit", {"branch": "main", "message": "m"})
 
     assert Path(repo._work_path("t-fallback") / "f.txt").exists()
-    assert len(commit.structuredContent["commit"]) == 40
+    assert len(commit.structured_content["commit"]) == 40
 
 
 async def test_operating_on_a_repo_that_was_never_initialized_is_a_validation_error():
@@ -336,7 +335,7 @@ async def test_operating_on_a_repo_that_was_never_initialized_is_a_validation_er
             "git_branch", {"branch": "main", "repoName": "t-never-initialized"}
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     assert '"errorCode": 1000' in "".join(getattr(b, "text", "") for b in result.content)
 
 
@@ -376,7 +375,7 @@ async def test_push_without_pulling_diverged_remote_changes_fails_clearly():
         )
         push_result = await client.call_tool("git_push", {"branch": "main", "repoName": repo_name})
 
-    assert push_result.isError is True
+    assert push_result.is_error is True
     text = "".join(getattr(b, "text", "") for b in push_result.content)
     assert '"errorCode": 3000' in text
 
@@ -410,9 +409,9 @@ async def test_pull_before_push_avoids_the_non_fast_forward_rejection():
         )
         push_result = await client.call_tool("git_push", {"branch": "main", "repoName": repo_name})
 
-    assert pull_result.structuredContent == {"branch": "main", "updated": True}
-    assert push_result.isError is False
-    assert push_result.structuredContent == {"branch": "main", "pushed": True}
+    assert pull_result.structured_content == {"branch": "main", "updated": True}
+    assert push_result.is_error is False
+    assert push_result.structured_content == {"branch": "main", "pushed": True}
 
 
 # --------------------------------------------------------------------------
@@ -478,7 +477,7 @@ async def test_source_path_publishes_the_project_and_skips_unity_caches(tmp_path
         )
         await client.call_tool("git_push", {"branch": "main", "repoName": repo_name})
 
-    assert commit.isError is False, commit.content
+    assert commit.is_error is False, commit.content
     published = _published_files(repo_name)
 
     assert "Assets/Scripts/PlayerController.cs" in published
@@ -539,7 +538,7 @@ async def test_second_commit_with_no_project_change_is_a_no_op(tmp_path):
             {"branch": "main", "message": "v2", "repoName": repo_name, "sourcePath": str(project)},
         )
 
-    assert first.structuredContent["commit"] == second.structuredContent["commit"]
+    assert first.structured_content["commit"] == second.structured_content["commit"]
 
 
 async def test_env_fallback_supplies_the_source_without_a_contract_change(tmp_path, monkeypatch):
@@ -599,7 +598,7 @@ async def test_a_missing_source_directory_is_a_validation_error(tmp_path):
             },
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     assert '"errorCode": 1000' in "".join(getattr(b, "text", "") for b in result.content)
 
 
@@ -619,5 +618,5 @@ async def test_without_a_source_the_old_behaviour_is_unchanged(tmp_path, monkeyp
         )
         await client.call_tool("git_push", {"branch": "main", "repoName": repo_name})
 
-    assert result.isError is False
+    assert result.is_error is False
     assert "hand-placed.txt" in _published_files(repo_name)

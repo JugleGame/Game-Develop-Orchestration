@@ -13,8 +13,8 @@ from contextlib import asynccontextmanager
 
 import pytest
 from mcp import ClientSession
-from mcp.server.fastmcp.exceptions import ToolError
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp import Client
 
 from qa import judge
 from qa.server import mcp
@@ -32,8 +32,7 @@ _GAME_DESIGN = {
 
 @asynccontextmanager
 async def session() -> AsyncIterator[ClientSession]:
-    async with create_connected_server_and_client_session(mcp) as client:
-        await client.initialize()
+    async with Client(mcp) as client:
         yield client
 
 
@@ -104,16 +103,16 @@ async def test_contract_tools_use_camel_case_argument_names():
     async with session() as client:
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
 
-    assert {"gameDesign"} <= set(tools["establish_qa_policy"].inputSchema["properties"])
+    assert {"gameDesign"} <= set(tools["establish_qa_policy"].input_schema["properties"])
     assert {"gameDesign", "build"} <= set(
-        tools["verify_prototype_structure"].inputSchema["properties"]
+        tools["verify_prototype_structure"].input_schema["properties"]
     )
-    assert {"gameDesign", "build"} <= set(tools["compare_structure"].inputSchema["properties"])
+    assert {"gameDesign", "build"} <= set(tools["compare_structure"].input_schema["properties"])
     assert {"gameDesign", "build", "qaPolicy"} <= set(
-        tools["run_functional_verification"].inputSchema["properties"]
+        tools["run_functional_verification"].input_schema["properties"]
     )
     assert {"gameDesign", "build", "logs"} <= set(
-        tools["generate_error_report"].inputSchema["properties"]
+        tools["generate_error_report"].input_schema["properties"]
     )
 
 
@@ -121,7 +120,7 @@ async def test_validation_failure_carries_error_code_1000():
     async with session() as client:
         result = await client.call_tool("establish_qa_policy", {"gameDesign": {}})
 
-    assert result.isError is True
+    assert result.is_error is True
     text = "".join(getattr(block, "text", "") for block in result.content)
     assert '"errorCode": 1000' in text
 
@@ -145,9 +144,9 @@ async def test_establish_qa_policy_returns_structured_qa_policy(monkeypatch):
     async with session() as client:
         result = await client.call_tool("establish_qa_policy", {"gameDesign": _GAME_DESIGN})
 
-    assert result.isError is False
-    assert result.structuredContent is not None
-    policy = result.structuredContent["qaPolicy"]
+    assert result.is_error is False
+    assert result.structured_content is not None
+    policy = result.structured_content["qaPolicy"]
     assert policy["test_cases"][0]["case_id"] == "t-1"
     assert policy["acceptance_criteria"] == ["Core movement works"]
 
@@ -158,7 +157,7 @@ async def test_malformed_qa_policy_reply_is_reported_as_unknown_error(monkeypatc
     async with session() as client:
         result = await client.call_tool("establish_qa_policy", {"gameDesign": _GAME_DESIGN})
 
-    assert result.isError is True
+    assert result.is_error is True
     text = "".join(getattr(block, "text", "") for block in result.content)
     assert '"errorCode": 5000' in text
 
@@ -177,8 +176,8 @@ async def test_verify_prototype_structure_reports_missing_features(monkeypatch):
             {"gameDesign": _GAME_DESIGN, "build": '{"buildId": "b1"}'},
         )
 
-    assert result.structuredContent["match"] is False
-    assert result.structuredContent["missing"] == ["run"]
+    assert result.structured_content["match"] is False
+    assert result.structured_content["missing"] == ["run"]
     assert calls[0]["payload"]["build"] == '{"buildId": "b1"}'
 
 
@@ -190,8 +189,8 @@ async def test_compare_structure_is_an_alias_of_verify_prototype_structure(monke
             "compare_structure", {"gameDesign": _GAME_DESIGN, "build": "{}"}
         )
 
-    assert result.structuredContent["match"] is True
-    assert result.structuredContent["missing"] == []
+    assert result.structured_content["match"] is True
+    assert result.structured_content["missing"] == []
 
 
 async def test_structure_check_reports_wiring_defects_apart_from_missing_features(monkeypatch):
@@ -215,9 +214,9 @@ async def test_structure_check_reports_wiring_defects_apart_from_missing_feature
             "verify_prototype_structure", {"gameDesign": _GAME_DESIGN, "build": "{}"}
         )
 
-    assert result.structuredContent["match"] is False
-    assert result.structuredContent["missing"] == []
-    assert result.structuredContent["structuralDefects"] == [
+    assert result.structured_content["match"] is False
+    assert result.structured_content["missing"] == []
+    assert result.structured_content["structuralDefects"] == [
         "Spec001 이 어떤 씬·프리팹에도 붙어 있지 않다"
     ]
 
@@ -239,7 +238,7 @@ async def test_structure_check_rejects_pass_that_lists_defects(monkeypatch):
             "verify_prototype_structure", {"gameDesign": _GAME_DESIGN, "build": "{}"}
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     text = "".join(getattr(b, "text", "") for b in result.content)
     assert "structuralDefects" in text
 
@@ -250,7 +249,7 @@ async def test_structure_check_requires_build_argument():
             "verify_prototype_structure", {"gameDesign": _GAME_DESIGN, "build": ""}
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     assert '"errorCode": 1000' in "".join(getattr(b, "text", "") for b in result.content)
 
 
@@ -272,7 +271,7 @@ async def test_functional_verification_pass(monkeypatch):
             },
         )
 
-    assert result.structuredContent["result"] == "PASS"
+    assert result.structured_content["result"] == "PASS"
 
 
 async def test_functional_verification_fail_carries_error_report(monkeypatch):
@@ -301,9 +300,9 @@ async def test_functional_verification_fail_carries_error_report(monkeypatch):
             },
         )
 
-    assert result.structuredContent["result"] == "FAIL"
-    assert result.structuredContent["errorReport"]["error_type"] == "runtime"
-    assert result.structuredContent["errorReport"]["line"] == 42
+    assert result.structured_content["result"] == "FAIL"
+    assert result.structured_content["errorReport"]["error_type"] == "runtime"
+    assert result.structured_content["errorReport"]["line"] == 42
 
 
 async def test_functional_fail_without_error_report_is_rejected(monkeypatch):
@@ -322,7 +321,7 @@ async def test_functional_fail_without_error_report_is_rejected(monkeypatch):
             },
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     assert '"errorCode": 5000' in "".join(getattr(b, "text", "") for b in result.content)
 
 
@@ -350,7 +349,7 @@ async def test_invalid_error_type_is_rejected(monkeypatch):
             },
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     assert '"errorCode": 5000' in "".join(getattr(b, "text", "") for b in result.content)
 
 
@@ -380,8 +379,8 @@ async def test_generate_error_report_returns_structured_report(monkeypatch):
             {"gameDesign": _GAME_DESIGN, "build": "{}", "logs": "CS0103 at line 10"},
         )
 
-    assert result.structuredContent["errorReport"]["error_type"] == "compile"
-    assert result.structuredContent["errorReport"]["file"] == "Assets/Scripts/Foo.cs"
+    assert result.structured_content["errorReport"]["error_type"] == "compile"
+    assert result.structured_content["errorReport"]["file"] == "Assets/Scripts/Foo.cs"
 
 
 async def test_generate_error_report_requires_game_design():
@@ -390,7 +389,7 @@ async def test_generate_error_report_requires_game_design():
             "generate_error_report", {"gameDesign": {}, "build": "{}", "logs": "x"}
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     assert '"errorCode": 1000' in "".join(getattr(b, "text", "") for b in result.content)
 
 
@@ -469,7 +468,7 @@ async def test_bad_error_report_field_types_fail_here_not_in_the_orchestrator(
             },
         )
 
-    assert result.isError is True, field
+    assert result.is_error is True, field
     assert '"errorCode": 5000' in "".join(getattr(b, "text", "") for b in result.content), field
 
 
@@ -502,7 +501,7 @@ async def test_numeric_string_line_is_normalized_to_an_int(monkeypatch):
             },
         )
 
-    assert result.structuredContent["errorReport"]["line"] == 42
+    assert result.structured_content["errorReport"]["line"] == 42
 
 
 @pytest.mark.parametrize(
@@ -534,7 +533,7 @@ async def test_bad_qa_policy_field_types_fail_here_not_in_the_orchestrator(
     async with session() as client:
         result = await client.call_tool("establish_qa_policy", {"gameDesign": _GAME_DESIGN})
 
-    assert result.isError is True, label
+    assert result.is_error is True, label
     assert '"errorCode": 5000' in "".join(getattr(b, "text", "") for b in result.content), label
 
 
@@ -546,7 +545,7 @@ async def test_non_string_missing_entry_is_rejected(monkeypatch):
             "verify_prototype_structure", {"gameDesign": _GAME_DESIGN, "build": "{}"}
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     assert '"errorCode": 5000' in "".join(getattr(b, "text", "") for b in result.content)
 
 
@@ -619,8 +618,8 @@ async def test_request_is_built_with_a_json_schema_and_adaptive_thinking(monkeyp
             "verify_prototype_structure", {"gameDesign": _GAME_DESIGN, "build": "{}"}
         )
 
-    assert result.isError is False, result.content
-    assert result.structuredContent["match"] is True
+    assert result.is_error is False, result.content
+    assert result.structured_content["match"] is True
 
     sent = fake.messages.kwargs
     assert sent["output_config"]["format"]["type"] == "json_schema"
@@ -641,7 +640,7 @@ async def test_usage_from_the_model_is_reported_to_the_orchestrator(monkeypatch)
             "verify_prototype_structure", {"gameDesign": _GAME_DESIGN, "build": "{}"}
         )
 
-    usage = result.structuredContent["usage"]
+    usage = result.structured_content["usage"]
     assert usage["model"] == judge.MODEL
     assert usage["input_tokens"] == 111
     assert usage["output_tokens"] == 22
@@ -655,7 +654,7 @@ async def test_reply_truncated_at_max_tokens_is_reported_clearly(monkeypatch):
             "verify_prototype_structure", {"gameDesign": _GAME_DESIGN, "build": "{}"}
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     text = "".join(getattr(b, "text", "") for b in result.content)
     assert '"errorCode": 5000' in text
     assert "max_tokens" in text
@@ -669,7 +668,7 @@ async def test_a_refusal_is_reported_rather_than_parsed(monkeypatch):
             "verify_prototype_structure", {"gameDesign": _GAME_DESIGN, "build": "{}"}
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     assert '"errorCode": 5000' in "".join(getattr(b, "text", "") for b in result.content)
 
 
@@ -695,7 +694,7 @@ async def test_missing_key_names_the_keyless_alternative(no_api_key):
             "verify_prototype_structure", {"gameDesign": _GAME_DESIGN, "build": "{}"}
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     text = "".join(getattr(b, "text", "") for b in result.content)
     assert '"errorCode": 3000' in text
     assert "ANTHROPIC_API_KEY" in text
@@ -713,17 +712,17 @@ async def test_supplied_structure_result_needs_no_key(no_api_key):
             },
         )
 
-    assert result.isError is False, result.content
+    assert result.is_error is False, result.content
     # ``structuralDefects`` is optional on the way in — a caller written before
     # the field existed still works — but always present on the way out, so the
     # orchestrator never has to branch on whether the key is there.
-    assert result.structuredContent == {
+    assert result.structured_content == {
         "match": False,
         "missing": ["run"],
         "structuralDefects": [],
     }
     # Nothing was spent, so nothing is reported.
-    assert "usage" not in result.structuredContent
+    assert "usage" not in result.structured_content
 
 
 async def test_supplied_qa_policy_needs_no_key(no_api_key):
@@ -739,8 +738,8 @@ async def test_supplied_qa_policy_needs_no_key(no_api_key):
             },
         )
 
-    assert result.isError is False, result.content
-    assert result.structuredContent["qaPolicy"]["test_cases"][0]["case_id"] == "t-1"
+    assert result.is_error is False, result.content
+    assert result.structured_content["qaPolicy"]["test_cases"][0]["case_id"] == "t-1"
 
 
 async def test_supplied_verdict_needs_no_key(no_api_key):
@@ -755,7 +754,7 @@ async def test_supplied_verdict_needs_no_key(no_api_key):
             },
         )
 
-    assert result.structuredContent == {"result": "PASS"}
+    assert result.structured_content == {"result": "PASS"}
 
 
 async def test_supplied_error_report_needs_no_key(no_api_key):
@@ -777,7 +776,7 @@ async def test_supplied_error_report_needs_no_key(no_api_key):
             },
         )
 
-    assert result.structuredContent["errorReport"]["line"] == 10
+    assert result.structured_content["errorReport"]["line"] == 10
 
 
 async def test_a_supplied_judgement_is_validated_like_a_generated_one(no_api_key):
@@ -794,7 +793,7 @@ async def test_a_supplied_judgement_is_validated_like_a_generated_one(no_api_key
             },
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     assert '"errorCode": 5000' in "".join(getattr(b, "text", "") for b in result.content)
 
 

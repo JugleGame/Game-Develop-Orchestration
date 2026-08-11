@@ -19,7 +19,7 @@ import asyncio
 import sys
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 from common import registry
 from common.console import use_utf8_output
@@ -87,12 +87,12 @@ BAD = " FAIL "
 
 async def check(name: str, url: str, expected: dict[str, set[str]]) -> list[str]:
     problems: list[str] = []
-    async with streamablehttp_client(url, timeout=10) as (read, write, _):
+    async with streamable_http_client(url) as (read, write):
         async with ClientSession(read, write) as session:
             info = await session.initialize()
             listed = {tool.name: tool for tool in (await session.list_tools()).tools}
 
-            print(f"\n[{name}] {info.serverInfo.name} @ {url} — {len(listed)} tools")
+            print(f"\n[{name}] {info.server_info.name} @ {url} — {len(listed)} tools")
 
             for tool_name, required_args in sorted(expected.items()):
                 tool = listed.get(tool_name)
@@ -101,7 +101,7 @@ async def check(name: str, url: str, expected: dict[str, set[str]]) -> list[str]
                     print(f"  {BAD} {tool_name}  (없음)")
                     continue
 
-                properties = set((tool.inputSchema or {}).get("properties", {}))
+                properties = set((tool.input_schema or {}).get("properties", {}))
                 missing = required_args - properties
                 if missing:
                     problems.append(f"{name}.{tool_name}: missing args {sorted(missing)}")
@@ -124,7 +124,7 @@ async def check(name: str, url: str, expected: dict[str, set[str]]) -> list[str]
 
 def tool_has_structured_output(listed: dict, expected: dict[str, set[str]]) -> bool:
     return all(
-        listed[name].outputSchema is not None for name in expected if name in listed
+        listed[name].output_schema is not None for name in expected if name in listed
     )
 
 

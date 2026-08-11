@@ -8,7 +8,7 @@ production — initialize handshake included — without binding a port.
 """
 
 from langgraph.checkpoint.memory import InMemorySaver
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer as FastMCP
 
 from app.graph.graph import build_graph
 from app.graph.state import Stage

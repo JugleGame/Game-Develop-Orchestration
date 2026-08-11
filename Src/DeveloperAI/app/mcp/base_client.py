@@ -17,13 +17,13 @@ import json
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from datetime import timedelta
 from typing import Any
 
 import httpx
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
-from mcp.shared.exceptions import McpError
+from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+from mcp.shared.exceptions import MCPError as McpError
+from mcp import types as mcp_types
 from mcp.types import CallToolResult, TextContent
 
 from app.mcp.exceptions import ToolCallError, ToolErrorCode
@@ -44,9 +44,13 @@ _RETRYABLE_EXCEPTIONS = (
 
 _ERROR_CODE_BY_VALUE = {code.value: code for code in ToolErrorCode}
 
-# ClientSession raises McpError with this code when ``read_timeout_seconds``
-# elapses (httpx.codes.REQUEST_TIMEOUT), rather than an asyncio/httpx timeout.
-_MCP_REQUEST_TIMEOUT_CODE = 408
+# ClientSession raises MCPError with this code when ``read_timeout_seconds``
+# elapses, rather than an asyncio/httpx timeout.
+#
+# mcp 2.0.0 이 값을 HTTP 408 에서 JSON-RPC 예약 대역의 -32001 로 바꿨다.
+# 숫자를 다시 적어 두면 다음 변경 때 또 조용히 어긋나므로 SDK 상수를 직접 쓴다 —
+# 어긋나면 타임아웃이 TIMEOUT 이 아니라 MCP_ERROR 로 분류돼 재시도 정책이 바뀐다.
+_MCP_REQUEST_TIMEOUT_CODE = mcp_types.REQUEST_TIMEOUT
 
 SessionFactory = Callable[[], AbstractAsyncContextManager[ClientSession]]
 
@@ -74,7 +78,6 @@ class BaseToolClient:
         self._server_name = server_name
         self._url = url
         self._timeout_seconds = timeout_seconds
-        self._timeout = timedelta(seconds=timeout_seconds)
         self._max_retries = max_retries
         self._session_factory = session_factory
 
@@ -86,16 +89,25 @@ class BaseToolClient:
         """Open an initialized MCP session for the duration of one call."""
 
         if self._session_factory is not None:
+            # 주입된 세션은 **이미 초기화되어** 들어온다. mcp 2.0.0 의
+            # ``Client`` 는 ``__aenter__`` 에서 핸드셰이크를 끝내고 ``initialize()``
+            # 메서드 자체가 없다 (v1 의 in-memory 헬퍼는 초기화 전 세션을 줬다).
+            # 아래 직접 연결 경로만 raw ``ClientSession`` 이라 초기화가 필요하다.
             async with self._session_factory() as session:
-                await session.initialize()
                 yield session
             return
 
-        async with streamablehttp_client(
-            self._url, timeout=self._timeout_seconds, sse_read_timeout=self._timeout_seconds
-        ) as (read_stream, write_stream, _get_session_id):
+        # mcp 2.0.0: 전송 함수가 timeout 인자를 직접 받지 않는다. 타임아웃은
+        # httpx 클라이언트 쪽 관심사로 옮겨갔으므로 여기서 만들어 넘긴다.
+        # (SSE 읽기 타임아웃도 같은 값을 쓴다 - v1 에서 두 인자에 같은 값을
+        #  주던 것과 동작이 같다.)
+        http_client = create_mcp_http_client(timeout=httpx.Timeout(self._timeout_seconds))
+        async with streamable_http_client(self._url, http_client=http_client) as (
+            read_stream,
+            write_stream,
+        ):
             async with ClientSession(
-                read_stream, write_stream, read_timeout_seconds=self._timeout
+                read_stream, write_stream, read_timeout_seconds=self._timeout_seconds
             ) as session:
                 await session.initialize()
                 yield session
@@ -122,7 +134,7 @@ class BaseToolClient:
                     return await session.call_tool(
                         tool,
                         payload,
-                        read_timeout_seconds=self._timeout,
+                        read_timeout_seconds=self._timeout_seconds,
                         meta={"requestId": request_id},
                     )
             except Exception as exc:
@@ -189,7 +201,7 @@ class BaseToolClient:
 
         body = _structured_payload(result)
 
-        if result.isError:
+        if result.is_error:
             raw_error_code = body.get("errorCode")
             error_code = _ERROR_CODE_BY_VALUE.get(raw_error_code, ToolErrorCode.MCP_ERROR)
             message = body.get("message") or _text_payload(result) or "MCP tool call failed"
@@ -294,8 +306,8 @@ def _structured_payload(result: CallToolResult) -> dict[str, Any]:
     object embedded in a longer message.
     """
 
-    if result.structuredContent is not None:
-        return result.structuredContent
+    if result.structured_content is not None:
+        return result.structured_content
 
     text = _text_payload(result)
     if not text:

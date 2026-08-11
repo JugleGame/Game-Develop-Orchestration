@@ -17,9 +17,9 @@
 
 검색은 두 신호를 **하나의 순위로 융합한다** (Reciprocal Rank Fusion).
 
-1. **의미 유사도** — ``cards.embedding`` (pgvector, 768차원, 정규화됨).
+1. **의미 유사도** — ``card_sections.embedding`` (pgvector, 1024차원, 정규화됨).
    질의 벡터는 카드를 만들 때 쓴 것과 **같은 모델**로 뽑아야 좌표계가 맞는다
-   (``tools/embed_cards.py`` 기본값 ``jhgan/ko-sroberta-multitask``).
+   (``tools/embed_cards.py`` 기본값 ``BAAI/bge-m3``).
 2. **표층 유사도** — ``pg_trgm`` 트라이그램. 임베딩 모델을 설치할 수 없는
    환경에서도 검색이 동작하게 만드는 대비책이기도 하다.
 
@@ -29,6 +29,22 @@
 벡터 단독 12/17 에서 융합 후 17/17 이 됐다 (``_HYBRID_SQL`` 위의 표).
 연구 저장소의 ``tools/search_cards.py`` 가 같은 방식으로 검색한다 — 한쪽만
 고치면 같은 질의에 다른 근거가 나온다.
+
+## 스키마 v2 — 회수 단위가 카드에서 **절**로 바뀌었다 (2026-08-12)
+
+연구 저장소의 진단에서 드러난 것: 이전 임베딩 모델 ``ko-sroberta`` 는 입력 창이
+128 토큰인데 카드 임베딩 텍스트는 중앙값 811 토큰이었다. **카드 168 장 전부가
+잘려 실제로는 카드의 15.8% 만 벡터에 들어가 있었다.** ``## 실패 사례`` ·
+``## 리스크`` · ``## 안티패턴`` 같은 절은 벡터 공간에 존재한 적이 없다 —
+반례 검색이 구조적으로 불가능했다는 뜻이다.
+
+바뀐 것:
+
+* 벡터 대상 ``cards`` → ``card_sections`` (절 하나가 한 벡터). 검색은 절에서
+  하고, 카드 단위로 접어서(``DISTINCT ON``) 돌려준다. 계약(``Card``)은 그대로다.
+* 모델 ``ko-sroberta``(128 창 / 768 차원) → ``bge-m3``(8192 창 / 1024 차원).
+* 반례 정의가 **카드 속성에서 절 속성으로** 바뀌었다. 아래 ``COUNTER_SECTION_KEYS``.
+* ``Card.matched_section`` 이 붙었다 — 어느 절이 걸렸는지. 기존 필드는 그대로다.
 """
 
 from __future__ import annotations
@@ -42,15 +58,76 @@ from typing import Any, Protocol
 import asyncpg
 import certifi
 
-from .arch_cards import ArchGuidance, arch_ids, guidance_from_body
+from .arch_cards import GUIDANCE_SECTIONS, ArchGuidance, arch_ids, guidance_from_sections
 
 logger = logging.getLogger(__name__)
 
 # tools/embed_cards.py 와 반드시 같아야 한다. 다르면 벡터 공간이 어긋난다.
-EMBEDDING_MODEL = os.getenv("RESEARCH_EMBEDDING_MODEL", "jhgan/ko-sroberta-multitask")
-EMBEDDING_DIM = 768
+# 차원이 다르면 pgvector 가 즉시 에러를 내므로 조용히 틀리지는 않는다.
+EMBEDDING_MODEL = os.getenv("RESEARCH_EMBEDDING_MODEL", "BAAI/bge-m3")
+EMBEDDING_DIM = 1024
 
 COUNTEREXAMPLE_MISSING = "반례 조사 부족"
+
+# 반례가 사는 절. **내용만으로 반례임이 분명한 절**만 넣는다.
+#
+# 예전 정의는 ``kind='GAME' AND type IN ('failure','mixed')`` 였다. 그 정의로는
+# 실패 사례 카드가 아닌 곳에 적힌 위험 신호(ELEM 의 ``## 리스크``, ARCH 의
+# ``## 안티패턴``)에 도달하지 못한다 — 반례는 카드가 아니라 절의 속성이다.
+#
+# 다만 절이면 무엇이든 반례인 것은 아니다. 실측으로 두 절을 빼야 했다
+# (2026-08-12, evals/retrieval.jsonl):
+#
+# * ``gaps`` (GENRE 빈칸) — 빈칸은 **기회**지 반례가 아니다. ret-005 에서
+#   GENRE-011/GENRE-010 의 빈칸 절이 진짜 반례인 GAME-025(메이플스토리 큐브
+#   확률 조작 제재)를 밀어냈다.
+# * ``cause_analysis`` (GAME 성공/실패 원인) — 무조건은 아니고 아래 참조.
+COUNTER_SECTION_KEYS = [
+    "failure_cases",     # ELEM: 실패 사례
+    "risk",              # ELEM: 리스크
+    "antipatterns",      # ARCH: 안티패턴
+    "market_saturation", # GENRE: 시장 포화도
+]
+
+# ``## 성공/실패 원인`` 은 실패·혼재 사례 카드일 때만 반례다.
+#
+# type='success' 카드의 이 절은 대개 **성공한 이유**를 적는다. 그것을 반례로
+# 내밀면 기획자는 자기 아이디어의 성공 사례를 반증으로 읽는다 — ret-002 에서
+# GAME-001(Inscryption)이 정확히 그렇게 잘못 분류됐다.
+#
+# 대가는 있다. 성공 카드 안에 섞여 있는 실패 문단(GAME-031 Balatro 의 PEGI 18+
+# 재분류로 유럽 콘솔 판매가 멈춘 사건)은 이 조건에서 반례로 잡히지 않는다.
+# 그래도 이쪽을 고른 이유: **오도하는 것이 놓치는 것보다 나쁘다.** 놓친 카드도
+# 지지 근거로는 올라오므로 기획자가 본문에서 읽을 수 있지만, 잘못 분류된 반례는
+# 기획자가 그것을 반증으로 믿게 만든다.
+#
+# 문단 단위로 사실/실패를 가르려면 카드 쪽에 그 표시가 있어야 한다 (지금은
+# "실패 지점:" 이 관례적으로만 쓰인다) — 절 단위 분해로는 여기까지가 한계다.
+_COUNTER_PREDICATE = (
+    "(s.section_key = ANY($6::text[])"
+    " OR (s.section_key = 'cause_analysis'"
+    "     AND c.kind = 'GAME' AND c.type IN ('failure','mixed')))"
+)
+
+# 반례 후보를 몇 배로 넉넉히 뽑은 뒤 실제 사례를 앞으로 당길지.
+#
+# 순위만으로 자르면 **일반적인 위험 서술이 실제 사건을 이긴다.** 실측
+# (2026-08-12, ret-005 "가챠 확률과 천장 시스템이 과금 신뢰에 미치는 영향"):
+# 진짜 반례인 GAME-025(메이플스토리 큐브 확률 조작, 공정위 제재)가 7위였고,
+# 그 위를 ELEM 들의 ``## 리스크`` 절이 채웠다 — "가챠는 위험할 수 있다"는
+# 서술이 "가챠 확률을 조작해 제재받았다"는 사건을 밀어낸 것이다.
+#
+# 반례의 뜻은 '이 아이디어가 실제로 어긋난 사례'다. 그래서 GAME 실패·혼재
+# 카드를 먼저 채우고 남는 자리를 나머지 위험 절로 메운다.
+_COUNTER_OVERFETCH = 4
+
+
+def _cases_first(cards: list[Card]) -> list[Card]:
+    """실제 사례(GAME 실패·혼재)를 앞으로. 그룹 안의 검색 순위는 유지한다."""
+
+    cases = [c for c in cards if c.kind == "GAME"]
+    rest = [c for c in cards if c.kind != "GAME"]
+    return cases + rest
 
 # 반례로 인정할 최소 코사인 유사도. **벡터 검색일 때만** 적용한다.
 #
@@ -67,6 +144,26 @@ COUNTEREXAMPLE_MISSING = "반례 조사 부족"
 # 0.4150 과 0.4805 사이면 같은 분할이 나오고, 0.45 는 양쪽에 여유를 둔 가운데다.
 # 트라이그램 모드에서는 점수 척도가 완전히 달라(0.03대) 이 값을 쓰면 반례가 전멸
 # 한다 — §2.3 이 "임베딩 없이는 재료가 없다"고 적어둔 이유다.
+#
+# ⚠ 이 값은 **지금 사실상 아무것도 거르지 않는다** (2026-08-12 재측정).
+#
+# 위 근거는 ko-sroberta 좌표계에서 나왔다. bge-m3 로 바꾸면서 코사인 분포가
+# 통째로 올라갔고, 노이즈가 0.45 아래로 내려오지 않는다:
+#
+#   진짜 반례   GAME-005 0.5056 · GAME-025 0.5028
+#   노이즈      GAME-042(CS2, 가챠 질의에) 0.4643 · ELEM-035(접객 루프,
+#               루프 내러티브 질의에) 0.5364
+#
+# 즉 **하한선 하나로 가르는 분할선이 더는 존재하지 않는다.** 0.50 으로 올리면
+# GAME-025 를 여유 0.003 으로 자르면서 그보다 높은 노이즈는 그대로 남는다.
+# 그래서 새 숫자를 지어내지 않고 값을 둔 채로 이 사실을 적어 둔다.
+#
+# 지금 반례 품질을 실제로 지키는 것은 이 값이 아니라 아래 둘이다.
+#   1. 지지 근거로 쓴 카드를 반례에서 제외 (gather_evidence)
+#   2. 실제 사례(GAME 실패·혼재)를 앞으로 당기기 (_cases_first)
+# 두 장치로 evals/retrieval.jsonl 의 counterexample_precision 이 1.00 이다.
+#
+# 다시 재려면: RESEARCH_DSN 을 걸고 inspect_retrieval_scores.py.
 COUNTEREXAMPLE_MIN_SCORE = float(os.getenv("RESEARCH_COUNTEREXAMPLE_MIN_SCORE", "0.45"))
 
 # 아키텍처 후보 기본 개수. 지지 근거(6)보다 크게 잡는다 — 한 기획은 spec 을
@@ -116,6 +213,10 @@ class Card:
     updated: str
     score: float = 0.0
     matched_by: str = ""
+    # 이 카드에서 실제로 걸린 절의 ``section_key`` (예: ``failure_cases``).
+    # 검색이 절 단위로 바뀌면서 생겼다 - 같은 카드라도 어느 절 때문에 올라왔는지가
+    # 기획 판단에 필요하다. 명시 조회(get_cards)나 고정 카드는 빈 문자열이다.
+    matched_section: str = ""
 
     def cite(self) -> str:
         return f"{self.card_id} ({self.title})"
@@ -134,6 +235,7 @@ class Card:
             "updated": self.updated,
             "score": round(self.score, 4),
             "matchedBy": self.matched_by,
+            "matchedSection": self.matched_section,
         }
 
 
@@ -298,29 +400,48 @@ _MIN_CANDIDATE_WINDOW = 40
 # 질의마다 크기가 달라 하한선을 걸 수 있는 값이 아니기 때문이다. 임베딩이 없는
 # 카드는 코사인이 NULL 이라 0 으로 떨어지고, 그래서 반례 자리에는 오르지 못한다
 # — 의미적 근거 없이 글자만 겹친 실패 사례는 반례가 아니다.
+# 순위는 **절** 단위로 매기고, 마지막에 카드 단위로 접는다(``DISTINCT ON``).
+#
+# 접지 않으면 한 카드의 절 여러 개가 상위 K 를 다 차지해 근거 다양성이 죽는다
+# (ARCH 카드 하나가 절 7 개를 갖고 있으므로 실제로 일어난다). 카드를 대표하는
+# 절은 융합 점수가 가장 높은 절이고, 그 절의 코사인이 그 카드의 ``score`` 가 된다.
+#
+# 트라이그램 대상에 절 본문(``s.body``)을 넣었다. 예전에는 카드 표면(제목·요약·
+# 태그)만 봐서 본문 안의 고유명사(개발사명·인용 매체)가 어휘 검색에 안 걸렸다.
 _HYBRID_SQL = """
     WITH scored AS (
-        {select}, 1 - (embedding <=> $1::vector) AS vec_score,
-               similarity(title || ' ' || summary || ' ' || array_to_string(tags,' '), $2)
-                 AS trg_score
-        FROM cards
+        SELECT c.card_id, c.kind, c.type, c.title, c.summary, c.tags, c.elements,
+               c.genres, c.confidence, c.updated::text AS updated,
+               s.section_key,
+               1 - (s.embedding <=> $1::vector) AS vec_score,
+               similarity(c.title || ' ' || c.summary || ' '
+                          || array_to_string(c.tags,' ') || ' ' || s.body, $2) AS trg_score
+        FROM card_sections s
+        JOIN cards c ON c.card_id = s.card_id
         WHERE TRUE {extra_where}
     ), ranked AS (
         SELECT *,
                ROW_NUMBER() OVER (ORDER BY vec_score DESC NULLS LAST) AS vec_rank,
                ROW_NUMBER() OVER (ORDER BY trg_score DESC NULLS LAST) AS trg_rank
         FROM scored
+    ), fused AS (
+        SELECT *,
+               (CASE WHEN vec_rank <= $3 THEN 1.0 / ($4 + vec_rank) ELSE 0 END)
+             + (CASE WHEN trg_rank <= $3 THEN 1.0 / ($4 + trg_rank) ELSE 0 END) AS rrf,
+               CASE WHEN vec_rank <= $3 AND trg_rank <= $3 THEN 'vector+trigram'
+                    WHEN vec_rank <= $3 THEN 'vector'
+                    ELSE 'trigram' END AS matched_by
+        FROM ranked
+        WHERE vec_rank <= $3 OR trg_rank <= $3
+    ), best AS (
+        SELECT DISTINCT ON (card_id) *
+        FROM fused
+        ORDER BY card_id, rrf DESC, vec_score DESC NULLS LAST
     )
     SELECT card_id, kind, type, title, summary, tags, elements, genres, confidence, updated,
-           vec_score AS score,
-           CASE WHEN vec_rank <= $3 AND trg_rank <= $3 THEN 'vector+trigram'
-                WHEN vec_rank <= $3 THEN 'vector'
-                ELSE 'trigram' END AS matched_by
-    FROM ranked
-    WHERE vec_rank <= $3 OR trg_rank <= $3
-    ORDER BY (CASE WHEN vec_rank <= $3 THEN 1.0 / ($4 + vec_rank) ELSE 0 END)
-           + (CASE WHEN trg_rank <= $3 THEN 1.0 / ($4 + trg_rank) ELSE 0 END) DESC,
-             vec_score DESC NULLS LAST
+           vec_score AS score, matched_by, section_key AS matched_section
+    FROM best
+    ORDER BY rrf DESC, score DESC NULLS LAST
     LIMIT $5
 """
 
@@ -379,12 +500,24 @@ class ResearchRepository:
         wanted = arch_ids(card_ids)
         if not wanted:
             return {}
+        # 절은 DB가 이미 나눠 갖고 있다 (sync_db.py 가 표준 사전으로 분할).
+        # 본문을 받아 여기서 다시 정규식으로 자르면 파싱이 두 곳에 살게 되고,
+        # 그중 하나(여기)는 절 제목이 한국어라고 가정한다 - 카드를 영어로 옮기는
+        # 순간 조용히 빈 지침이 나온다.
         rows = await self._pool.fetch(
-            "SELECT card_id, title, body FROM cards WHERE card_id = ANY($1::text[])", wanted
+            "SELECT s.card_id, c.title, s.section_key, s.body "
+            "FROM card_sections s JOIN cards c ON c.card_id = s.card_id "
+            "WHERE s.card_id = ANY($1::text[]) AND s.section_key = ANY($2::text[])",
+            wanted,
+            [key for key, _title in GUIDANCE_SECTIONS],
         )
+        by_card: dict[str, tuple[str, dict[str, str]]] = {}
+        for row in rows:
+            title, sections = by_card.setdefault(row["card_id"], (row["title"], {}))
+            sections[row["section_key"]] = row["body"] or ""
         return {
-            row["card_id"]: guidance_from_body(row["card_id"], row["title"], row["body"] or "")
-            for row in rows
+            card_id: guidance_from_sections(card_id, title, sections)
+            for card_id, (title, sections) in by_card.items()
         }
 
     # ------------------------------------------------------------------
@@ -415,19 +548,39 @@ class ResearchRepository:
             idea,
             vector,
             support_k,
-            "AND kind <> 'ARCH' AND NOT (kind = 'GAME' AND type IN ('failure','mixed'))",
+            # 지지 근거에서는 반례 성격의 절도 뺀다. 예전에는 '실패/혼재 GAME 카드'만
+            # 뺐는데, 절 단위로 검색하면 성공 카드의 '실패 사례' 절이 시너지 자리에
+            # 올라올 수 있다 - 그건 지지 근거가 아니다.
+            "AND c.kind <> 'ARCH' "
+            "AND NOT (c.kind = 'GAME' AND c.type IN ('failure','mixed')) "
+            f"AND NOT {_COUNTER_PREDICATE}",
+            trigram_where="AND kind <> 'ARCH' "
+                          "AND NOT (kind = 'GAME' AND type IN ('failure','mixed'))",
+            extra_args=[COUNTER_SECTION_KEYS],
         )
-        counterexamples = self._above_floor(
-            await self._search(
-                idea, vector, counter_k, "AND kind = 'GAME' AND type IN ('failure','mixed')"
-            ),
-            vector,
+        # 지지 근거로 이미 쓴 카드는 반례가 될 수 없다. 절 단위 검색으로 바꾸면서
+        # 반례 풀이 '실패/혼재 GAME 카드 ~10장'에서 '반례 성격 절 ~250개'로 넓어졌는데,
+        # 그 안에는 **방금 시너지로 뽑힌 바로 그 카드의 리스크 절**이 들어 있다.
+        # 그게 상위를 채우면 기획자는 "내 아이디어를 지지하는 카드"를 반례로 읽는다.
+        #
+        # 실측 (2026-08-12, evals/retrieval.jsonl): 이 제외가 없으면 ret-004 는
+        # GAME-005(Twelve Minutes) 대신 ELEM-004·GENRE-002 의 절을, ret-005 는
+        # GAME-025 대신 ELEM-017 의 절을 반례로 내놓는다.
+        supporting_ids = [c.card_id for c in supporting]
+        counter_pool = await self._search(
+            idea, vector, counter_k * _COUNTER_OVERFETCH,
+            f"AND {_COUNTER_PREDICATE} AND c.card_id <> ALL($7::text[])",
+            trigram_where="AND kind = 'GAME' AND type IN ('failure','mixed')",
+            extra_args=[COUNTER_SECTION_KEYS, supporting_ids],
         )
+        counterexamples = self._above_floor(_cases_first(counter_pool)[:counter_k], vector)
         # 하한선을 걸지 않는다. 반례와 달리 아키텍처 카드는 종류가 고정돼 있어,
         # 무관한 카드가 올라와도 기획이 refs 에 넣지 않으면 아무 일도 일어나지
         # 않는다 — 반례처럼 "있는데 무관한" 위험이 없다.
         architecture = await self._search(
-            idea, vector, arch_k if arch_k is not None else ARCH_LIMIT_DEFAULT, "AND kind = 'ARCH'"
+            idea, vector, arch_k if arch_k is not None else ARCH_LIMIT_DEFAULT,
+            "AND c.kind = 'ARCH'",
+            trigram_where="AND kind = 'ARCH'",
         )
         architecture = await self._with_pinned(architecture)
         return ResearchEvidence(
@@ -477,18 +630,34 @@ class ResearchRepository:
         return kept
 
     async def _search(
-        self, query: str, vector: list[float] | None, limit: int, extra_where: str
+        self,
+        query: str,
+        vector: list[float] | None,
+        limit: int,
+        extra_where: str,
+        trigram_where: str = "",
+        extra_args: list[Any] | None = None,
     ) -> list[Card]:
+        """``extra_where`` 는 절 단위 하이브리드용, ``trigram_where`` 는 폴백용이다.
+
+        둘을 나눠 받는 이유: 폴백은 ``cards`` 만 보므로 ``s.section_key`` 같은
+        조건을 쓸 수 없다. 즉 **폴백에서는 반례를 절 단위로 정의할 수 없고**
+        옛 카드 단위 근사(``kind='GAME' AND type IN ('failure','mixed')``)로
+        돌아간다. 임베딩 없이 도는 것은 원래 강등 모드이고, 그 사실은
+        결과의 ``searchMode`` 에 이미 드러난다.
+        """
+
         if vector is not None:
             literal = "[" + ",".join(str(x) for x in vector) + "]"
             window = max(limit * _CANDIDATE_WINDOW_FACTOR, _MIN_CANDIDATE_WINDOW)
             rows = await self._pool.fetch(
-                _HYBRID_SQL.format(select=_SELECT, extra_where=extra_where),
+                _HYBRID_SQL.format(extra_where=extra_where),
                 literal,
                 query,
                 window,
                 RRF_K,
                 limit,
+                *(extra_args or []),
             )
         else:
             # 트라이그램 폴백. 제목·요약·태그를 한 덩어리로 보고 유사도를 잰다.
@@ -496,19 +665,31 @@ class ResearchRepository:
                 {_SELECT},
                        similarity(title || ' ' || summary || ' ' || array_to_string(tags,' '), $1)
                          AS score,
-                       'trigram' AS matched_by
+                       'trigram' AS matched_by,
+                       '' AS matched_section
                 FROM cards
-                WHERE TRUE {extra_where}
+                WHERE TRUE {trigram_where}
                 ORDER BY score DESC
                 LIMIT $2
             """
             rows = await self._pool.fetch(sql, query, limit)
 
-        return [self._to_card(row, score=row["score"], matched_by=row["matched_by"]) for row in rows]
+        return [
+            self._to_card(
+                row,
+                score=row["score"],
+                matched_by=row["matched_by"],
+                # 트라이그램 폴백 경로에는 절 개념이 없다 (카드 표면만 본다).
+                matched_section=(row["matched_section"] if "matched_section" in row else ""),
+            )
+            for row in rows
+        ]
 
     # ------------------------------------------------------------------
     @staticmethod
-    def _to_card(row: asyncpg.Record, score: float = 0.0, matched_by: str = "") -> Card:
+    def _to_card(
+        row: asyncpg.Record, score: float = 0.0, matched_by: str = "", matched_section: str = ""
+    ) -> Card:
         return Card(
             card_id=row["card_id"],
             kind=row["kind"],
@@ -522,4 +703,5 @@ class ResearchRepository:
             updated=row["updated"],
             score=float(score or 0.0),
             matched_by=matched_by,
+            matched_section=matched_section or "",
         )

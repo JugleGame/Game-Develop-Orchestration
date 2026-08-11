@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 from mcp import ClientSession
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp import Client
 
 os.environ.setdefault("UNITY_PROJECT_PATH", "C:/nonexistent-unity-project")
 
@@ -40,8 +40,7 @@ _FEATURES = [
 
 @asynccontextmanager
 async def session() -> AsyncIterator[ClientSession]:
-    async with create_connected_server_and_client_session(mcp) as client:
-        await client.initialize()
+    async with Client(mcp) as client:
         yield client
 
 
@@ -87,8 +86,8 @@ async def test_supplied_design_needs_no_key(no_api_key):
             },
         )
 
-    assert result.isError is False, result.content
-    body = result.structuredContent
+    assert result.is_error is False, result.content
+    body = result.structured_content
     assert body["gameId"] == "g1"
     assert body["files"][0]["className"] == "ChunkLoader"
     # 첫 파일부터 전체 타입을 보게 하는 캐시 접두사.
@@ -116,7 +115,7 @@ async def test_supplied_design_is_validated_just_like_a_generated_one(no_api_key
             },
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     text = "".join(getattr(b, "text", "") for b in result.content)
     assert '"errorCode": 1000' in text
     assert "Spec001" in text
@@ -129,7 +128,7 @@ async def test_missing_api_key_names_the_argument_that_avoids_it(no_api_key):
             {"gameId": "g1", "gameDesign": _GAME_DESIGN, "featurePrompts": _FEATURES},
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     text = "".join(getattr(b, "text", "") for b in result.content)
     assert "ANTHROPIC_API_KEY" in text
     assert "design" in text
@@ -142,7 +141,7 @@ async def test_empty_feature_prompts_is_a_validation_error():
             {"gameId": "g1", "gameDesign": _GAME_DESIGN, "featurePrompts": []},
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     assert '"errorCode": 1000' in "".join(getattr(b, "text", "") for b in result.content)
 
 
@@ -157,5 +156,5 @@ async def test_feature_prompt_without_an_id_is_rejected():
             },
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     assert "feature_id" in "".join(getattr(b, "text", "") for b in result.content)

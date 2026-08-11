@@ -31,7 +31,7 @@ import json
 import logging
 from typing import Any
 
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from common.errors import VALIDATION_ERROR, tool_error
 from common.server import build as build_server

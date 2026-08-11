@@ -14,8 +14,8 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager  # noqa:
 
 import pytest  # noqa: E402
 from mcp import ClientSession  # noqa: E402
-from mcp.server.fastmcp import FastMCP  # noqa: E402
-from mcp.shared.memory import create_connected_server_and_client_session  # noqa: E402
+from mcp.server.mcpserver import MCPServer as FastMCP  # noqa: E402
+from mcp import Client  # noqa: E402
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: E402
 
 from app.models.orm import Base  # noqa: E402
@@ -76,7 +76,7 @@ def mcp_session_factory(server: FastMCP) -> Callable[[], AbstractAsyncContextMan
 
     @asynccontextmanager
     async def _factory() -> AsyncIterator[ClientSession]:
-        async with create_connected_server_and_client_session(server) as session:
+        async with Client(server) as session:
             yield session
 
     return _factory

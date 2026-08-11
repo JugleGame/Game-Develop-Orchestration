@@ -55,7 +55,7 @@ task group 기반이라 세션을 연 태스크와 닫는 태스크가 같아야
 ## 3.1 Tools (필수)
 
 각 서버는 아래 도구를 `tools/list`에 노출하고 `tools/call`로 실행한다.
-**반환값은 dict(매핑)이어야 한다** — FastMCP는 이를 `structuredContent`에 자동으로 채우며,
+**반환값은 dict(매핑)이어야 한다** — MCPServer(mcp 2.0.0, 구 FastMCP)는 이를 `structuredContent`에 자동으로 채우며,
 오케스트레이터는 `structuredContent`를 우선 읽고 없으면 텍스트 블록을 JSON으로 파싱한다.
 
 ### StrategicMcpServer
@@ -286,7 +286,7 @@ Streamable HTTP 전송은 httpx `auth`를 지원한다. 오케스트레이터 AP
 # 8. 로컬 검증
 
 [`scripts/mock_mcp_servers.py`](../../Src/DeveloperAI/scripts/mock_mcp_servers.py)가
-5개 서버를 FastMCP 기반 실제 MCP 서버로 띄운다. 임의의 MCP 클라이언트로 점검 가능:
+5개 서버를 `mcp.server.mcpserver.MCPServer`(mcp 2.0.0, 구 `FastMCP`) 기반 실제 MCP 서버로 띄운다. 임의의 MCP 클라이언트로 점검 가능:
 
 ```bash
 npx @modelcontextprotocol/inspector

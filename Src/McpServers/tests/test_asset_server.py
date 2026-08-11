@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from mcp import ClientSession
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp import Client
 from PIL import Image
 
 from asset import pixellab_client
@@ -37,8 +37,7 @@ def _pixellab_stub(monkeypatch):
 
 @asynccontextmanager
 async def session() -> AsyncIterator[ClientSession]:
-    async with create_connected_server_and_client_session(mcp) as client:
-        await client.initialize()
+    async with Client(mcp) as client:
         yield client
 
 
@@ -61,7 +60,7 @@ async def test_contract_tools_use_camel_case_argument_names():
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
 
     for name in ("generate_2d_sprite", "generate_ui_asset", "generate_3d_placeholder"):
-        properties = set(tools[name].inputSchema["properties"])
+        properties = set(tools[name].input_schema["properties"])
         assert {"featureId", "prompt"} <= properties, name
 
 
@@ -74,9 +73,9 @@ async def test_generate_2d_sprite_returns_asset_path_in_structured_content():
             {"featureId": "f-1", "prompt": "player character", "gameId": "t-structured"},
         )
 
-    assert result.isError is False
-    assert result.structuredContent is not None, "annotate the return as dict[str, Any]"
-    assert Path(result.structuredContent["assetPath"]).exists()
+    assert result.is_error is False
+    assert result.structured_content is not None, "annotate the return as dict[str, Any]"
+    assert Path(result.structured_content["assetPath"]).exists()
 
 
 async def test_validation_failure_carries_error_code_1000():
@@ -87,7 +86,7 @@ async def test_validation_failure_carries_error_code_1000():
             "generate_2d_sprite", {"featureId": "", "prompt": "x", "gameId": "t-err"}
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     text = "".join(getattr(block, "text", "") for block in result.content)
     assert '"errorCode": 1000' in text
 
@@ -117,7 +116,7 @@ async def test_style_is_locked_after_first_use():
             "establish_art_style", {"gameId": "t-lock", "artStyle": "noir"}
         )
 
-    assert first.structuredContent["palette"] == second.structuredContent["palette"]
+    assert first.structured_content["palette"] == second.structured_content["palette"]
 
 
 async def test_same_inputs_regenerate_identical_bytes():
@@ -126,9 +125,9 @@ async def test_same_inputs_regenerate_identical_bytes():
     args = {"featureId": "f-repro", "prompt": "a tree prop", "gameId": "t-repro"}
     async with session() as client:
         first = await client.call_tool("generate_2d_sprite", args)
-        first_bytes = Path(first.structuredContent["assetPath"]).read_bytes()
+        first_bytes = Path(first.structured_content["assetPath"]).read_bytes()
         second = await client.call_tool("generate_2d_sprite", args)
-        second_bytes = Path(second.structuredContent["assetPath"]).read_bytes()
+        second_bytes = Path(second.structured_content["assetPath"]).read_bytes()
 
     assert first_bytes == second_bytes
 
@@ -169,7 +168,7 @@ async def test_generate_ui_asset_always_produces_ui():
             {"featureId": "f-ui", "prompt": "grass terrain", "gameId": "t-ui"},
         )
 
-    assert result.structuredContent["kind"].startswith("ui_")
+    assert result.structured_content["kind"].startswith("ui_")
 
 
 # --------------------------------------------------------------------------
@@ -183,21 +182,21 @@ async def test_generated_assets_start_pending_and_can_be_reviewed():
             "generate_2d_sprite",
             {"featureId": "f-rev", "prompt": "player character", "gameId": "t-review"},
         )
-        asset_id = created.structuredContent["assetId"]
-        assert created.structuredContent["status"] == "pending"
+        asset_id = created.structured_content["assetId"]
+        assert created.structured_content["status"] == "pending"
 
         pending = await client.call_tool("list_pending_assets", {"gameId": "t-review"})
-        assert asset_id in {a["asset_id"] for a in pending.structuredContent["pending"]}
+        assert asset_id in {a["asset_id"] for a in pending.structured_content["pending"]}
 
         approved = await client.call_tool(
             "review_asset", {"assetId": asset_id, "approved": True, "note": "good"}
         )
-        assert approved.structuredContent["status"] == "approved"
-        assert Path(approved.structuredContent["assetPath"]).exists()
+        assert approved.structured_content["status"] == "approved"
+        assert Path(approved.structured_content["assetPath"]).exists()
 
         summary = await client.call_tool("asset_review_summary", {"gameId": "t-review"})
-        assert summary.structuredContent["approved"] == 1
-        assert summary.structuredContent["readyForBuild"] is True
+        assert summary.structured_content["approved"] == 1
+        assert summary.structured_content["readyForBuild"] is True
 
 
 async def test_rejected_asset_is_kept_for_inspection():
@@ -211,14 +210,14 @@ async def test_rejected_asset_is_kept_for_inspection():
         rejected = await client.call_tool(
             "review_asset",
             {
-                "assetId": created.structuredContent["assetId"],
+                "assetId": created.structured_content["assetId"],
                 "approved": False,
                 "note": "off-palette",
             },
         )
 
-    assert rejected.structuredContent["status"] == "rejected"
-    assert Path(rejected.structuredContent["assetPath"]).exists()
+    assert rejected.structured_content["status"] == "rejected"
+    assert Path(rejected.structured_content["assetPath"]).exists()
 
 
 async def test_reviewing_unknown_asset_is_a_validation_error():
@@ -227,7 +226,7 @@ async def test_reviewing_unknown_asset_is_a_validation_error():
             "review_asset", {"assetId": "t-nope__f-1__prop", "approved": True}
         )
 
-    assert result.isError is True
+    assert result.is_error is True
     assert '"errorCode": 1000' in "".join(getattr(b, "text", "") for b in result.content)
 
 
@@ -247,9 +246,9 @@ async def test_every_asset_records_pixellab_provenance():
             {"featureId": "f-prov", "prompt": "a bush", "gameId": "t-prov"},
         )
 
-    root = Path(created.structuredContent["assetPath"]).parents[2]
+    root = Path(created.structured_content["assetPath"]).parents[2]
     manifest = json.loads((root / "manifests" / "t-prov.json").read_text(encoding="utf-8"))
-    provenance = manifest["assets"][created.structuredContent["assetId"]]["provenance"]
+    provenance = manifest["assets"][created.structured_content["assetId"]]["provenance"]
 
     assert provenance["method"] == "pixellab"
     assert provenance["commercial_use"] == "see PixelLab terms of service"
@@ -324,17 +323,17 @@ async def test_review_never_moves_the_file_unity_imported(approved):
                 "gameId": f"t-stable-{approved}",
             },
         )
-        imported_path = Path(created.structuredContent["assetPath"])
+        imported_path = Path(created.structured_content["assetPath"])
         assert imported_path.exists()
 
         reviewed = await client.call_tool(
             "review_asset",
-            {"assetId": created.structuredContent["assetId"], "approved": approved},
+            {"assetId": created.structured_content["assetId"], "approved": approved},
         )
 
-    assert reviewed.structuredContent["assetPath"] == str(imported_path)
+    assert reviewed.structured_content["assetPath"] == str(imported_path)
     assert imported_path.exists(), "the path Unity imported must still resolve"
-    assert reviewed.structuredContent["status"] == ("approved" if approved else "rejected")
+    assert reviewed.structured_content["status"] == ("approved" if approved else "rejected")
 
 
 async def test_review_status_is_recorded_in_the_manifest_not_the_path():
@@ -345,17 +344,17 @@ async def test_review_status_is_recorded_in_the_manifest_not_the_path():
             "generate_2d_sprite",
             {"featureId": "f-meta", "prompt": "a tree", "gameId": "t-meta"},
         )
-        asset_id = created.structuredContent["assetId"]
+        asset_id = created.structured_content["assetId"]
         await client.call_tool(
             "review_asset", {"assetId": asset_id, "approved": False, "note": "off-palette"}
         )
 
-    root = Path(created.structuredContent["assetPath"]).parents[2]
+    root = Path(created.structured_content["assetPath"]).parents[2]
     manifest = json.loads((root / "manifests" / "t-meta.json").read_text(encoding="utf-8"))
     record = manifest["assets"][asset_id]
     assert record["status"] == "rejected"
     assert record["review_note"] == "off-palette"
-    assert record["asset_path"] == created.structuredContent["assetPath"]
+    assert record["asset_path"] == created.structured_content["assetPath"]
 
 
 async def test_omitting_game_id_collides_two_games_onto_one_project():
@@ -377,10 +376,10 @@ async def test_omitting_game_id_collides_two_games_onto_one_project():
             "generate_2d_sprite", {"featureId": "f-collide", "prompt": "a knight"}
         )
 
-    assert first.structuredContent["gameId"] == second.structuredContent["gameId"] == "default"
-    assert first.structuredContent["assetId"] == second.structuredContent["assetId"]
-    assert first.structuredContent["assetPath"] == second.structuredContent["assetPath"]
-    assert first.structuredContent["styleSeed"] == second.structuredContent["styleSeed"]
+    assert first.structured_content["gameId"] == second.structured_content["gameId"] == "default"
+    assert first.structured_content["assetId"] == second.structured_content["assetId"]
+    assert first.structured_content["assetPath"] == second.structured_content["assetPath"]
+    assert first.structured_content["styleSeed"] == second.structured_content["styleSeed"]
 
 
 @pytest.mark.parametrize(
@@ -432,5 +431,5 @@ async def test_art_style_argument_reaches_the_palette():
         )
         locked = await client.call_tool("establish_art_style", {"gameId": "t-artstyle"})
 
-    assert result.isError is False
-    assert locked.structuredContent["artStyle"] == "dark fantasy"
+    assert result.is_error is False
+    assert locked.structured_content["artStyle"] == "dark fantasy"

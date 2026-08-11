@@ -35,11 +35,11 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer as FastMCP
 
 from common import registry
 from common.errors import MCP_ERROR, VALIDATION_ERROR, tool_error
-from common.server import expects_dict_return, parse_transport
+from common.server import expects_dict_return, register_address, serve
 
 from .arch_cards import ArchGuidance, arch_ids
 from .concepts import ConceptProposal, ConceptStore, adjust_evidence
@@ -109,11 +109,14 @@ mcp = FastMCP(
         "쪼개어 전달하고, 개발/QA 피드백을 받아 버전을 올려 재발행한다."
     ),
     lifespan=lifespan,
-    host=os.getenv("MCP_HOST", "127.0.0.1"),
-    # 포트는 common.registry 한 곳에서만 정한다. 이 서버는 lifespan 이 필요해
-    # common.server.build() 를 쓰지 못하므로 표를 직접 참조한다.
-    port=registry.get("strategic").resolved_port(),
 )
+
+# 포트는 common.registry 한 곳에서만 정한다. 이 서버는 lifespan 이 필요해
+# common.server.build() 를 쓰지 못하므로 주소를 직접 등록한다.
+#
+# mcp 2.0.0 부터 MCPServer 생성자가 host/port 를 받지 않는다 - 주소는 전송 계층의
+# 인자가 됐다. 등록하지 않으면 serve() 가 기본 포트 8000 으로 뜬다.
+register_address(mcp.name, registry.get("strategic").resolved_port())
 
 
 def _ctx(ctx: Context) -> StrategicContext:
@@ -800,4 +803,4 @@ if __name__ == "__main__":
         level=os.getenv("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    mcp.run(transport=parse_transport())
+    serve(mcp)

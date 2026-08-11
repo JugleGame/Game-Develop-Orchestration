@@ -22,10 +22,28 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-# lint_card.py 가 ARCH 카드에 요구하는 절 제목. 한 글자도 다르면 잘리지 않는다.
+# spec 문서와 개발 AI 프롬프트에 찍히는 **표시용** 제목. 사람과 모델이 읽는 말이다.
 SECTION_BUILD_STEPS = "Unity 구현 절차"
 SECTION_ANTI_PATTERNS = "안티패턴"
 SECTION_VERIFICATION = "검증 방법"
+
+# DB 에서 절을 **찾는** 키. 연구 저장소 ``card_schema.SECTIONS`` 의 ``section_key`` 다.
+#
+# 표시용 제목과 조회용 키를 나눈 이유: 전에는 위의 한국어 문자열로 카드 본문을
+# 정규식으로 잘랐다. 연구 저장소가 카드를 영어로 옮기면 그 정규식은 **조용히
+# 아무것도 못 찾고** 빈 지침을 만든다 — 그러면 spec 에 구현 절차가 실리지 않고
+# lint_spec S6 가 반려하는데, 원인은 번역이지 기획이 아니라서 추적이 어렵다.
+# section_key 는 언어가 바뀌어도 고정이므로 그 사고가 아예 불가능해진다.
+KEY_BUILD_STEPS = "unity_procedure"
+KEY_ANTI_PATTERNS = "antipatterns"
+KEY_VERIFICATION = "verification"
+
+# (조회 키, 표시 제목) — 순서가 곧 지침에 실리는 순서다.
+GUIDANCE_SECTIONS: list[tuple[str, str]] = [
+    (KEY_BUILD_STEPS, SECTION_BUILD_STEPS),
+    (KEY_ANTI_PATTERNS, SECTION_ANTI_PATTERNS),
+    (KEY_VERIFICATION, SECTION_VERIFICATION),
+]
 
 ARCH_ID_PATTERN = re.compile(r"ARCH-\d{3}")
 
@@ -93,11 +111,10 @@ class ArchGuidance:
         """비어 있는 절 제목 목록. 비어 있으면 카드 쪽이 깨진 것이다."""
 
         return [
-            name
-            for name, items in (
-                (SECTION_BUILD_STEPS, self.build_steps),
-                (SECTION_ANTI_PATTERNS, self.anti_patterns),
-                (SECTION_VERIFICATION, self.verification),
+            title
+            for (_key, title), items in zip(
+                GUIDANCE_SECTIONS,
+                (self.build_steps, self.anti_patterns, self.verification),
             )
             if not items
         ]
@@ -145,12 +162,33 @@ class ArchGuidance:
         return "\n".join(lines)
 
 
-def guidance_from_body(card_id: str, title: str, body: str) -> ArchGuidance:
-    """카드 본문에서 세 절을 잘라 지침을 만든다.
+def guidance_from_sections(card_id: str, title: str, sections: dict[str, str]) -> ArchGuidance:
+    """``section_key -> 절 본문`` 에서 지침을 만든다 (DB ``card_sections`` 경로).
+
+    카드 본문을 정규식으로 자르던 ``guidance_from_body`` 를 대신한다. 절 경계는
+    이미 연구 저장소의 ``sync_db.py`` 가 표준 사전으로 나눠 DB에 넣었으므로,
+    여기서 다시 파싱할 이유가 없다 — 파싱이 두 곳에 있으면 언젠가 갈라진다.
 
     절이 비어 있어도 예외를 내지 않는다 — 어느 카드의 어느 절이 비었는지는
     ``ArchGuidance.empty_sections`` 로 드러나고, 그 판정은 spec 검사(S6)가
     한다. 여기서 던지면 카드 하나가 깨졌을 때 기획 전체가 멈춘다.
+    """
+
+    return ArchGuidance(
+        card_id=card_id,
+        title=title,
+        build_steps=section_items(sections.get(KEY_BUILD_STEPS, "")),
+        anti_patterns=section_items(sections.get(KEY_ANTI_PATTERNS, "")),
+        verification=section_items(sections.get(KEY_VERIFICATION, "")),
+    )
+
+
+def guidance_from_body(card_id: str, title: str, body: str) -> ArchGuidance:
+    """카드 **본문**에서 세 절을 잘라 지침을 만든다 (구식 경로).
+
+    DB 가 스키마 v1(``card_sections`` 없음)일 때의 폴백으로만 남겨 둔다.
+    절 제목이 한국어라고 가정하므로 카드를 영어로 옮기면 빈 지침을 낸다 —
+    새 코드는 ``guidance_from_sections`` 를 쓸 것.
     """
 
     return ArchGuidance(

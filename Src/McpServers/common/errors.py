@@ -17,7 +17,7 @@ bare exceptions whenever the caller should see a specific code.
 
 import json
 
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 # Mirrors app/mcp/exceptions.py::ToolErrorCode. Kept as plain ints so servers
 # do not need to import the orchestrator package.
