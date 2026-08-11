@@ -1,0 +1,186 @@
+{
+  "tilesetId": "slime-rancher-roguelite__hub-terrain__tileset__5138fc27",
+  "tileSize": 32,
+  "tiles": [
+    {
+      "name": "wang_13",
+      "corners": {
+        "NW": "upper",
+        "NE": "upper",
+        "SW": "lower",
+        "SE": "upper"
+      },
+      "path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\wang_13.png"
+    },
+    {
+      "name": "wang_10",
+      "corners": {
+        "NW": "upper",
+        "NE": "lower",
+        "SW": "upper",
+        "SE": "lower"
+      },
+      "path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\wang_10.png"
+    },
+    {
+      "name": "wang_4",
+      "corners": {
+        "NW": "lower",
+        "NE": "upper",
+        "SW": "lower",
+        "SE": "lower"
+      },
+      "path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\wang_4.png"
+    },
+    {
+      "name": "wang_12",
+      "corners": {
+        "NW": "upper",
+        "NE": "upper",
+        "SW": "lower",
+        "SE": "lower"
+      },
+      "path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\wang_12.png"
+    },
+    {
+      "name": "wang_6",
+      "corners": {
+        "NW": "lower",
+        "NE": "upper",
+        "SW": "upper",
+        "SE": "lower"
+      },
+      "path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\wang_6.png"
+    },
+    {
+      "name": "wang_8",
+      "corners": {
+        "NW": "upper",
+        "NE": "lower",
+        "SW": "lower",
+        "SE": "lower"
+      },
+      "path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\wang_8.png"
+    },
+    {
+      "name": "wang_0",
+      "corners": {
+        "NW": "lower",
+        "NE": "lower",
+        "SW": "lower",
+        "SE": "lower"
+      },
+      "path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\wang_0.png"
+    },
+    {
+      "name": "wang_1",
+      "corners": {
+        "NW": "lower",
+        "NE": "lower",
+        "SW": "lower",
+        "SE": "upper"
+      },
+      "path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\wang_1.png"
+    },
+    {
+      "name": "wang_11",
+      "corners": {
+        "NW": "upper",
+        "NE": "lower",
+        "SW": "upper",
+        "SE": "upper"
+      },
+      "path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\wang_11.png"
+    },
+    {
+      "name": "wang_3",
+      "corners": {
+        "NW": "lower",
+        "NE": "lower",
+        "SW": "upper",
+        "SE": "upper"
+      },
+      "path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\wang_3.png"
+    },
+    {
+      "name": "wang_2",
+      "corners": {
+        "NW": "lower",
+        "NE": "lower",
+        "SW": "upper",
+        "SE": "lower"
+      },
+      "path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\wang_2.png"
+    },
+    {
+      "name": "wang_5",
+      "corners": {
+        "NW": "lower",
+        "NE": "upper",
+        "SW": "lower",
+        "SE": "upper"
+      },
+      "path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\wang_5.png"
+    },
+    {
+      "name": "wang_15",
+      "corners": {
+        "NW": "upper",
+        "NE": "upper",
+        "SW": "upper",
+        "SE": "upper"
+      },
+      "path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\wang_15.png"
+    },
+    {
+      "name": "wang_14",
+      "corners": {
+        "NW": "upper",
+        "NE": "upper",
+        "SW": "upper",
+        "SE": "lower"
+      },
+      "path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\wang_14.png"
+    },
+    {
+      "name": "wang_9",
+      "corners": {
+        "NW": "upper",
+        "NE": "lower",
+        "SW": "lower",
+        "SE": "upper"
+      },
+      "path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\wang_9.png"
+    },
+    {
+      "name": "wang_7",
+      "corners": {
+        "NW": "lower",
+        "NE": "upper",
+        "SW": "upper",
+        "SE": "upper"
+      },
+      "path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\wang_7.png"
+    }
+  ],
+  "metadata": {
+    "edge_types": [
+      "lower",
+      "upper"
+    ],
+    "terrain_prompts": {
+      "lower": "warm wooden plank floor with visible wood grain, top-down ranch interior",
+      "upper": "stacked grey fieldstone wall, top-down"
+    },
+    "terrain_ids": null,
+    "transition_size": 0.0,
+    "view": "high top-down",
+    "generation_parameters": {
+      "tile_strength": 1.0,
+      "tileset_adherence": 100.0,
+      "text_guidance_scale": 8.0,
+      "tileset_adherence_freedom": 500
+    },
+    "created_at": "2026-08-04T01:41:45.001831+00:00"
+  }
+}

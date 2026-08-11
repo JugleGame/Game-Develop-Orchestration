@@ -1,0 +1,785 @@
+{
+  "title": "Slime Stigma Ranch",
+  "genre": "Roguelite Monster-Breeding Ranch Sim",
+  "oneLine": "A roguelite where death marks the biome you fell in, and the corrupted slimes you breed from it carry twisted traits down their bloodline.",
+  "coreMechanics": [
+    "The player captures wild slimes during run-based biome dives and breeds them at a home ranch to build a roster.",
+    "Dying in a biome applies a stigma stack to that biome, and the next run starts there instead of the default hub-adjacent biome.",
+    "Each stigma stack raises the biome's corruption tier, which strengthens wild slime stats and raises the mutant-trait roll chance.",
+    "Breeding or capturing has a low base chance to produce a mutant slime whose weakest stat and strongest stat are swapped, and this reversal is inherited by offspring.",
+    "Slimes captured in a stigmatized biome carry a corrupted-trait gene flag, and when the biome's corruption tier crosses a threshold, lineages carrying that flag evolve into a higher-tier species."
+  ],
+  "artStyle": "top-down 32x32 pixel art with 1px black outlines, flat-shaded per-biome palette, corruption tiers shown as a palette shift toward a shared magenta-black accent",
+  "structureOverview": "A persistent ranch hub connects to biome dive runs. Each run ends in extraction or death; death writes a stigma to the current biome, and the next run's start point becomes that biome at its current corruption tier. Ranch breeding and capture happen between runs and feed back into the next dive's available slime roster.",
+  "synergyRationale": [
+    {
+      "cardId": "ELEM-017",
+      "reason": "The mutant-trait roll matches ELEM-017's proven probability-plus-ceiling structure: a low base chance paired with a pity counter gives the rare mutation a bounded worst case instead of unbounded bad luck."
+    },
+    {
+      "cardId": "GENRE-012",
+      "reason": "GENRE-012's death-resets-the-run-but-keeps-meta-growth loop supports the stigma system: each run restarts moment-to-moment progress, while the biome stigma and evolved bloodlines persist as the meta-progression layer."
+    },
+    {
+      "cardId": "ELEM-009",
+      "reason": "ELEM-009's pattern of death continuing the story rather than hard-resetting it grounds the stigma mechanic narratively: dying marks terrain the next run must literally start from."
+    },
+    {
+      "cardId": "GENRE-013",
+      "reason": "GENRE-013 shows an existing ruleset can carry a roguelite growth structure on top without redesigning the base rules each run; the same approach applies here, with breeding genetics as the base ruleset."
+    }
+  ],
+  "counterEvidence": [
+    {
+      "cardId": "GAME-022",
+      "risk": "Darkest Dungeon's stress/affliction system layered escalating difficulty onto a punishing death loop, and that compounding disadvantage without a comeback path was divisive among players.",
+      "mitigation": "Corruption tier also raises the mutant-trait roll chance, giving repeated deaths a rarer-but-stronger comeback lever, and stigma stack accumulation is capped per biome (spec-004) instead of scaling without limit."
+    }
+  ],
+  "counterEvidenceNote": "",
+  "maxRisk": "Corruption-tier difficulty scaling could compound with death penalties into an unrecoverable spiral, the same complaint leveled at Darkest Dungeon's affliction system (GAME-022).",
+  "specs": [
+    {
+      "specId": "spec-001",
+      "title": "Run Loop & Biome Dive",
+      "goal": "Establish the core run structure: hub, biome dive, extraction or death, return to hub. This is the scaffold every other mechanic hooks into.",
+      "implementationScope": [
+        "GameManager singleton tracks RunState (Hub/Diving/Dead/Extracted)",
+        "EventBus publishes RunStarted and RunEnded(cause: Death|Extraction) events",
+        "Hub scene and Biome scene are loaded additively",
+        "An extraction point trigger fires RunEnded(Extraction) and reloads the Hub scene"
+      ],
+      "outOfScope": [
+        "Combat damage system",
+        "Biome-specific enemy AI",
+        "Stigma and corruption logic (spec-004)"
+      ],
+      "acceptanceCriteria": [
+        "RunStarted and RunEnded events are each appended as one line to a log file within 1 frame of the triggering action",
+        "The Hub scene loads within 2 sec of RunEnded(Extraction), verified by automated test Test_Hub_Load_2s",
+        "0 NullReferenceException appear in the console across a full hub-to-death test cycle"
+      ],
+      "refs": [
+        "GENRE-012"
+      ],
+      "dependencies": [],
+      "unityHints": {
+        "components": [
+          "run state tracking",
+          "hub and biome scene transitions"
+        ],
+        "sceneObjects": [
+          "Hub scene root",
+          "Biome scene root",
+          "ExtractionPoint trigger"
+        ],
+        "assetsNeeded": [
+          "extraction point marker sprite 32x32"
+        ],
+        "notes": "RunState persists across scene loads via a manager that survives scene changes."
+      }
+    },
+    {
+      "specId": "spec-002",
+      "title": "Slime Capture",
+      "goal": "Let the player capture wild slimes encountered during a biome dive into an owned roster.",
+      "implementationScope": [
+        "CaptureTool component fires a capture check against a SlimeInstance in range that has its Weakened flag set (spec-007)",
+        "On success, the SlimeInstance's species, stat block, and trait flags are added to the player's PlayerRoster list",
+        "Capture UI shows success or fail feedback"
+      ],
+      "outOfScope": [
+        "Combat and weaken mechanics (spec-007)",
+        "Breeding logic (spec-003)",
+        "Mutant trait rolls (spec-005)"
+      ],
+      "acceptanceCriteria": [
+        "Capturing a slime adds exactly 1 entry to RunSatchel within 0.5 sec (spec-011), verified by automated test Test_Capture_Adds_Satchel_Entry",
+        "A capture attempt against a SlimeInstance without its Weakened flag set fails 100% of the time in 20 test attempts",
+        "A failed capture attempt logs capture_failed to the console",
+        "RunSatchel count updates in a debug HUD text element within 1 frame of a successful capture; the entry is promoted from RunSatchel to PlayerRoster only on successful extraction from the dive (spec-011), not at capture time"
+      ],
+      "refs": [
+        "ARCH-021"
+      ],
+      "dependencies": [
+        "spec-001",
+        "spec-007"
+      ],
+      "unityHints": {
+        "components": [
+          "slime capture check",
+          "captured slime data",
+          "owned slime roster tracking"
+        ],
+        "sceneObjects": [
+          "Capture prompt UI"
+        ],
+        "assetsNeeded": [
+          "capture net icon 32x32",
+          "wild slime creature sprite 32x32"
+        ],
+        "notes": ""
+      },
+      "architecture": [
+        {
+          "cardId": "ARCH-021",
+          "title": "인벤토리 시스템 (Inventory / Item Database, ScriptableObject 기반)",
+          "buildSteps": [
+            "`ItemData : ScriptableObject`에 이름, 아이콘, 설명, 스택 가능 여부, 타입을 정의.",
+            "아이템별 `.asset` 파일을 `Data/Items/`에 생성 (ARCH-008 폴더 규약 준수).",
+            "인벤토리는 `List<InventorySlot>`으로 관리하며, 각 슬롯은 `ItemData` 참조와 현재 수량만 가진다.",
+            "UI는 인벤토리 리스트를 순회하며 슬롯이 참조하는 `ItemData`의 아이콘·이름을 표시한다 - UI가 직접 아이템 속성을 하드코딩하지 않는다.",
+            "세이브 시 슬롯을 `{itemId, count}` 배열로 직렬화하고, 로드 시 ID로 `ItemData` 자산을 다시 찾아 연결한다."
+          ],
+          "antiPatterns": [
+            "아이템 하나마다 별도 클래스를 만드는 것: 아이템 수가 늘어날 때마다 새 클래스가 필요해 확장성이 떨어진다.",
+            "ScriptableObject 자산 필드에 런타임 중 수량을 직접 덮어쓰는 것: 자산은 프로젝트 전역에서 공유되므로, 한 캐릭터의 사용이 다른 모든 캐릭터의 값을 바꿔버린다.",
+            "인벤토리 UI 코드에 아이템 종류별 `if/switch` 분기를 넣는 것: 새 아이템 추가마다 UI 코드를 고쳐야 해 데이터 주도 설계의 이점이 사라진다."
+          ],
+          "verification": [
+            "상태 격리 검사: 캐릭터 A가 아이템을 사용해도 캐릭터 B의 동일 아이템 수량이 변하지 않아야 한다.",
+            "세이브/로드 검사: 인벤토리 저장 후 재시작 시 수량과 종류가 정확히 복원돼야 한다.",
+            "콘솔 청결: 존재하지 않는 ID를 로드 시도할 때만 경고가 뜨고, 정상 플레이 중에는 0건이어야 한다."
+          ]
+        }
+      ]
+    },
+    {
+      "specId": "spec-003",
+      "title": "Ranch Breeding",
+      "goal": "Let the player pair two owned slimes at the ranch hub to produce an offspring slime whose stats blend the parents.",
+      "implementationScope": [
+        "BreedingPen scene object accepts 2 PlayerRoster references",
+        "Offspring stat block is a weighted average of the parent stat blocks plus a variance roll",
+        "Offspring trait flags inherit from parents via a data-driven inheritance table",
+        "Breeding resolves the full offspring (stats, MutantFlag, CorruptedGeneFlag) immediately and wraps it in a SlimeEgg instead of adding it to PlayerRoster directly",
+        "EggIncubator tracks each egg's hatch end time, persists the incubating-egg list to a save file, and moves an egg's offspring into PlayerRoster once its hatch time elapses",
+        "Breeding UI panel: 2 selectable slime slots joined by a '+' fed from a scrollable roster grid, a right-pointing arrow, and a result panel showing the produced egg with its hatch condition and remaining hatch time"
+      ],
+      "outOfScope": [
+        "Mutant trait reversal roll (spec-005)",
+        "Corrupted gene inheritance (spec-006)",
+        "Hatch conditions other than elapsed time (e.g. item-gated or biome-gated hatching)"
+      ],
+      "acceptanceCriteria": [
+        "Breeding two roster slimes produces exactly 1 SlimeEgg within 1 sec and the incubator state is written to a save file within 1 sec, verified by automated test Test_Breed_Persists_Egg",
+        "The offspring stat block held by the egg differs from both parents in at least 1 stat in 100% of test breeds",
+        "Once an egg's hatch time elapses, its offspring is added to PlayerRoster exactly once and the roster save file reflects it within 1 sec, verified by automated test Test_Egg_Hatch_Adds_Offspring"
+      ],
+      "refs": [
+        "ARCH-021",
+        "GENRE-013"
+      ],
+      "dependencies": [
+        "spec-002"
+      ],
+      "unityHints": {
+        "components": [
+          "breeding pen interaction",
+          "offspring stat generation",
+          "egg incubation timer",
+          "breeding UI panel"
+        ],
+        "sceneObjects": [
+          "Breeding pen ranch object",
+          "Breeding UI canvas"
+        ],
+        "assetsNeeded": [
+          "breeding pen background tile 32x32",
+          "offspring slime creature sprite 32x32",
+          "breeding UI panel (slime slots + inventory grid + egg result box)"
+        ],
+        "notes": "2026-08-04: 사용자 제공 와이어프레임 기준 알/부화시간 메커니즘 추가 - 슬라임 슬롯 2개(+ 기호) + 인벤토리 그리드 + 화살표 + 결과 알 박스(부화 조건/부화 시간 표시)."
+      },
+      "architecture": [
+        {
+          "cardId": "ARCH-021",
+          "title": "인벤토리 시스템 (Inventory / Item Database, ScriptableObject 기반)",
+          "buildSteps": [
+            "`ItemData : ScriptableObject`에 이름, 아이콘, 설명, 스택 가능 여부, 타입을 정의.",
+            "아이템별 `.asset` 파일을 `Data/Items/`에 생성 (ARCH-008 폴더 규약 준수).",
+            "인벤토리는 `List<InventorySlot>`으로 관리하며, 각 슬롯은 `ItemData` 참조와 현재 수량만 가진다.",
+            "UI는 인벤토리 리스트를 순회하며 슬롯이 참조하는 `ItemData`의 아이콘·이름을 표시한다 - UI가 직접 아이템 속성을 하드코딩하지 않는다.",
+            "세이브 시 슬롯을 `{itemId, count}` 배열로 직렬화하고, 로드 시 ID로 `ItemData` 자산을 다시 찾아 연결한다."
+          ],
+          "antiPatterns": [
+            "아이템 하나마다 별도 클래스를 만드는 것: 아이템 수가 늘어날 때마다 새 클래스가 필요해 확장성이 떨어진다.",
+            "ScriptableObject 자산 필드에 런타임 중 수량을 직접 덮어쓰는 것: 자산은 프로젝트 전역에서 공유되므로, 한 캐릭터의 사용이 다른 모든 캐릭터의 값을 바꿔버린다.",
+            "인벤토리 UI 코드에 아이템 종류별 `if/switch` 분기를 넣는 것: 새 아이템 추가마다 UI 코드를 고쳐야 해 데이터 주도 설계의 이점이 사라진다."
+          ],
+          "verification": [
+            "상태 격리 검사: 캐릭터 A가 아이템을 사용해도 캐릭터 B의 동일 아이템 수량이 변하지 않아야 한다.",
+            "세이브/로드 검사: 인벤토리 저장 후 재시작 시 수량과 종류가 정확히 복원돼야 한다.",
+            "콘솔 청결: 존재하지 않는 ID를 로드 시도할 때만 경고가 뜨고, 정상 플레이 중에는 0건이어야 한다."
+          ]
+        }
+      ]
+    },
+    {
+      "specId": "spec-004",
+      "title": "Biome Stigma & Corruption Tier",
+      "goal": "On player death, mark the current biome with a stigma stack. The next run starts in that biome at its accumulated corruption tier, which scales wild slime stats and raises the mutant-trait roll chance.",
+      "implementationScope": [
+        "On RunEnded(Death), BiomeStigmaTable increments the current biome's stack count and persists it to a save file",
+        "Corruption tier equals the stigma stack divided by 3, rounded down, capped at tier 5",
+        "The next RunStarted uses the highest-stigma biome as the start biome instead of the default hub-adjacent biome",
+        "Wild slime stat multiplier and mutant-trait roll chance both read the current biome's corruption tier"
+      ],
+      "outOfScope": [
+        "Mutant trait reversal mechanics (spec-005)",
+        "Corrupted gene lineage evolution (spec-006)"
+      ],
+      "acceptanceCriteria": [
+        "The stigma stack count increments by exactly 1 in the save file within 1 sec of RunEnded(Death), verified by automated test Test_Stigma_Persists_On_Death",
+        "Corruption tier caps at 5 regardless of stack count in a test with 20 consecutive deaths in 1 biome",
+        "The console logs 'corruption_tier_changed' each time the tier value changes"
+      ],
+      "refs": [
+        "ELEM-009"
+      ],
+      "dependencies": [
+        "spec-001"
+      ],
+      "unityHints": {
+        "components": [
+          "biome stigma stack tracking",
+          "corruption tier calculation"
+        ],
+        "sceneObjects": [
+          "Biome corruption overlay"
+        ],
+        "assetsNeeded": [
+          "corruption tier overlay tile 32x32",
+          "stigma mark UI icon 32x32"
+        ],
+        "notes": ""
+      }
+    },
+    {
+      "specId": "spec-005",
+      "title": "Mutant Trait Reversal",
+      "goal": "On capture or breeding, roll a low-probability chance to produce a mutant slime whose weakest stat becomes its strongest via full reversal, guaranteed within a bounded number of attempts by a pity counter. The reversal flag is heritable.",
+      "implementationScope": [
+        "MutantRollService rolls a base chance, raised by biome corruption tier (spec-004), on every capture and breed event",
+        "A pity counter increments on each non-mutant roll and forces a guaranteed mutant result once it reaches a fixed threshold, then resets",
+        "On a mutant result, the SlimeInstance's lowest and highest base stat values are swapped and a MutantFlag is set",
+        "MutantFlag copies to offspring stat blocks in BreedingPen (spec-003) with 100% inheritance probability"
+      ],
+      "outOfScope": [
+        "Corrupted gene lineage evolution (spec-006)"
+      ],
+      "acceptanceCriteria": [
+        "A test loop of 200 captures with 0 mutant hits guarantees a mutant on the pity-threshold capture, and the console logs 'mutant_pity_triggered'",
+        "A mutant SlimeInstance has its lowest and highest base stat values swapped, verified in a unit test",
+        "Breeding a MutantFlag parent produces a MutantFlag offspring in 100% of 50 test breeds"
+      ],
+      "refs": [
+        "ELEM-017"
+      ],
+      "dependencies": [
+        "spec-002",
+        "spec-003"
+      ],
+      "unityHints": {
+        "components": [
+          "mutant trait roll",
+          "pity counter tracking"
+        ],
+        "sceneObjects": [],
+        "assetsNeeded": [
+          "mutant slime creature sprite 32x32"
+        ],
+        "notes": "Mutant sprite variant recolors the base sprite; keep the same 32x32 footprint as the base slime sprite."
+      }
+    },
+    {
+      "specId": "spec-006",
+      "title": "Corrupted Gene Inheritance & Lineage Evolution",
+      "goal": "Slimes captured in a stigmatized biome carry a corrupted-trait gene flag. Once the biome's corruption tier crosses a defined threshold, slimes in that lineage evolve into a higher-tier species.",
+      "implementationScope": [
+        "CaptureTool (spec-002) sets a CorruptedGeneFlag on any SlimeInstance captured in a biome whose corruption tier is 1 or higher",
+        "CorruptedGeneFlag inherits to offspring in BreedingPen (spec-003) whenever at least 1 parent carries it",
+        "A LineageEvolutionTable data asset maps a species plus corruption tier threshold to an evolved species",
+        "When a CorruptedGeneFlag slime is in PlayerRoster and its captured biome's corruption tier crosses its evolution threshold, the slime's species reference swaps to the evolved species entry"
+      ],
+      "outOfScope": [
+        "New evolved-species stat balancing beyond the data table lookup",
+        "Visual evolution animation or VFX"
+      ],
+      "acceptanceCriteria": [
+        "A CorruptedGeneFlag slime evolves species exactly once when its biome corruption tier crosses its threshold, verified in a test with tier forced from 0 to 5",
+        "The console logs 'lineage_evolved' with old and new species IDs on evolution",
+        "CorruptedGeneFlag offspring rate is 100% in 50 test breeds where at least 1 parent carries the flag"
+      ],
+      "refs": [
+        "GENRE-012"
+      ],
+      "dependencies": [
+        "spec-002",
+        "spec-003",
+        "spec-004",
+        "spec-005"
+      ],
+      "unityHints": {
+        "components": [
+          "lineage evolution lookup",
+          "evolution threshold check"
+        ],
+        "sceneObjects": [],
+        "assetsNeeded": [
+          "evolved slime creature sprite 32x32"
+        ],
+        "notes": ""
+      }
+    },
+    {
+      "specId": "spec-007",
+      "title": "Player Combat & Wild Slime Encounter",
+      "goal": "Give the player a way to weaken a wild slime through direct real-time combat so it becomes capturable, while tracking player HP so the run's death event fires when the player is defeated.",
+      "implementationScope": [
+        "Player character moves via Rigidbody2D physics and has an HP value",
+        "A melee attack activates a hitbox that damages a wild SlimeInstance in range through a shared damage interface",
+        "A wild SlimeInstance deals damage to the player through the same damage interface on contact",
+        "When a wild SlimeInstance's HP reaches 0, its Weakened flag is set and it stays in the scene instead of being destroyed",
+        "When player HP reaches 0, the RunEnded(Death) event defined in spec-001 fires with the current biome as the death location"
+      ],
+      "outOfScope": [
+        "Ranged weapons or spell-based attacks",
+        "Boss-tier wild slime encounters",
+        "Capture mechanics once a slime is weakened (spec-002)"
+      ],
+      "acceptanceCriteria": [
+        "Player HP decreases by the wild slime's attack damage value within 1 frame of a hit connecting",
+        "A wild SlimeInstance's Weakened flag is set exactly once when its HP reaches 0, verified by automated test Test_Slime_Weakened_On_Zero_HP",
+        "RunEnded(Death) fires exactly once within 1 frame of player HP reaching 0",
+        "0 NullReferenceException appear in the console across a full combat-to-weaken test cycle"
+      ],
+      "refs": [
+        "ARCH-028"
+      ],
+      "dependencies": [
+        "spec-001"
+      ],
+      "unityHints": {
+        "components": [
+          "player HP tracking",
+          "melee attack hitbox",
+          "wild slime HP tracking",
+          "shared damage handling"
+        ],
+        "sceneObjects": [
+          "Player character",
+          "melee attack hitbox trigger"
+        ],
+        "assetsNeeded": [
+          "rancher character sprite 32x32",
+          "melee tool icon 32x32",
+          "weakened slime visual indicator 32x32"
+        ],
+        "notes": ""
+      },
+      "architecture": [
+        {
+          "cardId": "ARCH-028",
+          "title": "피격·대미지 인터페이스 (IDamageable + 체력 컴포넌트)",
+          "buildSteps": [
+            "피해를 받는 약속을 하나 정의한다. 최소한 피해량과, 필요하다면 누가 가했는지를 함께 받는다.",
+            "체력 컴포넌트를 만들고 이 약속을 구현하게 한다. 체력의 하한 처리와 죽음 판정을 여기 둔다.",
+            "적·플레이어·파괴 가능한 사물 프리팹에 이 컴포넌트를 붙인다. 붙이는 것만으로 맞을 수 있게 되어야 한다.",
+            "공격 쪽(근접 판정, 발사체, 함정 트리거)은 충돌 상대에서 이 약속을 찾고, 있으면 피해를 넘긴다.",
+            "피격·사망 시점에 사건을 방송한다. 체력바·효과음·이펙트는 그 구독자로 붙인다(ARCH-014, ARCH-017).",
+            "사망한 대상의 정리는 파괴가 아니라 반납으로 처리한다. 자주 죽고 자주 생기는 적은 풀에서 빌려온 것이다(ARCH-015).",
+            "피격 한 건마다 로그를 남긴다(ARCH-010). 전투는 순간에 지나가므로 눈으로는 검증할 수 없다."
+          ],
+          "antiPatterns": [
+            "대상 종류를 하나씩 검사: 맞을 수 있는 것이 늘 때마다 공격 코드가 함께 자란다.",
+            "체력을 공용 변수로 열어두기: 어디서 깎였는지 추적할 수 없고, 무적·사망 처리가 곳곳으로 흩어진다.",
+            "죽음 처리 중복: 같은 적이 두 번 죽어 보상이 두 번 지급되는 전형적인 결함이다.",
+            "공격 코드가 UI·사운드를 직접 호출: 전투와 표현이 붙어버려 둘 중 하나만 바꾸는 일이 불가능해진다.",
+            "상호작용 인터페이스에 피해를 얹기: 두 축이 뒤섞여 \"말을 걸면 피해를 입는\" 종류의 사고가 난다.",
+            "피해량을 스크립트에 상수로 박기: 밸런스 조정이 코드 수정이 되고, 데이터 규약(ARCH-012)이 무력해진다."
+          ],
+          "verification": [
+            "적용 검사: 맞을 수 있는 프리팹 전부가 체력 컴포넌트를 가지고 있어야 한다. 누락된 프리팹은 공격이 통과한다.",
+            "종류 무관 검사: 새로 만든 파괴 가능 오브젝트가 공격 코드를 고치지 않고도 피해를 받아야 한다.",
+            "하한 검사: 체력이 음수로 내려가지 않아야 한다.",
+            "중복 사망 검사: 여러 발이 동시에 닿아도 사망 방송이 한 번만 남아야 한다 — 로그 줄 수로 확인한다 [출처: reference/unity_project_baseline.md 3절 로그 규칙].",
+            "로그 검사: 전투를 1회 수행하면 해당 이벤트ID의 줄이 남아야 한다.",
+            "콘솔 검사: 전투를 반복하는 동안 콘솔 에러 0개 [출처: reference/unity_project_baseline.md 4절 자체 점검]."
+          ]
+        }
+      ]
+    },
+    {
+      "specId": "spec-008",
+      "title": "Breeding Pen Slime Placement",
+      "goal": "Let the player place two owned slimes into the ranch breeding pen so that breeding starts from a player action instead of never being reachable in play.",
+      "implementationScope": [
+        "The player can select an owned slime from the roster and place it inside the breeding pen area as a visible world object",
+        "A placed slime can be taken back out of the pen and returned to the roster before breeding starts",
+        "Breeding starts automatically the moment the pen holds exactly 2 placed slimes, and the pen is emptied when the offspring is produced",
+        "The pen shows how many slimes are currently placed and never rests holding 2 — the pair breeds the moment it is complete"
+      ],
+      "outOfScope": [
+        "Offspring stat blending and trait inheritance (spec-003)",
+        "Mutant trait reversal roll (spec-005)",
+        "Corrupted gene inheritance (spec-006)",
+        "Capturing wild slimes into the roster (spec-002)"
+      ],
+      "acceptanceCriteria": [
+        "Placing an owned slime into the pen removes exactly 1 entry from the roster and shows exactly 1 slime object inside the pen within 0.5 sec, verified by automated test Test_Place_Moves_Slime_Into_Pen",
+        "Taking a placed slime out before breeding returns exactly 1 entry to the roster and leaves 0 slime objects in the pen, verified by automated test Test_Withdraw_Returns_Slime_To_Roster",
+        "Placing a 2nd slime starts breeding within 1 sec and leaves the pen holding 0 placed slimes afterwards, verified by automated test Test_Second_Placement_Starts_Breeding",
+        "The pen never holds more than 2 placed slimes: after each of 20 consecutive placements the placed count is 0 or 1, verified by automated test Test_Pen_Never_Exceeds_Capacity",
+        "The placed-count display matches the actual number of slimes in the pen within 1 frame of every placement and withdrawal"
+      ],
+      "refs": [
+        "ARCH-021",
+        "GENRE-013"
+      ],
+      "dependencies": [
+        "spec-002",
+        "spec-003"
+      ],
+      "unityHints": {
+        "components": [
+          "breeding pen slot tracking",
+          "owned slime placement interaction",
+          "placed slime world representation"
+        ],
+        "sceneObjects": [
+          "Breeding pen ranch object",
+          "Roster selection UI"
+        ],
+        "assetsNeeded": [
+          "breeding pen slot marker 32x32",
+          "owned slime creature sprite 32x32"
+        ],
+        "notes": "The pen already exists as a scene object with a trigger area; this spec only adds getting slimes into and out of it."
+      },
+      "architecture": [
+        {
+          "cardId": "ARCH-021",
+          "title": "인벤토리 시스템 (Inventory / Item Database, ScriptableObject 기반)",
+          "buildSteps": [
+            "`ItemData : ScriptableObject`에 이름, 아이콘, 설명, 스택 가능 여부, 타입을 정의.",
+            "아이템별 `.asset` 파일을 `Data/Items/`에 생성 (ARCH-008 폴더 규약 준수).",
+            "인벤토리는 `List<InventorySlot>`으로 관리하며, 각 슬롯은 `ItemData` 참조와 현재 수량만 가진다.",
+            "UI는 인벤토리 리스트를 순회하며 슬롯이 참조하는 `ItemData`의 아이콘·이름을 표시한다 - UI가 직접 아이템 속성을 하드코딩하지 않는다.",
+            "세이브 시 슬롯을 `{itemId, count}` 배열로 직렬화하고, 로드 시 ID로 `ItemData` 자산을 다시 찾아 연결한다."
+          ],
+          "antiPatterns": [
+            "아이템 하나마다 별도 클래스를 만드는 것: 아이템 수가 늘어날 때마다 새 클래스가 필요해 확장성이 떨어진다.",
+            "ScriptableObject 자산 필드에 런타임 중 수량을 직접 덮어쓰는 것: 자산은 프로젝트 전역에서 공유되므로, 한 캐릭터의 사용이 다른 모든 캐릭터의 값을 바꿔버린다.",
+            "인벤토리 UI 코드에 아이템 종류별 `if/switch` 분기를 넣는 것: 새 아이템 추가마다 UI 코드를 고쳐야 해 데이터 주도 설계의 이점이 사라진다."
+          ],
+          "verification": [
+            "상태 격리 검사: 캐릭터 A가 아이템을 사용해도 캐릭터 B의 동일 아이템 수량이 변하지 않아야 한다.",
+            "세이브/로드 검사: 인벤토리 저장 후 재시작 시 수량과 종류가 정확히 복원돼야 한다.",
+            "콘솔 청결: 존재하지 않는 ID를 로드 시도할 때만 경고가 뜨고, 정상 플레이 중에는 0건이어야 한다."
+          ]
+        }
+      ]
+    },
+    {
+      "specId": "spec-009",
+      "title": "Biome Roster & Stigma-Directed Dive Destination",
+      "goal": "Define more than one biome so a stigma actually changes where the next run starts. Today every dive loads the same single biome, so the blueprint's promise that the next run begins in the stigmatized biome has no observable effect.",
+      "implementationScope": [
+        "A biome catalog data asset lists at least 3 biomes, each with its own id, display name and scene",
+        "Starting a dive resolves the chosen biome id to that biome's own scene instead of always loading one fixed scene",
+        "The hub dive entrance shows which biome the next run will start in, taken from the highest-stigma biome",
+        "Each biome entry carries its own wild slime species pool, so different biomes yield different captures"
+      ],
+      "outOfScope": [
+        "Stigma stack accumulation and corruption tier maths (spec-004)",
+        "Run loot forfeit and extraction payout (spec-011)",
+        "Authored level art per biome beyond one placeholder layout each"
+      ],
+      "acceptanceCriteria": [
+        "The biome catalog lists at least 3 entries and every entry's scene is registered in build settings, verified by automated test Test_Biome_Catalog_Scenes_Exist",
+        "Starting a dive with a given biome id loads that biome's own scene and leaves 0 other biome scenes loaded, verified by automated test Test_Dive_Loads_Selected_Biome",
+        "After a death in 1 biome, the next dive starts in that same biome instead of the default one, verified by automated test Test_Stigma_Redirects_Next_Dive",
+        "The console logs 'dive_started' with the resolved biome id on every dive",
+        "Captures taken in 2 different biomes differ in species id at least 1 time across 10 captures per biome, verified by automated test Test_Biome_Species_Pools_Differ"
+      ],
+      "refs": [
+        "ARCH-024",
+        "GENRE-012"
+      ],
+      "dependencies": [
+        "spec-001",
+        "spec-004"
+      ],
+      "unityHints": {
+        "components": [
+          "biome catalog lookup",
+          "dive destination resolution",
+          "per-biome wild slime pool"
+        ],
+        "sceneObjects": [
+          "Biome scene root per biome",
+          "Hub dive entrance sign"
+        ],
+        "assetsNeeded": [
+          "biome selection sign 32x32",
+          "second biome ground tile 32x32",
+          "third biome ground tile 32x32"
+        ],
+        "notes": "The stigma table already stores counts per biome id; this spec gives those ids somewhere to point."
+      },
+      "architecture": [
+        {
+          "cardId": "ARCH-024",
+          "title": "타일맵 레벨 구조 (Grid + 다중 Tilemap + Composite Collider 2D)",
+          "buildSteps": [
+            "격자를 하나 만들고 그 아래에 역할별 타일맵을 자식으로 만든다. 이름은 역할 그대로 쓴다.",
+            "타일 팔레트를 만들고 사용할 타일 자산을 등록한다. 팔레트는 레벨 작업자의 도구 상자다.",
+            "바닥 겹부터 칠한다. 바닥이 먼저 있어야 나머지 겹의 위치 기준이 생긴다.",
+            "벽 겹에 타일맵 콜라이더를 붙이고, 컴포지트 콜라이더를 추가한 뒤 Rigidbody2D를 Static으로 바꾸고 컴포지트 사용 옵션을 켠다.",
+            "함정·구역 진입처럼 막지 않고 감지만 해야 하는 겹은 콜라이더를 트리거로 두고, 진입 사건을 방송한다(ARCH-001).",
+            "반복되는 벽·길 모양은 규칙 타일(Rule Tile)로 만들어 한 번만 정의한다. 손으로 모서리 타일을 고르는 작업은 맵이 커질수록 그대로 실수 지점이 된다."
+          ],
+          "antiPatterns": [
+            "타일마다 오브젝트 배치: 타일맵을 쓰지 않는 것과 같다. 맵이 커질수록 편집도 실행도 느려진다.",
+            "겹 하나에 전부 그리기: 그리기 순서·충돌·판정이 한 덩어리로 묶여 나중에 분리할 수 없다.",
+            "모든 겹에 콜라이더: 장식과 바닥까지 충돌 계산에 들어간다.",
+            "컴포지트 없이 대형 맵: 콜라이더 개수가 타일 수만큼 생겨 물리 비용이 맵 크기에 비례한다.",
+            "타일에 상태 부여 시도: 열린 문·부서진 벽처럼 상태가 바뀌는 것은 타일이 아니라 오브젝트의 일이다."
+          ],
+          "verification": [
+            "충돌 검사: 벽 겹에만 콜라이더가 있고, 그 콜라이더가 컴포지트로 합쳐져 있어야 한다.",
+            "통과 검사: 플레이어가 벽 겹 타일을 통과하지 못하고, 바닥·장식 겹은 통과해야 한다.",
+            "트리거 검사: 함정 겹에 진입하면 해당 이벤트ID의 로그 줄이 한 줄 남아야 한다 [출처: reference/unity_project_baseline.md 3절 로그 규칙]."
+          ]
+        }
+      ]
+    },
+    {
+      "specId": "spec-010",
+      "title": "Ranch Labor Assignment for Owned Slimes",
+      "goal": "Give owned slimes a use so breeding for better stats pays off. Today the defense and speed values are blended by breeding and swapped by mutation, but nothing in the game ever reads them - a bred slime is a number with no effect.",
+      "implementationScope": [
+        "A ranch facility accepts 1 assigned slime taken from the roster and produces a resource on a repeating tick",
+        "The amount produced per tick is derived from the assigned slime's stat block, so a stronger slime produces more",
+        "An assigned slime is unavailable for breeding until it is unassigned",
+        "The ranch shows each facility's assigned slime and its current output per tick"
+      ],
+      "outOfScope": [
+        "Breeding pen placement and pairing (spec-008)",
+        "What the produced resource is later spent on",
+        "Mutant reversal and corrupted gene rules (spec-005, spec-006)"
+      ],
+      "acceptanceCriteria": [
+        "Assigning a slime removes exactly 1 entry from the roster and the facility reports exactly 1 assigned slime, verified by automated test Test_Assign_Moves_Slime_To_Facility",
+        "A facility holding a higher-stat slime produces strictly more units across 10 ticks than one holding a lower-stat slime, verified by automated test Test_Output_Scales_With_Stat",
+        "Unassigning returns exactly 1 entry to the roster and leaves the facility reporting 0 assigned slimes, verified by automated test Test_Unassign_Returns_Slime",
+        "The console logs 'labor_output' with the facility id and the produced amount on every production tick",
+        "A slime already assigned to a facility cannot be placed in the breeding pen: 20 attempts produce 0 placements, verified by automated test Test_Assigned_Slime_Cannot_Breed"
+      ],
+      "refs": [
+        "ELEM-039",
+        "ARCH-012"
+      ],
+      "dependencies": [
+        "spec-002",
+        "spec-003"
+      ],
+      "unityHints": {
+        "components": [
+          "facility slime assignment",
+          "stat-driven output rate",
+          "production tick accumulation"
+        ],
+        "sceneObjects": [
+          "Ranch facility station",
+          "Facility status display"
+        ],
+        "assetsNeeded": [
+          "ranch facility station 32x32",
+          "resource output icon 32x32"
+        ],
+        "notes": "Output numbers belong in a data asset, not in code - the balance pass must not need a recompile."
+      },
+      "architecture": [
+        {
+          "cardId": "ARCH-012",
+          "title": "Data/ 데이터 자산 규약 (ScriptableObject 테이블)",
+          "buildSteps": [
+            "`Assets/Data/` 아래 종류별 폴더를 만든다. 이름은 명명 규약에 맞춘다(ARCH-008).",
+            "에디터 생성 메뉴 항목을 붙여 사람이 자산을 만들 수 있게 한다. 자산 파일은 Data/ 밖에 만들지 않는다.",
+            "각 데이터 자산에 문자열 ID 항목을 넣는다. ID는 파일 이름과 일치시켜 사람이 눈으로 대조할 수 있게 한다.",
+            "ID로 자산을 찾아주는 조회용 목록 자산을 종류별로 하나 만든다. 코드가 폴더를 훑는 방식은 쓰지 않는다 — 빌드에서 동작이 달라진다.",
+            "세이브 연동 — JSON에는 ID와 변한 상태만 저장하고, 불러올 때 ID로 자산을 되찾는다(ARCH-004).",
+            "자체 점검 — 컴파일 에러 0개, 콘솔 에러 0개 확인 후 커밋. [출처: reference/unity_project_baseline.md 자체 점검 기준]"
+          ],
+          "antiPatterns": [
+            "데이터 자산을 세이브 저장소로 쓰기: [해석] 이 규약을 어겼을 때 가장 비싼 실수다. 에디터에서는 값이 남아 \"저장이 되네\"라고 착각하지만, 빌드된 게임은 자기 자산 파일을 고칠 수 없어 플레이어의 진행이 전부 사라진다. [출처: Unity 공식 매뉴얼 — ScriptableObject]",
+            "에디터에서 플레이 중 값을 조정하고 그대로 두기: 그 변경이 자산에 남아 다음 플레이의 시작값이 조용히 바뀐다. 밸런스 테스트 결과가 오염된다.",
+            "수치를 코드 상수와 데이터 자산에 이중으로 두기: 한쪽만 고쳐진 상태로 배포되고, 어느 쪽이 진짜인지 판별하는 데 시간이 든다.",
+            "하나의 거대한 데이터 자산에 모든 종류를 몰아넣기: 여러 사람이 동시에 고치면 병합 충돌이 파일 하나에 집중된다.",
+            "폴더를 실행 중에 훑어 자산을 모으기: 에디터에서는 되지만 빌드에서 결과가 달라진다. 조회는 명시적인 목록 자산으로 한다."
+          ],
+          "verification": [
+            "컴파일 에러 0개, 콘솔 에러 0개. [출처: reference/unity_project_baseline.md 자체 점검 기준]",
+            "위치 검사: 데이터 자산 파일이 `Assets/Data/` 밖에 하나도 없어야 한다(파일 검색으로 확인 가능).",
+            "빌드 지속성 검사: 빌드에서 값을 변화시키는 플레이를 한 뒤 재실행했을 때, 시작값이 원래 설정값과 같아야 한다(달라지면 데이터 자산에 상태를 쓰고 있다는 뜻).",
+            "상태 소유 검사: 세이브 JSON에 진행 상태가 들어 있고, 데이터 자산 파일의 내용은 플레이 전후로 동일해야 한다(파일 변경 여부로 확인).",
+            "ID 무결성 검사: 세이브 JSON의 모든 ID가 조회 목록에서 해결돼야 한다. 해결 실패는 콘솔 에러로 남긴다.",
+            "중복 ID 검사: 같은 종류 안에 동일 ID를 가진 자산이 둘 이상 없어야 한다."
+          ]
+        }
+      ]
+    },
+    {
+      "specId": "spec-011",
+      "title": "Run Loot, Death Forfeit and Extraction Payout",
+      "goal": "Make extraction worth reaching and death cost something. Today a run yields nothing on extraction and loses nothing on death, while dying raises the mutant roll chance through stigma - so surviving is the strictly worse choice and the risk-reward loop the blueprint describes does not exist.",
+      "implementationScope": [
+        "Slimes captured during a dive are held in a run-only satchel instead of entering the permanent roster immediately",
+        "Reaching the extraction point commits every satchel entry to the permanent roster",
+        "Dying discards the whole satchel and leaves the permanent roster untouched",
+        "The dive display shows how many slimes are currently at risk in the satchel"
+      ],
+      "outOfScope": [
+        "Stigma stack and corruption tier changes on death (spec-004)",
+        "Ranch labor assignment (spec-010)",
+        "Any carried resource other than captured slimes"
+      ],
+      "acceptanceCriteria": [
+        "Capturing during a dive adds 0 entries to the permanent roster and exactly 1 entry to the run satchel, verified by automated test Test_Capture_Goes_To_Satchel",
+        "Extracting while holding 3 satchel entries adds exactly 3 entries to the permanent roster and leaves 0 in the satchel, verified by automated test Test_Extraction_Commits_Satchel",
+        "Dying while holding 3 satchel entries adds 0 entries to the permanent roster and leaves 0 in the satchel, verified by automated test Test_Death_Forfeits_Satchel",
+        "The console logs 'run_payout' with the committed count on extraction and 'run_forfeit' with the discarded count on death",
+        "The at-risk count on the dive display matches the satchel size within 1 frame of every capture"
+      ],
+      "refs": [
+        "ELEM-027",
+        "ELEM-014"
+      ],
+      "dependencies": [
+        "spec-001",
+        "spec-002"
+      ],
+      "unityHints": {
+        "components": [
+          "run-only capture holding",
+          "extraction payout commit",
+          "death forfeit discard"
+        ],
+        "sceneObjects": [
+          "Dive at-risk counter display"
+        ],
+        "assetsNeeded": [
+          "satchel at-risk icon 32x32"
+        ],
+        "notes": "GAME-022 warns that stacking punishments drives players off; the stigma reward stays as the comeback lever so a forfeited run still improves the next one."
+      }
+    },
+    {
+      "specId": "spec-012",
+      "title": "Wild Slime Pursuit and Directional Player Attack",
+      "goal": "Make an encounter something the player can lose. Today a wild slime never moves, so it only ever damages a player who walks into it, and the player's melee hits a circle centred on itself regardless of which way it faces.",
+      "implementationScope": [
+        "A wild slime switches between resting and pursuing based on whether the player is inside its detection radius",
+        "A pursuing slime moves toward the player at a rate taken from its own stat block",
+        "A weakened slime stops pursuing and stays put so it can still be captured",
+        "The player's melee reach is offset toward the last movement direction instead of centred on the player"
+      ],
+      "outOfScope": [
+        "Ranged attacks and boss-tier encounters (spec-007)",
+        "Pathfinding around obstacles - straight-line pursuit only",
+        "Capture rules once a slime is weakened (spec-002)"
+      ],
+      "acceptanceCriteria": [
+        "A wild slime with the player outside its detection radius moves 0 units across 60 frames, verified by automated test Test_Idle_Slime_Does_Not_Move",
+        "A wild slime with the player inside its detection radius ends 60 frames closer to the player than it started, verified by automated test Test_Slime_Pursues_Player",
+        "A slime whose weakened flag is set moves 0 units across 60 frames even with the player in range, verified by automated test Test_Weakened_Slime_Stops",
+        "The console logs 'slime_state_changed' with the old and new state each time a slime switches between resting and pursuing",
+        "An attack aimed away from a slime deals 0 damage to it while an attack aimed at it deals its damage value, verified by automated test Test_Attack_Respects_Facing"
+      ],
+      "refs": [
+        "ARCH-005",
+        "ARCH-028"
+      ],
+      "dependencies": [
+        "spec-002",
+        "spec-007"
+      ],
+      "unityHints": {
+        "components": [
+          "slime detection radius check",
+          "resting and pursuing state switch",
+          "facing-based attack offset"
+        ],
+        "sceneObjects": [
+          "Wild slime encounter",
+          "Player melee reach marker"
+        ],
+        "assetsNeeded": [
+          "slime alert indicator 32x32",
+          "attack swing arc 32x32"
+        ],
+        "notes": "Pursuit reads the same stat block breeding writes, so spec-010 and this spec make the same numbers matter in two places."
+      },
+      "architecture": [
+        {
+          "cardId": "ARCH-005",
+          "title": "NPC 상태머신 (Idle / Patrol / Talk)",
+          "buildSteps": [
+            "`Scripts/NPC/INpcState.cs` 생성 — Enter / Update / Exit 세 개의 약속만 정의한다.",
+            "`Scripts/NPC/States/` 하위에 IdleState, PatrolState, TalkState 각각 생성.",
+            "`Scripts/NPC/NpcController.cs` 생성 — 현재 상태 보관, 매 프레임 현재 상태의 Update 호출, 상태 교체 함수(이전 상태 Exit → 새 상태 Enter) 제공.",
+            "전이 규칙 배치 — NpcController에 조건 검사를 모으고, 조건 충족 시에만 교체 함수를 부른다.",
+            "Patrol 경로는 데이터로 둔다 — 순찰 지점을 코드에 박지 말고 인스펙터에서 지정하거나 `Data/`에 둔다. 기획 변경 때 코드를 안 고쳐도 되게 한다.",
+            "Talk 연동 — ARCH-006 상호작용에서 대화 요청을 받아 Talk로 전이하고, 이벤트 버스로 대화 사건을 방송한다.",
+            "물리 이동이 필요한 Patrol은 ARCH-009의 규칙을 따른다(직접 좌표 대입 금지)."
+          ],
+          "antiPatterns": [
+            "거대 if 덩어리: Update 안에 조건문을 계속 덧붙이는 방식. 상태머신을 쓰는 이유 자체가 이걸 피하기 위해서다.",
+            "상태 플래그 남발: isIdle, isTalking, isPatrolling 같은 불리언을 여러 개 두는 방식. 동시에 두 개가 참이 되는 순간 아무도 원인을 못 찾는다. 상태는 하나의 값으로 표현한다.",
+            "Exit 정리 누락: 상태를 나가면서 코루틴·구독·애니메이션을 정리하지 않아, 다음 상태에서 유령처럼 이전 행동이 남는 현상.",
+            "상태 안에서 직접 상태 교체: A 상태 Update에서 곧바로 B로 갈아타고, B가 다시 A로 돌아오는 순환. 같은 프레임에 전이가 반복되면 게임이 멈춘다. 전이는 프레임당 한 번으로 제한한다.",
+            "상태머신에 대사 내용 넣기: 상태는 \"무엇을 하는가\"이고 대사는 데이터다. 대사를 상태 코드에 넣으면 기획 변경마다 코드 수정이 필요하다."
+          ],
+          "verification": [
+            "컴파일 에러 0개, 콘솔 에러 0개. [출처: reference/unity_project_baseline.md 자체 점검 기준]",
+            "단일 상태 검사: 어느 시점에나 NPC의 현재 상태 값이 정확히 하나여야 한다.",
+            "전이 검사: 플레이어가 접근해 대화를 시작하면 Talk로, 종료하면 Idle로 돌아와야 한다. 돌아오지 않으면 Exit 처리 누락이다.",
+            "순찰 검사: Patrol 상태에서 지정한 경로 지점을 순서대로 지나야 한다."
+          ]
+        },
+        {
+          "cardId": "ARCH-028",
+          "title": "피격·대미지 인터페이스 (IDamageable + 체력 컴포넌트)",
+          "buildSteps": [
+            "피해를 받는 약속을 하나 정의한다. 최소한 피해량과, 필요하다면 누가 가했는지를 함께 받는다.",
+            "체력 컴포넌트를 만들고 이 약속을 구현하게 한다. 체력의 하한 처리와 죽음 판정을 여기 둔다.",
+            "적·플레이어·파괴 가능한 사물 프리팹에 이 컴포넌트를 붙인다. 붙이는 것만으로 맞을 수 있게 되어야 한다.",
+            "공격 쪽(근접 판정, 발사체, 함정 트리거)은 충돌 상대에서 이 약속을 찾고, 있으면 피해를 넘긴다.",
+            "피격·사망 시점에 사건을 방송한다. 체력바·효과음·이펙트는 그 구독자로 붙인다(ARCH-014, ARCH-017).",
+            "사망한 대상의 정리는 파괴가 아니라 반납으로 처리한다. 자주 죽고 자주 생기는 적은 풀에서 빌려온 것이다(ARCH-015).",
+            "피격 한 건마다 로그를 남긴다(ARCH-010). 전투는 순간에 지나가므로 눈으로는 검증할 수 없다."
+          ],
+          "antiPatterns": [
+            "대상 종류를 하나씩 검사: 맞을 수 있는 것이 늘 때마다 공격 코드가 함께 자란다.",
+            "체력을 공용 변수로 열어두기: 어디서 깎였는지 추적할 수 없고, 무적·사망 처리가 곳곳으로 흩어진다.",
+            "죽음 처리 중복: 같은 적이 두 번 죽어 보상이 두 번 지급되는 전형적인 결함이다.",
+            "공격 코드가 UI·사운드를 직접 호출: 전투와 표현이 붙어버려 둘 중 하나만 바꾸는 일이 불가능해진다.",
+            "상호작용 인터페이스에 피해를 얹기: 두 축이 뒤섞여 \"말을 걸면 피해를 입는\" 종류의 사고가 난다.",
+            "피해량을 스크립트에 상수로 박기: 밸런스 조정이 코드 수정이 되고, 데이터 규약(ARCH-012)이 무력해진다."
+          ],
+          "verification": [
+            "적용 검사: 맞을 수 있는 프리팹 전부가 체력 컴포넌트를 가지고 있어야 한다. 누락된 프리팹은 공격이 통과한다.",
+            "종류 무관 검사: 새로 만든 파괴 가능 오브젝트가 공격 코드를 고치지 않고도 피해를 받아야 한다.",
+            "하한 검사: 체력이 음수로 내려가지 않아야 한다.",
+            "중복 사망 검사: 여러 발이 동시에 닿아도 사망 방송이 한 번만 남아야 한다 — 로그 줄 수로 확인한다 [출처: reference/unity_project_baseline.md 3절 로그 규칙].",
+            "로그 검사: 전투를 1회 수행하면 해당 이벤트ID의 줄이 남아야 한다.",
+            "콘솔 검사: 전투를 반복하는 동안 콘솔 에러 0개 [출처: reference/unity_project_baseline.md 4절 자체 점검]."
+          ]
+        }
+      ]
+    }
+  ]
+}

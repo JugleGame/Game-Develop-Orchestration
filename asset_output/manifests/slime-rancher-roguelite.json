@@ -1,0 +1,1078 @@
+{
+  "game_id": "slime-rancher-roguelite",
+  "assets": {
+    "slime-rancher-roguelite__spec-001__icon__9cc2c106": {
+      "asset_id": "slime-rancher-roguelite__spec-001__icon__9cc2c106",
+      "feature_id": "spec-001",
+      "kind": "icon",
+      "prompt": "extraction point marker, glowing floor rune, 32x32",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-001_icon_9cc2c106.png",
+      "created_at": "2026-08-02T12:28:01.562510+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "icon",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=1291943972 feature=spec-001 prompt_sha256=9cc2c1063b794c37",
+        "cost_usd": null,
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-002__icon__e314c061": {
+      "asset_id": "slime-rancher-roguelite__spec-002__icon__e314c061",
+      "feature_id": "spec-002",
+      "kind": "icon",
+      "prompt": "capture net icon, 32x32",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-002_icon_e314c061.png",
+      "created_at": "2026-08-02T13:04:09.004076+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "icon",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=28271586 feature=spec-002 prompt_sha256=e314c0617de4015e",
+        "cost_usd": null,
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-002__prop__f052e91c": {
+      "asset_id": "slime-rancher-roguelite__spec-002__prop__f052e91c",
+      "feature_id": "spec-002",
+      "kind": "prop",
+      "prompt": "wild slime creature sprite, 32x32",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-002_prop_f052e91c.png",
+      "created_at": "2026-08-02T13:05:12.408633+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "procedural",
+        "generator": "AssetGenMcpServer/render.py",
+        "kind": "prop",
+        "material": "foliage",
+        "training_data": "none",
+        "reference_images": "none",
+        "derived_from": "seed=13444605377975346389 feature=spec-002 prompt_sha256=f052e91cb3e65a88",
+        "commercial_use": "unrestricted (no third-party material)"
+      }
+    },
+    "slime-rancher-roguelite__spec-003__tile__fc96b0b2": {
+      "asset_id": "slime-rancher-roguelite__spec-003__tile__fc96b0b2",
+      "feature_id": "spec-003",
+      "kind": "tile",
+      "prompt": "breeding pen background tile, 32x32",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-003_tile_fc96b0b2.png",
+      "created_at": "2026-08-02T13:05:58.851659+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "tile",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=1258085418 feature=spec-003 prompt_sha256=fc96b0b26f3c499d",
+        "cost_usd": null,
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-003__prop__f5d9fb2c": {
+      "asset_id": "slime-rancher-roguelite__spec-003__prop__f5d9fb2c",
+      "feature_id": "spec-003",
+      "kind": "prop",
+      "prompt": "offspring slime creature sprite, 32x32",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-003_prop_f5d9fb2c.png",
+      "created_at": "2026-08-02T13:06:35.103686+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "prop",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=3995656521 feature=spec-003 prompt_sha256=f5d9fb2c13e1ccbc",
+        "cost_usd": null,
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-004__tile__17d39368": {
+      "asset_id": "slime-rancher-roguelite__spec-004__tile__17d39368",
+      "feature_id": "spec-004",
+      "kind": "tile",
+      "prompt": "corruption tier overlay tile, 32x32",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-004_tile_17d39368.png",
+      "created_at": "2026-08-02T13:07:07.296425+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "tile",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=3834356641 feature=spec-004 prompt_sha256=17d393685200e32c",
+        "cost_usd": null,
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-004__icon__91570465": {
+      "asset_id": "slime-rancher-roguelite__spec-004__icon__91570465",
+      "feature_id": "spec-004",
+      "kind": "icon",
+      "prompt": "stigma mark UI icon, 32x32",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-004_icon_91570465.png",
+      "created_at": "2026-08-02T13:07:36.681058+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "icon",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=1672303701 feature=spec-004 prompt_sha256=91570465029c8dc1",
+        "cost_usd": null,
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__promptEval-r2__character__eab05f17": {
+      "asset_id": "slime-rancher-roguelite__promptEval-r2__character__eab05f17",
+      "feature_id": "promptEval-r2",
+      "kind": "character",
+      "prompt": "wild slime monster, round gelatinous body, simple dot eyes, no items or equipment, 32x32",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\promptEval-r2_character_eab05f17.png",
+      "created_at": "2026-08-02T13:20:10.431615+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "character",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=1849064148 feature=promptEval-r2 prompt_sha256=eab05f17718b7f31",
+        "cost_usd": null,
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__promptEval-r3__character__c4fa9084": {
+      "asset_id": "slime-rancher-roguelite__promptEval-r3__character__c4fa9084",
+      "feature_id": "promptEval-r3",
+      "kind": "character",
+      "prompt": "simple chibi wild slime monster, minimal round blob silhouette, 2 small dot eyes, no shading detail, no items, flat minimal pixel design, 32x32",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\promptEval-r3_character_c4fa9084.png",
+      "created_at": "2026-08-02T13:22:05.561615+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "character",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=3382678879 feature=promptEval-r3 prompt_sha256=c4fa90840095a209",
+        "cost_usd": null,
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__promptEval-r4__character__737fd110": {
+      "asset_id": "slime-rancher-roguelite__promptEval-r4__character__737fd110",
+      "feature_id": "promptEval-r4",
+      "kind": "character",
+      "prompt": "simple chibi wild slime monster, minimal round blob silhouette, 2 small dot eyes, crisp hard pixel edges, no anti-aliasing, no gradient, high contrast flat colors, no shading detail, no items, flat minimal pixel design, 32x32",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\promptEval-r4_character_737fd110.png",
+      "created_at": "2026-08-02T13:48:00.191702+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "character",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=215137542 feature=promptEval-r4 prompt_sha256=737fd110bef91938",
+        "cost_usd": null,
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-001__icon__fb9e166b": {
+      "asset_id": "slime-rancher-roguelite__spec-001__icon__fb9e166b",
+      "feature_id": "spec-001",
+      "kind": "icon",
+      "prompt": "extraction point marker, glowing floor rune",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-001_icon_fb9e166b.png",
+      "created_at": "2026-08-03T12:16:47.978820+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "icon",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=3843140312 feature=spec-001 prompt_sha256=fb9e166b0bc6cc46",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-002__icon__e8c35243": {
+      "asset_id": "slime-rancher-roguelite__spec-002__icon__e8c35243",
+      "feature_id": "spec-002",
+      "kind": "icon",
+      "prompt": "capture net icon",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-002_icon_e8c35243.png",
+      "created_at": "2026-08-03T12:17:07.169301+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "icon",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=709856962 feature=spec-002 prompt_sha256=e8c352437a64e1bd",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-002__monster__0d57d580": {
+      "asset_id": "slime-rancher-roguelite__spec-002__monster__0d57d580",
+      "feature_id": "spec-002",
+      "kind": "monster",
+      "prompt": "wild slime creature, simple chibi round blob silhouette, 2 small dot eyes, minimal pixel design",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-002_monster_0d57d580.png",
+      "created_at": "2026-08-03T12:17:27.937109+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "monster",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=2636066689 feature=spec-002 prompt_sha256=0d57d580ad847966",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-003__tile__a8ce9b33": {
+      "asset_id": "slime-rancher-roguelite__spec-003__tile__a8ce9b33",
+      "feature_id": "spec-003",
+      "kind": "tile",
+      "prompt": "breeding pen background tile, wooden ranch pen floor",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-003_tile_a8ce9b33.png",
+      "created_at": "2026-08-03T12:17:49.475947+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "tile",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=1553908259 feature=spec-003 prompt_sha256=a8ce9b33214654aa",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-003__monster__5b1f8b54": {
+      "asset_id": "slime-rancher-roguelite__spec-003__monster__5b1f8b54",
+      "feature_id": "spec-003",
+      "kind": "monster",
+      "prompt": "baby slime creature, smaller simple chibi round blob silhouette, 2 small dot eyes, minimal pixel design",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-003_monster_5b1f8b54.png",
+      "created_at": "2026-08-03T12:18:29.637322+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "monster",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=4200717754 feature=spec-003 prompt_sha256=5b1f8b5474eb79f9",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-004__tile__fbf248c4": {
+      "asset_id": "slime-rancher-roguelite__spec-004__tile__fbf248c4",
+      "feature_id": "spec-004",
+      "kind": "tile",
+      "prompt": "corruption tier overlay tile, cracked contaminated ground patch",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-004_tile_fbf248c4.png",
+      "created_at": "2026-08-03T12:18:54.772157+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "tile",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=502481108 feature=spec-004 prompt_sha256=fbf248c4708faf51",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-004__icon__6f082eb7": {
+      "asset_id": "slime-rancher-roguelite__spec-004__icon__6f082eb7",
+      "feature_id": "spec-004",
+      "kind": "icon",
+      "prompt": "stigma mark UI icon, cracked skull rune",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-004_icon_6f082eb7.png",
+      "created_at": "2026-08-03T12:19:14.208901+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "icon",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=3293566936 feature=spec-004 prompt_sha256=6f082eb7b86c9b34",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-005__monster__1b4148aa": {
+      "asset_id": "slime-rancher-roguelite__spec-005__monster__1b4148aa",
+      "feature_id": "spec-005",
+      "kind": "monster",
+      "prompt": "mutant slime creature, simple chibi round blob silhouette with inverted highlight pattern, 2 small dot eyes, minimal pixel design",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-005_monster_1b4148aa.png",
+      "created_at": "2026-08-03T12:19:34.524744+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "monster",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=171365273 feature=spec-005 prompt_sha256=1b4148aaf280f076",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-006__monster__4677bead": {
+      "asset_id": "slime-rancher-roguelite__spec-006__monster__4677bead",
+      "feature_id": "spec-006",
+      "kind": "monster",
+      "prompt": "evolved slime creature, larger spiked round blob silhouette, 2 small dot eyes, minimal pixel design",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-006_monster_4677bead.png",
+      "created_at": "2026-08-03T12:20:31.377043+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "monster",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=948590572 feature=spec-006 prompt_sha256=4677beadcde95ed0",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-007__character__b469880f": {
+      "asset_id": "slime-rancher-roguelite__spec-007__character__b469880f",
+      "feature_id": "spec-007",
+      "kind": "character",
+      "prompt": "rancher character with a straw hat, overalls, and weathered leather boots, distinct facial features, pixel art",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-007_character_b469880f.png",
+      "created_at": "2026-08-03T12:21:22.003016+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "character",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=2381061740 feature=spec-007 prompt_sha256=b469880ff51e5015",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-007__icon__7c4275ed": {
+      "asset_id": "slime-rancher-roguelite__spec-007__icon__7c4275ed",
+      "feature_id": "spec-007",
+      "kind": "icon",
+      "prompt": "melee tool icon, ranch hook weapon",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-007_icon_7c4275ed.png",
+      "created_at": "2026-08-03T12:22:07.426699+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "icon",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=1753766194 feature=spec-007 prompt_sha256=7c4275eda547a9c2",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-007__icon__6d20783e": {
+      "asset_id": "slime-rancher-roguelite__spec-007__icon__6d20783e",
+      "feature_id": "spec-007",
+      "kind": "icon",
+      "prompt": "weakened status indicator icon, dizzy stars swirl overlay",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-007_icon_6d20783e.png",
+      "created_at": "2026-08-03T12:22:34.648041+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "icon",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=3030158861 feature=spec-007 prompt_sha256=6d20783e3eb52dc6",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__hub-terrain__tileset__5138fc27": {
+      "asset_id": "slime-rancher-roguelite__hub-terrain__tileset__5138fc27",
+      "feature_id": "hub-terrain",
+      "kind": "tileset",
+      "prompt": "lower=warm wooden plank floor with visible wood grain, top-down ranch interior / upper=stacked grey fieldstone wall, top-down",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-terrain_5138fc27\\tileset.json",
+      "created_at": "2026-08-04T01:41:50.034624+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "tilesets",
+        "tile_count": 16,
+        "tile_size": 32,
+        "style_seed": 13444605377975346389,
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__biome-terrain__tileset__3ad208d7": {
+      "asset_id": "slime-rancher-roguelite__biome-terrain__tileset__3ad208d7",
+      "feature_id": "biome-terrain",
+      "kind": "tileset",
+      "prompt": "lower=lush green grass ground with small clover patches, top-down / upper=weathered grey stone cliff wall with moss, top-down",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\biome-terrain_3ad208d7\\tileset.json",
+      "created_at": "2026-08-04T01:43:28.175466+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "tilesets",
+        "tile_count": 16,
+        "tile_size": 32,
+        "style_seed": 13444605377975346389,
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__ashfall-terrain__tileset__0ff6515f": {
+      "asset_id": "slime-rancher-roguelite__ashfall-terrain__tileset__0ff6515f",
+      "feature_id": "ashfall-terrain",
+      "kind": "tileset",
+      "prompt": "lower=ash-grey volcanic ground with glowing cinder specks, top-down / upper=charred blackened obsidian rock wall, top-down",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\ashfall-terrain_0ff6515f\\tileset.json",
+      "created_at": "2026-08-04T01:45:35.917218+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "tilesets",
+        "tile_count": 16,
+        "tile_size": 32,
+        "style_seed": 13444605377975346389,
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__hub-decor-crate__decor__9cfaec96": {
+      "asset_id": "slime-rancher-roguelite__hub-decor-crate__decor__9cfaec96",
+      "feature_id": "hub-decor-crate",
+      "kind": "decor",
+      "prompt": "small wooden storage crate, top-down, transparent background",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\decor\\hub-decor-crate_9cfaec96.png",
+      "created_at": "2026-08-04T02:06:22.774886+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "map-objects",
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__hub-decor-hay__decor__10e222f9": {
+      "asset_id": "slime-rancher-roguelite__hub-decor-hay__decor__10e222f9",
+      "feature_id": "hub-decor-hay",
+      "kind": "decor",
+      "prompt": "small round hay bale, top-down, transparent background",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\decor\\hub-decor-hay_10e222f9.png",
+      "created_at": "2026-08-04T02:06:43.483739+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "map-objects",
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__biome-decor-rock__decor__464c8413": {
+      "asset_id": "slime-rancher-roguelite__biome-decor-rock__decor__464c8413",
+      "feature_id": "biome-decor-rock",
+      "kind": "decor",
+      "prompt": "small grey rock cluster with grass tufts, top-down, transparent background",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\decor\\biome-decor-rock_464c8413.png",
+      "created_at": "2026-08-04T02:07:20.660607+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "map-objects",
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__biome-decor-flower__decor__de88f0ed": {
+      "asset_id": "slime-rancher-roguelite__biome-decor-flower__decor__de88f0ed",
+      "feature_id": "biome-decor-flower",
+      "kind": "decor",
+      "prompt": "small cluster of wildflowers, top-down, transparent background",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\decor\\biome-decor-flower_de88f0ed.png",
+      "created_at": "2026-08-04T02:07:47.562684+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "map-objects",
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__ashfall-decor-log__decor__2b2fd9c4": {
+      "asset_id": "slime-rancher-roguelite__ashfall-decor-log__decor__2b2fd9c4",
+      "feature_id": "ashfall-decor-log",
+      "kind": "decor",
+      "prompt": "charred fallen log with embers, top-down, transparent background",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\decor\\ashfall-decor-log_2b2fd9c4.png",
+      "created_at": "2026-08-04T02:08:14.701153+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "map-objects",
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__ashfall-decor-cinder__decor__09bf965d": {
+      "asset_id": "slime-rancher-roguelite__ashfall-decor-cinder__decor__09bf965d",
+      "feature_id": "ashfall-decor-cinder",
+      "kind": "decor",
+      "prompt": "small pile of glowing cinders and ash, top-down, transparent background",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\decor\\ashfall-decor-cinder_09bf965d.png",
+      "created_at": "2026-08-04T02:08:34.610370+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "map-objects",
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__hub-ground-detail__tileset__c4be03ee": {
+      "asset_id": "slime-rancher-roguelite__hub-ground-detail__tileset__c4be03ee",
+      "feature_id": "hub-ground-detail",
+      "kind": "tileset",
+      "prompt": "lower=warm wooden plank floor with visible wood grain, top-down ranch interior / upper=worn scuffed wood patch with dark stain, top-down",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\hub-ground-detail_c4be03ee\\tileset.json",
+      "created_at": "2026-08-04T02:31:46.806040+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "tilesets",
+        "tile_count": 16,
+        "tile_size": 32,
+        "style_seed": 13444605377975346389,
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__biome-ground-detail__tileset__96953968": {
+      "asset_id": "slime-rancher-roguelite__biome-ground-detail__tileset__96953968",
+      "feature_id": "biome-ground-detail",
+      "kind": "tileset",
+      "prompt": "lower=lush green grass ground with small clover patches, top-down / upper=patch of dry yellow-brown withered grass, top-down",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\biome-ground-detail_96953968\\tileset.json",
+      "created_at": "2026-08-04T02:33:15.040016+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "tilesets",
+        "tile_count": 16,
+        "tile_size": 32,
+        "style_seed": 13444605377975346389,
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__ashfall-ground-detail__tileset__a386a804": {
+      "asset_id": "slime-rancher-roguelite__ashfall-ground-detail__tileset__a386a804",
+      "feature_id": "ashfall-ground-detail",
+      "kind": "tileset",
+      "prompt": "lower=ash-grey volcanic ground with glowing cinder specks, top-down / upper=patch of glowing orange ember cracks, top-down",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\ashfall-ground-detail_a386a804\\tileset.json",
+      "created_at": "2026-08-04T02:34:57.898519+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "tilesets",
+        "tile_count": 16,
+        "tile_size": 32,
+        "style_seed": 13444605377975346389,
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__hub-structure-fence__decor__3719aebf": {
+      "asset_id": "slime-rancher-roguelite__hub-structure-fence__decor__3719aebf",
+      "feature_id": "hub-structure-fence",
+      "kind": "decor",
+      "prompt": "wooden ranch fence gate section, top-down, transparent background",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\decor\\hub-structure-fence_3719aebf.png",
+      "created_at": "2026-08-04T02:35:23.228740+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "map-objects",
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__hub-structure-silo__decor__0b217f6b": {
+      "asset_id": "slime-rancher-roguelite__hub-structure-silo__decor__0b217f6b",
+      "feature_id": "hub-structure-silo",
+      "kind": "decor",
+      "prompt": "small wooden grain silo structure, top-down, transparent background",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\decor\\hub-structure-silo_0b217f6b.png",
+      "created_at": "2026-08-04T02:35:53.818971+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "map-objects",
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__biome-structure-pillar__decor__f7d934d2": {
+      "asset_id": "slime-rancher-roguelite__biome-structure-pillar__decor__f7d934d2",
+      "feature_id": "biome-structure-pillar",
+      "kind": "decor",
+      "prompt": "ancient mossy stone pillar ruin, top-down, transparent background",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\decor\\biome-structure-pillar_f7d934d2.png",
+      "created_at": "2026-08-04T02:36:21.013892+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "map-objects",
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__biome-structure-boulder__decor__c8bb32ca": {
+      "asset_id": "slime-rancher-roguelite__biome-structure-boulder__decor__c8bb32ca",
+      "feature_id": "biome-structure-boulder",
+      "kind": "decor",
+      "prompt": "large mossy boulder formation, top-down, transparent background",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\decor\\biome-structure-boulder_c8bb32ca.png",
+      "created_at": "2026-08-04T02:36:42.324769+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "map-objects",
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__ashfall-structure-obelisk__decor__89614ff2": {
+      "asset_id": "slime-rancher-roguelite__ashfall-structure-obelisk__decor__89614ff2",
+      "feature_id": "ashfall-structure-obelisk",
+      "kind": "decor",
+      "prompt": "charred stone obelisk, top-down, transparent background",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\decor\\ashfall-structure-obelisk_89614ff2.png",
+      "created_at": "2026-08-04T02:37:02.297505+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "map-objects",
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__ashfall-structure-spire__decor__cbebc6ed": {
+      "asset_id": "slime-rancher-roguelite__ashfall-structure-spire__decor__cbebc6ed",
+      "feature_id": "ashfall-structure-spire",
+      "kind": "decor",
+      "prompt": "cracked volcanic rock spire, top-down, transparent background",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\decor\\ashfall-structure-spire_cbebc6ed.png",
+      "created_at": "2026-08-04T02:37:43.146852+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "map-objects",
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__player-shadow__decor__007d9382": {
+      "asset_id": "slime-rancher-roguelite__player-shadow__decor__007d9382",
+      "feature_id": "player-shadow",
+      "kind": "decor",
+      "prompt": "simple soft dark oval drop shadow blob, top-down, transparent background, no character",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\decor\\player-shadow_007d9382.png",
+      "created_at": "2026-08-04T02:46:45.969339+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "map-objects",
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__marsh-ground-detail__tileset__13067faf": {
+      "asset_id": "slime-rancher-roguelite__marsh-ground-detail__tileset__13067faf",
+      "feature_id": "marsh-ground-detail",
+      "kind": "tileset",
+      "prompt": "lower=swampy bog mud with murky water patches, top-down ground / upper=shallow murky puddle with ripples and algae, top-down",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\tilesets\\marsh-ground-detail_13067faf\\tileset.json",
+      "created_at": "2026-08-04T02:55:30.545013+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "tilesets",
+        "tile_count": 16,
+        "tile_size": 32,
+        "style_seed": 13444605377975346389,
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__spec-003__ui_panel__0418597c": {
+      "asset_id": "slime-rancher-roguelite__spec-003__ui_panel__0418597c",
+      "feature_id": "spec-003",
+      "kind": "ui_panel",
+      "prompt": "breeding panel UI: two slime slot icon boxes side by side joined by a plus sign, slime inventory grid of slots below, arrow pointing right toward a large slime egg result box, hatch condition and hatch time text fields beneath the egg box, pixel art UI panel",
+      "status": "pending",
+      "asset_path": "C:\\Users\\jyp\\Documents\\GitHub\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-003_ui_panel_0418597c.png",
+      "created_at": "2026-08-04T14:09:28.420337+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "ui_panel",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=1597021839 feature=spec-003 prompt_sha256=0418597c2202124f",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-011__ui_panel__dde55b2a": {
+      "asset_id": "slime-rancher-roguelite__spec-011__ui_panel__dde55b2a",
+      "feature_id": "spec-011",
+      "kind": "ui_panel",
+      "prompt": "HUD icon: a small leather satchel bag holding wobbling slimes, one slime peeking over the rim, marked as at-risk cargo. 32x32 top-down pixel art icon, 1px black outline, flat shading, readable at small size, transparent background.",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-011_ui_panel_dde55b2a.png",
+      "created_at": "2026-08-05T00:11:20.599152+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "ui_panel",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=3045738586 feature=spec-011 prompt_sha256=dde55b2aeec11b2d",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-012__ui_panel__845eff6c": {
+      "asset_id": "slime-rancher-roguelite__spec-012__ui_panel__845eff6c",
+      "feature_id": "spec-012",
+      "kind": "ui_panel",
+      "prompt": "Alert indicator floating above an enemy: a bold exclamation mark inside a rounded speech bubble, signalling the slime has spotted the player and is now chasing. 32x32 pixel art, 1px black outline, flat shading, high contrast so it reads over any biome ground, transparent background.",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-012_ui_panel_845eff6c.png",
+      "created_at": "2026-08-05T00:12:01.482101+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "ui_panel",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=762421722 feature=spec-012 prompt_sha256=845eff6ce4f42f96",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-012__ui_panel__14b808b3": {
+      "asset_id": "slime-rancher-roguelite__spec-012__ui_panel__14b808b3",
+      "feature_id": "spec-012",
+      "kind": "ui_panel",
+      "prompt": "Melee swing arc effect: a crescent slash trail sweeping downward, tapering at both ends, bright at the leading edge. 32x32 pixel art, 1px black outline, flat shading, drawn pointing down so it can be rotated to face any direction, transparent background.",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-012_ui_panel_14b808b3.png",
+      "created_at": "2026-08-05T00:12:28.784343+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "ui_panel",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=2753368979 feature=spec-012 prompt_sha256=14b808b339de5fe2",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-004__decor__451e3d8a": {
+      "asset_id": "slime-rancher-roguelite__spec-004__decor__451e3d8a",
+      "feature_id": "spec-004",
+      "kind": "decor",
+      "prompt": "dark purple-black corruption crack decal, glowing violet veins spreading across ground, ominous tainted stain, top-down, transparent background",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\decor\\spec-004_451e3d8a.png",
+      "created_at": "2026-08-04T13:18:02.833571+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "map-objects",
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__spec-004__icon__df2e40b8": {
+      "asset_id": "slime-rancher-roguelite__spec-004__icon__df2e40b8",
+      "feature_id": "spec-004",
+      "kind": "icon",
+      "prompt": "stigma warning icon, cracked purple rune skull mark, glowing ominous status icon, pixel art, transparent background",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-004_icon_df2e40b8.png",
+      "created_at": "2026-08-04T13:18:28.571455+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "icon",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=353980539 feature=spec-004 prompt_sha256=df2e40b80659ac2a",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-009__decor__2ab76e87": {
+      "asset_id": "slime-rancher-roguelite__spec-009__decor__2ab76e87",
+      "feature_id": "spec-009",
+      "kind": "decor",
+      "prompt": "wooden signpost with carved glowing rune arrow, pointing toward a portal, top-down pixel art, transparent background",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\decor\\spec-009_2ab76e87.png",
+      "created_at": "2026-08-04T13:18:55.131809+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "map-objects",
+        "usage": {}
+      }
+    },
+    "slime-rancher-roguelite__spec-002__ui_panel__2db8afdd": {
+      "asset_id": "slime-rancher-roguelite__spec-002__ui_panel__2db8afdd",
+      "feature_id": "spec-002",
+      "kind": "ui_panel",
+      "prompt": "wooden ranch inventory panel background frame, parchment texture center, rope-trimmed wooden border, pixel art UI panel",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-002_ui_panel_2db8afdd.png",
+      "created_at": "2026-08-04T13:45:32.929598+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "ui_panel",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=2030577283 feature=spec-002 prompt_sha256=2db8afdd3cf901c4",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-002__icon__11c9f0f8": {
+      "asset_id": "slime-rancher-roguelite__spec-002__icon__11c9f0f8",
+      "feature_id": "spec-002",
+      "kind": "icon",
+      "prompt": "generic captured slime portrait icon, round gelatinous creature face, simple friendly dot eyes, pixel art icon, transparent background",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-002_icon_11c9f0f8.png",
+      "created_at": "2026-08-04T13:45:55.738762+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "icon",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=4175925250 feature=spec-002 prompt_sha256=11c9f0f8402feba5",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-001__ui_panel__0d13e040": {
+      "asset_id": "slime-rancher-roguelite__spec-001__ui_panel__0d13e040",
+      "feature_id": "spec-001",
+      "kind": "ui_panel",
+      "prompt": "simple white triangular direction arrow icon pointing up, flat vector style, high contrast, for HUD compass indicator",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-001_ui_panel_0d13e040.png",
+      "created_at": "2026-08-05T13:31:30.988049+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "ui_panel",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=272754143 feature=spec-001 prompt_sha256=0d13e040d2e69ec5",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-001__icon__e12c3a47": {
+      "asset_id": "slime-rancher-roguelite__spec-001__icon__e12c3a47",
+      "feature_id": "spec-001",
+      "kind": "icon",
+      "prompt": "wooden signpost with Korean text \"텔레포트\" painted on it, pixel art game world sign, top-down 2D game marker, high contrast readable lettering",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\spec-001_icon_e12c3a47.png",
+      "created_at": "2026-08-05T13:47:19.252300+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "generator": "AssetGenMcpServer/pixellab_client.py",
+        "kind": "icon",
+        "endpoint": "generate-image-pixflux",
+        "derived_from": "seed=1131536881 feature=spec-001 prompt_sha256=e12c3a47656b0358",
+        "usage": {
+          "type": "generations",
+          "generations": 1.0
+        },
+        "commercial_use": "see PixelLab terms of service"
+      }
+    },
+    "slime-rancher-roguelite__spec-001__decor__0cc30ddc": {
+      "asset_id": "slime-rancher-roguelite__spec-001__decor__0cc30ddc",
+      "feature_id": "spec-001",
+      "kind": "decor",
+      "prompt": "glowing teleporter portal pad on ground, top-down 2D pixel art, swirling blue energy circle, sci-fi extraction beacon, no text, no letters",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\slime-rancher-roguelite\\decor\\spec-001_0cc30ddc.png",
+      "created_at": "2026-08-05T13:53:02.293764+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "pixellab",
+        "endpoint": "map-objects",
+        "usage": {}
+      }
+    }
+  }
+}

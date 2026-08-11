@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.venv/
+*.egg-info/
+
+# generate_2d_sprite 등이 쓰는 기본 출력 경로 (ASSET_ROOT)
+asset_output/
+
+# git_create_repository 가 만드는 bare 저장소 + 작업 클론 (GIT_ROOT).
+# stdio 로 띄우면 cwd 가 이 디렉터리라 여기에 생긴다.
+git_output/

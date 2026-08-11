@@ -1,0 +1,69 @@
+{
+  "mcpServers": {
+    "asset": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/Src/DeveloperAI/.venv/Scripts/python.exe",
+      "args": [
+        "-m",
+        "asset.server",
+        "--transport",
+        "stdio"
+      ],
+      "cwd": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers",
+      "env": {
+        "PYTHONPATH": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers"
+      }
+    },
+    "unity": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/Src/DeveloperAI/.venv/Scripts/python.exe",
+      "args": [
+        "-m",
+        "unity.server",
+        "--transport",
+        "stdio"
+      ],
+      "cwd": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers",
+      "env": {
+        "PYTHONPATH": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers"
+      }
+    },
+    "strategic": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/Src/DeveloperAI/.venv/Scripts/python.exe",
+      "args": [
+        "-m",
+        "strategic.server",
+        "--transport",
+        "stdio"
+      ],
+      "cwd": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers",
+      "env": {
+        "PYTHONPATH": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers"
+      }
+    },
+    "qa": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/Src/DeveloperAI/.venv/Scripts/python.exe",
+      "args": [
+        "-m",
+        "qa.server",
+        "--transport",
+        "stdio"
+      ],
+      "cwd": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers",
+      "env": {
+        "PYTHONPATH": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers"
+      }
+    },
+    "git": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/Src/DeveloperAI/.venv/Scripts/python.exe",
+      "args": [
+        "-m",
+        "gitmcp.server",
+        "--transport",
+        "stdio"
+      ],
+      "cwd": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers",
+      "env": {
+        "PYTHONPATH": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers"
+      }
+    }
+  }
+}

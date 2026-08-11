@@ -1,0 +1,30 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/Src/DeveloperAI/.venv/Scripts/python.exe",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/Src/DeveloperAI",
+    "${workspaceFolder}/Src/McpServers"
+  ],
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": ["Src/DeveloperAI/tests"],
+  "editor.formatOnSave": true,
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.rulers": [100]
+  },
+  "black-formatter.args": ["--line-length", "100"],
+  "[typescript]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+  "[typescriptreact]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+  "eslint.workingDirectories": ["Src/Web"],
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/*.egg-info": true
+  },
+  "search.exclude": {
+    "**/.venv": true,
+    "**/node_modules": true,
+    "**/Library": true,
+    "**/git_output": true
+  }
+}

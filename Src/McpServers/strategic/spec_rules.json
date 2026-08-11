@@ -1,0 +1,129 @@
+{
+  "_readme": [
+    "spec 검사 규칙의 단일 원본.",
+    "",
+    "2026-08-02: 연구 저장소(Game-Design-and-Planning_resarch)는 2026-07-31 에",
+    "구현 파이프라인을 제거하면서 scripts/spec_rules.json 과 lint_spec.py 를 함께",
+    "지웠다. 따라서 이제 쌍둥이 사본은 없고 이 파일이 유일본이다. 연구 저장소에",
+    "spec 검사를 다시 들일 때만 사본 동기화 규칙을 되살린다.",
+    "",
+    "cardIdPattern 은 앵커 없는 알맹이다 — 쓰는 쪽이 필요에 따라 \\b 나 ^$ 를",
+    "붙인다. 층 B(UNITY-### 등) 카드를 추가하려면 여기 한 줄만 고치면 된다.",
+    "",
+    "measurableGuards / contaminationGuards 는 2026-08-02 warrior-loot 사고에서",
+    "나왔다. 상세는 specs.py 의 S5b·S7 주석 참고.",
+    "",
+    "2026-08-02: 청사진 출력 언어를 영어로 바꾸기로 하면서(개발 AI 에게 넘어가는",
+    "산출물 전체 — game-planning SKILL.md, strategic/planner.py::SYSTEM_PROMPT)",
+    "bannedWords/observableWords/measurableGuards 에 영어 항목을 더했다. ARCH",
+    "카드 원문은 별도 DB 코퍼스라 이번에 번역하지 않았고 한국어 그대로 남는다 —",
+    "그래서 requiredSections(카드 lint 쪽 항목)와 contaminationGuards 의 키워드는",
+    "그대로 뒀다. 영어 항목은 specs.py::_word_present() 가 단어 경계로 매칭한다",
+    "(substring 이면 'fun'이 'function'에, 'cool'이 'cooldown'에 걸린다) — 한글",
+    "어간 항목(예: '자연스러')은 활용어미가 바로 붙으므로 여전히 substring 이다."
+  ],
+  "version": 4,
+  "cardIdPattern": "(?:ELEM|GENRE|GAME|ARCH)-\\d{3}",
+  "requiredKeys": [
+    "spec_id",
+    "version",
+    "blueprint_version",
+    "refs"
+  ],
+  "requiredSections": [
+    "목표",
+    "구현 범위",
+    "제외 범위",
+    "합격 기준"
+  ],
+  "bannedWords": [
+    "재미",
+    "좋은",
+    "좋아",
+    "멋진",
+    "자연스러",
+    "적절",
+    "재치",
+    "fun",
+    "nice",
+    "nicely",
+    "good",
+    "cool",
+    "great",
+    "awesome",
+    "natural",
+    "naturally",
+    "appropriate",
+    "appropriately",
+    "proper",
+    "properly",
+    "clever",
+    "witty"
+  ],
+  "observableWords": [
+    "로그",
+    "콘솔",
+    "테스트",
+    "씬",
+    "파일",
+    "커밋",
+    "초",
+    "개",
+    "프레임",
+    "%",
+    "log",
+    "console",
+    "test",
+    "scene",
+    "file",
+    "commit",
+    "sec",
+    "second",
+    "seconds",
+    "frame"
+  ],
+  "_measurableGuardsNote": [
+    "trigger 는 정규식이다. '초' 를 그냥 부분 문자열로 두면 '초과 획득' 같은",
+    "말에 걸린다 — 실제로 첫 구현에서 오탐이 났다. 숫자를 동반한 시간·비율만",
+    "잡도록 수량 형태로 못 박는다."
+  ],
+  "measurableGuards": [
+    {
+      "trigger": [
+        "\\d+(?:\\.\\d+)?\\s*초",
+        "\\d+(?:\\.\\d+)?\\s*%",
+        "확률",
+        "\\d+\\s*ms",
+        "밀리초",
+        "\\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds)\\b",
+        "\\bprobability\\b",
+        "\\bchance\\b",
+        "\\bmillisecond(?:s)?\\b"
+      ],
+      "require": ["테스트", "test"],
+      "reason": "시간·확률은 QA 의 4가지 수단(콘솔/자동테스트/씬검사/로그) 중 자동 테스트로만 잴 수 있다. 테스트 이름을 함께 적지 않으면 QA 는 BLOCKED 로 넘긴다."
+    },
+    {
+      "trigger": ["콘솔에?\\s*(?:.{0,4})?로그", "\\bconsole\\b.{0,20}\\blog\\b"],
+      "require": ["에러", "경고", "예외", "error", "warning", "exception"],
+      "reason": "QA 가 콘솔에서 읽는 것은 에러·경고뿐이다. 일반 정보 로그는 판정 근거가 못 되므로 Logs/ 파일 로그로 옮긴다 (ARCH-010)."
+    }
+  ],
+  "contaminationGuards": [
+    {
+      "keywords": ["청크", "Chunk"],
+      "requiresRef": ["ARCH-002", "ARCH-003"],
+      "reason": "청크 스트리밍을 쓰지 않는 게임에 씬 분할 조항이 딸려 들어왔다."
+    },
+    {
+      "keywords": ["commentator", "해설자"],
+      "requiresRef": ["ARCH-007"],
+      "reason": "해설자 시스템이 없는 게임에 해설 로그 검사가 딸려 들어왔다."
+    },
+    {
+      "keywords": ["NPC", "대화"],
+      "requiresRef": ["ARCH-005", "ARCH-006"],
+      "reason": "대화 NPC 가 없는 게임에 상태머신·상호작용 조항이 딸려 들어왔다."
+    }
+  ]
+}

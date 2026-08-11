@@ -1,0 +1,21 @@
+{
+  "game_id": "slime-rancher-roguelite",
+  "art_style": "top-down 32x32 pixel art, 1px black outlines, flat-shaded per-biome palette, corruption tiers as a magenta-black palette shift",
+  "seed": 13444605377975346389,
+  "palette": {
+    "background": "#c4efb9",
+    "terrain_base": "#8a45d3",
+    "terrain_accent": "#af2ab2",
+    "prop_primary": "#2f32ca",
+    "prop_secondary": "#886edd",
+    "character_primary": "#8fd345",
+    "character_secondary": "#a2e58f",
+    "outline": "#2e2339",
+    "ui_surface": "#e4f4d2",
+    "ui_text": "#2e2536",
+    "accent": "#b2ed73"
+  },
+  "pixel_grid": 32,
+  "outline": true,
+  "camera_view": "high top-down"
+}

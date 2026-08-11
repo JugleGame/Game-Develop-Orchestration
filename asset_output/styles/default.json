@@ -1,0 +1,21 @@
+{
+  "game_id": "default",
+  "art_style": "pixel art",
+  "seed": 1405615973467191904,
+  "palette": {
+    "background": "#ccb9ef",
+    "terrain_base": "#cad345",
+    "terrain_accent": "#65b22a",
+    "prop_primary": "#ca882f",
+    "prop_secondary": "#ddc96e",
+    "character_primary": "#4f45d3",
+    "character_secondary": "#af8fe5",
+    "outline": "#383923",
+    "ui_surface": "#d4d2f4",
+    "ui_text": "#353625",
+    "accent": "#7b73ed"
+  },
+  "pixel_grid": 32,
+  "outline": true,
+  "camera_view": "side"
+}

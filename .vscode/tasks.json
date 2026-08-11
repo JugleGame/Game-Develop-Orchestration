@@ -1,0 +1,57 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "pytest: DeveloperAI",
+      "type": "shell",
+      "command": "${workspaceFolder}/Src/DeveloperAI/.venv/Scripts/python.exe",
+      "args": ["-m", "pytest"],
+      "options": { "cwd": "${workspaceFolder}/Src/DeveloperAI" },
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "pytest: McpServers",
+      "type": "shell",
+      "command": "${workspaceFolder}/Src/DeveloperAI/.venv/Scripts/python.exe",
+      "args": ["-m", "pytest"],
+      "options": {
+        "cwd": "${workspaceFolder}/Src/McpServers",
+        "env": { "PYTHONPATH": "." }
+      },
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "MCP: verify_contract",
+      "type": "shell",
+      "command": "${workspaceFolder}/Src/DeveloperAI/.venv/Scripts/python.exe",
+      "args": ["verify_contract.py"],
+      "options": {
+        "cwd": "${workspaceFolder}/Src/McpServers",
+        "env": { "PYTHONPATH": "." }
+      },
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Web: dev",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "dev"],
+      "options": { "cwd": "${workspaceFolder}/Src/Web" },
+      "group": "build",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Web: build",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "build"],
+      "options": { "cwd": "${workspaceFolder}/Src/Web" },
+      "group": "build",
+      "problemMatcher": []
+    }
+  ]
+}

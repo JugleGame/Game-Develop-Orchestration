@@ -1,0 +1,65 @@
+# 저장소 전역. 하위 프로젝트는 각자의 .gitignore 를 더한다.
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+
+# 자격증명 — 커밋 금지
+.env
+.env.*
+!.env.example
+
+# Claude Code 개인 설정. 공유 설정은 .claude/settings.json 에 둔다.
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# API Key & Secret files
+*.pem
+*.key
+*.pfx
+
+# Dependency directories
+node_modules/
+jspm_packages/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor directories and files
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

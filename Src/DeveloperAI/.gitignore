@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.env
+*.egg-info/
+
+# Local dev-server scratch state (scripts/dev_server.py)
+.devserver/

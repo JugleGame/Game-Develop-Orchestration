@@ -1,0 +1,146 @@
+{
+  "game_id": "warrior-loot",
+  "assets": {
+    "warrior-loot__spec-001__character": {
+      "asset_id": "warrior-loot__spec-001__character",
+      "feature_id": "spec-001",
+      "kind": "character",
+      "prompt": "검을 든 전사 캐릭터, 픽셀아트",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\warrior-loot\\spec-001_character.png",
+      "created_at": "2026-08-01T14:57:04.769049+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "lora",
+        "generator": "AssetGenMcpServer/lora_inference.py",
+        "kind": "character",
+        "model_id": "character-sd15-20260801-001",
+        "base_model": "sd1.5",
+        "derived_from": "seed=1414635382 feature=spec-001 prompt_sha256=0fa7243c76432d89",
+        "commercial_use": "see LoRA project provenance log for model_id=character-sd15-20260801-001"
+      }
+    },
+    "warrior-loot__spec-002__prop": {
+      "asset_id": "warrior-loot__spec-002__prop",
+      "feature_id": "spec-002",
+      "kind": "prop",
+      "prompt": "몬스터, 픽셀아트",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\warrior-loot\\spec-002_prop.png",
+      "created_at": "2026-08-01T14:57:10.932263+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "procedural",
+        "generator": "AssetGenMcpServer/render.py",
+        "kind": "prop",
+        "material": "foliage",
+        "training_data": "none",
+        "reference_images": "none",
+        "derived_from": "seed=12647263447446452828 feature=spec-002 prompt_sha256=f45c8e7eacd84f23",
+        "commercial_use": "unrestricted (no third-party material)"
+      }
+    },
+    "warrior-loot__spec-003__icon": {
+      "asset_id": "warrior-loot__spec-003__icon",
+      "feature_id": "spec-003",
+      "kind": "icon",
+      "prompt": "방어구 아이콘, 갑옷",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\warrior-loot\\spec-003_icon.png",
+      "created_at": "2026-08-01T14:57:48.665147+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "lora",
+        "generator": "AssetGenMcpServer/lora_inference.py",
+        "kind": "icon",
+        "model_id": "icon-sd15-20260731-002",
+        "base_model": "sd1.5",
+        "derived_from": "seed=25662078 feature=spec-003 prompt_sha256=da07860724cb093f",
+        "commercial_use": "see LoRA project provenance log for model_id=icon-sd15-20260731-002"
+      }
+    },
+    "warrior-loot__spec-003-weapon__icon": {
+      "asset_id": "warrior-loot__spec-003-weapon__icon",
+      "feature_id": "spec-003-weapon",
+      "kind": "icon",
+      "prompt": "무기 아이콘, 검",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\warrior-loot\\spec-003-weapon_icon.png",
+      "created_at": "2026-08-01T14:58:51.971797+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "lora",
+        "generator": "AssetGenMcpServer/lora_inference.py",
+        "kind": "icon",
+        "model_id": "icon-sd15-20260731-002",
+        "base_model": "sd1.5",
+        "derived_from": "seed=2298649824 feature=spec-003-weapon prompt_sha256=c62d622bfd14ebb5",
+        "commercial_use": "see LoRA project provenance log for model_id=icon-sd15-20260731-002"
+      }
+    },
+    "warrior-loot__spec-003-armor__icon": {
+      "asset_id": "warrior-loot__spec-003-armor__icon",
+      "feature_id": "spec-003-armor",
+      "kind": "icon",
+      "prompt": "방어구 아이콘, 갑옷",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\warrior-loot\\spec-003-armor_icon.png",
+      "created_at": "2026-08-01T14:59:17.098447+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "lora",
+        "generator": "AssetGenMcpServer/lora_inference.py",
+        "kind": "icon",
+        "model_id": "icon-sd15-20260731-002",
+        "base_model": "sd1.5",
+        "derived_from": "seed=618846327 feature=spec-003-armor prompt_sha256=da07860724cb093f",
+        "commercial_use": "see LoRA project provenance log for model_id=icon-sd15-20260731-002"
+      }
+    },
+    "warrior-loot__spec-004-panel__ui_panel": {
+      "asset_id": "warrior-loot__spec-004-panel__ui_panel",
+      "feature_id": "spec-004-panel",
+      "kind": "ui_panel",
+      "prompt": "인벤토리 패널 UI",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\warrior-loot\\spec-004-panel_ui_panel.png",
+      "created_at": "2026-08-01T14:59:27.888933+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "lora",
+        "generator": "AssetGenMcpServer/lora_inference.py",
+        "kind": "ui_panel",
+        "model_id": "ui_panel-sd15-20260801-001",
+        "base_model": "sd1.5",
+        "derived_from": "seed=2136519479 feature=spec-004-panel prompt_sha256=e9382fad13eb8546",
+        "commercial_use": "see LoRA project provenance log for model_id=ui_panel-sd15-20260801-001"
+      }
+    },
+    "warrior-loot__spec-004-slot__icon": {
+      "asset_id": "warrior-loot__spec-004-slot__icon",
+      "feature_id": "spec-004-slot",
+      "kind": "icon",
+      "prompt": "슬롯 아이콘",
+      "status": "pending",
+      "asset_path": "C:\\dev\\Game-Developer-AI\\asset_output\\assets\\warrior-loot\\spec-004-slot_icon.png",
+      "created_at": "2026-08-01T14:59:39.717036+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "provenance": {
+        "method": "lora",
+        "generator": "AssetGenMcpServer/lora_inference.py",
+        "kind": "icon",
+        "model_id": "icon-sd15-20260731-002",
+        "base_model": "sd1.5",
+        "derived_from": "seed=1523157607 feature=spec-004-slot prompt_sha256=c685efb5c9b04e31",
+        "commercial_use": "see LoRA project provenance log for model_id=icon-sd15-20260731-002"
+      }
+    }
+  }
+}
