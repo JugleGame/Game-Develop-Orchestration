@@ -1,6 +1,6 @@
 # Game Develop Orchestration
 
-An Agent-first workflow where Codex or Claude Code coordinates 2D Unity game development.
+An Agent-first workflow where Codex or Claude Code coordinates Unity game development across 2D and 3D projects.
 The host agent reasons and decides; MCP servers only validate data or access external systems.
 
 ## Rules

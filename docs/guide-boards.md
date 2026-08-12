@@ -64,10 +64,10 @@ review approves the complete dependency graph.
 ```json
 {
   "title": "Example game",
-  "genre": "2D platformer",
+  "genre": "platformer",
   "coreMechanics": ["run", "jump", "collect"],
-  "artStyle": "pixel art side-view",
-  "structureOverview": "One playable scene with independently testable movement and collection features.",
+  "artStyle": "project-defined visual style",
+  "structureOverview": "One playable scene with independently testable movement and collection features. Declare whether the game is 2D or 3D in the feature specs.",
   "specs": []
 }
 ```
