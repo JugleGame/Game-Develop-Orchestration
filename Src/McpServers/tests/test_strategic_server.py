@@ -13,8 +13,8 @@ import pytest
 os.environ.setdefault("RESEARCH_DSN", "postgresql://unused/unused")
 
 from strategic.research_repo import COUNTEREXAMPLE_MISSING, Card, ResearchEvidence  # noqa: E402
-from strategic.server import _next_spec_id, _to_feature_prompt, _to_spec  # noqa: E402
-from strategic.specs import SpecDocument, lint_spec  # noqa: E402
+from strategic.server import _next_spec_id, _publication_state, _to_feature_prompt, _to_spec  # noqa: E402
+from strategic.specs import SpecDocument, dependency_errors, dependency_order, lint_spec  # noqa: E402
 
 KNOWN = {"ELEM-003", "GAME-013", "GENRE-006"}
 
@@ -205,6 +205,32 @@ def test_feature_prompt_priority_reflects_dependency_order():
 
     assert _to_feature_prompt(_spec(dependencies=[]))["priority"] == "P0"
     assert _to_feature_prompt(_spec(dependencies=["g1__spec-001"]))["priority"] == "P1"
+
+
+def test_game_designs_are_drafts_until_the_planner_explicitly_publishes_them():
+    assert _publication_state({}) == "draft"
+    assert _publication_state({"status": "published"}) == "published"
+
+
+def test_dependency_graph_rejects_missing_self_and_cyclic_dependencies():
+    first = _spec(spec_id="g1__spec-001", dependencies=["g1__spec-002"])
+    second = _spec(spec_id="g1__spec-002", dependencies=["g1__spec-001"])
+    broken = _spec(spec_id="g1__spec-003", dependencies=["g1__spec-003", "g1__spec-999"])
+
+    errors = dependency_errors([first, second, broken])
+
+    assert any("cycle detected" in error for error in errors)
+    assert any("cannot depend on itself" in error for error in errors)
+    assert any("missing specification" in error for error in errors)
+
+
+def test_dependency_order_places_prerequisites_before_their_dependents():
+    first = _spec(spec_id="g1__spec-001")
+    second = _spec(spec_id="g1__spec-002", dependencies=["g1__spec-001"])
+
+    ordered = dependency_order([second, first])
+
+    assert [spec.spec_id for spec in ordered] == ["g1__spec-001", "g1__spec-002"]
 
 
 # ---------------------------------------------------------------------------

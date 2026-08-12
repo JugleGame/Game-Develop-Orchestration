@@ -773,6 +773,40 @@ internal class CommandScript : IRunCommand
 }
 """
 
+_BUILD_TARGET_DEFAULT_OUTPUTS = {
+    "WebGL": "Builds/{gameId}",
+    "StandaloneWindows64": "Builds/{gameId}/game.exe",
+}
+_BUILD_OUTPUT_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./-]*")
+
+
+def _build_configuration(game_id: str) -> tuple[str, str]:
+    """Return a C#-safe Unity build target and project-relative output path."""
+
+    target = os.getenv("UNITY_BUILD_TARGET", "WebGL").strip() or "WebGL"
+    if target not in _BUILD_TARGET_DEFAULT_OUTPUTS:
+        allowed = ", ".join(_BUILD_TARGET_DEFAULT_OUTPUTS)
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"UNITY_BUILD_TARGET must be one of: {allowed}.",
+        )
+
+    configured = os.getenv("UNITY_BUILD_OUTPUT", "").strip()
+    output = configured or _BUILD_TARGET_DEFAULT_OUTPUTS[target].format(gameId=game_id)
+    normalized = output.replace("\\", "/")
+    parts = Path(normalized).parts
+    if (
+        not _BUILD_OUTPUT_PATTERN.fullmatch(normalized)
+        or Path(normalized).is_absolute()
+        or ".." in parts
+        or not normalized.startswith("Builds/")
+    ):
+        raise tool_error(
+            VALIDATION_ERROR,
+            "UNITY_BUILD_OUTPUT must be a safe project-relative path under Builds/.",
+        )
+    return target, normalized
+
 
 @mcp.tool(description="Build the Unity project through BuildPipeline.")
 @expects_dict_return
@@ -785,8 +819,7 @@ async def build_project(gameId: str) -> dict[str, Any]:
 
     gameId = _require(gameId, "gameId")
 
-    target = os.getenv("UNITY_BUILD_TARGET", "StandaloneWindows64")
-    output = os.getenv("UNITY_BUILD_OUTPUT", f"Builds/{gameId}/game.exe").replace("\\", "/")
+    target, output = _build_configuration(gameId)
     code = _BUILD_CSHARP.replace("__TARGET__", target).replace("__OUTPUT__", output)
 
     payload = await _call_unity(

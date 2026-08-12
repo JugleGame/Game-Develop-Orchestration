@@ -19,13 +19,23 @@ Server: `ResearchMcpServer`.
 | `propose_concept` | Store an evidence-backed proposal for review |
 | `list_pending_concepts`, `get_concept` | Read concept review state |
 | `decide_concept` | Record approve, revise, or reject |
-| `publish_game_design` | Validate and store a host-authored blueprint and specs |
-| `list_specs`, `get_spec` | Read specs and implementation prompts |
+| `publish_game_design` | Validate and store a host-authored blueprint and specs; default to an editable draft |
+| `list_specs`, `get_spec` | Read specs; only published specs include implementation prompts |
 | `revise_spec`, `add_spec` | Lint and store host-authored specs |
+| `export_execution_handoff` | Export published, dependency-valid planning files for an execution AI |
 | `research_status` | Report DB and search mode |
 
 Research does not author titles, goals, scope, or acceptance criteria. The host must provide
 complete documents to `publish_game_design`, `revise_spec`, and `add_spec`.
+
+`publish_game_design` accepts `blueprint.status` of `draft` (the default) or
+`published`. Drafts never return execution prompts. `export_execution_handoff`
+accepts only a fully published graph and writes versioned, SHA-256-described
+files beneath `HANDOFF_ROOT` (default `./var/handoffs`).
+
+The stored blueprint contains game-level fields and `specIds`, while each full
+task exists only in its feature spec. The generated package includes an external
+`execution-manifest.sha256`; execution must verify it before reading the manifest.
 
 ## Unity MCP
 

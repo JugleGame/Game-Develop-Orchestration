@@ -19,7 +19,8 @@ from .arch_cards import ArchGuidance, arch_ids
 from .concepts import ConceptProposal, ConceptStore, adjust_evidence
 from .neon_http import connect_pool
 from .research_repo import COUNTEREXAMPLE_MISSING, ResearchRepository, SentenceTransformerEmbedder
-from .specs import SpecDocument, SpecStore, lint_spec
+from .handoff import HandoffError, export_handoff
+from .specs import SpecDocument, SpecStore, declared_spec_ids, dependency_errors, lint_spec
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,42 @@ def _require(value: str, field: str) -> str:
     return value.strip()
 
 
+def _publication_state(blueprint: dict[str, Any]) -> str:
+    """Return the explicit planning state; designs are editable drafts by default."""
+
+    state = str(blueprint.get("status", "draft")).strip().lower()
+    if state not in ("draft", "published"):
+        raise tool_error(VALIDATION_ERROR, "blueprint.status must be draft or published")
+    return state
+
+
+def _blueprint_document(blueprint: dict[str, Any], specs: list[SpecDocument]) -> dict[str, Any]:
+    """Store game-level data plus a spec ID list, never duplicate spec bodies."""
+
+    document = dict(blueprint)
+    document.pop("specs", None)
+    document["specIds"] = declared_spec_ids(specs)
+    return document
+
+
+def _blueprint_spec_ids(game_id: str, blueprint: dict[str, Any]) -> set[str]:
+    """Read new ID-only blueprints and legacy blueprints during migration."""
+
+    ids = blueprint.get("specIds")
+    if isinstance(ids, list) and all(isinstance(spec_id, str) for spec_id in ids):
+        return set(ids)
+    return {
+        f"{game_id}__{raw.get('specId', '')}"
+        for raw in blueprint.get("specs") or []
+        if isinstance(raw, dict)
+    }
+
+
+def _dependencies_for(game_id: str, dependencies: list[str]) -> list[str]:
+    prefix = f"{game_id}__"
+    return [item if item.startswith(prefix) else f"{prefix}{item}" for item in dependencies]
+
+
 @mcp.tool(
     description="Validate and store a host-authored blueprint and specs; return implementation inputs."
 )
@@ -114,17 +151,9 @@ async def publish_game_design(
     if not isinstance(blueprint["specs"], list) or not blueprint["specs"]:
         raise tool_error(VALIDATION_ERROR, "blueprint.specs는 비어 있지 않은 배열이어야 합니다")
 
+    publication_state = _publication_state(blueprint)
     context = _ctx(ctx)
     known_ids = set(await context.research.card_index())
-    blueprint_version = await context.store.save_blueprint(
-        game_id=game_id,
-        seed_prompt=str(blueprint.get("seedPrompt") or ""),
-        title=str(blueprint["title"]),
-        genre=str(blueprint["genre"]),
-        document=blueprint,
-        evidence=dict(blueprint.get("evidence") or {}),
-    )
-
     try:
         guidance = await context.research.arch_guidance(
             [ref for raw in blueprint["specs"] for ref in raw.get("refs", [])]
@@ -134,14 +163,13 @@ async def publish_game_design(
             MCP_ERROR,
             f"아키텍처 카드 조회 실패: {type(exc).__name__}: {exc}",
             gameId=game_id,
-            blueprintVersion=blueprint_version,
         ) from exc
 
     published: list[SpecDocument] = []
     rejected: list[dict[str, Any]] = []
     for raw in blueprint["specs"]:
         try:
-            spec = _to_spec(raw, game_id, blueprint_version, guidance)
+            spec = _to_spec(raw, game_id, 1, guidance)
         except KeyError as exc:
             rejected.append({"specId": raw.get("specId", ""), "errors": [f"필수 필드 누락: {exc}"]})
             continue
@@ -149,17 +177,56 @@ async def publish_game_design(
         if errors:
             rejected.append({"specId": spec.spec_id, "title": spec.title, "errors": errors})
             continue
-        spec.status = "published"
-        await context.store.save_spec(spec)
+        spec.status = publication_state
         published.append(spec)
 
-    if not published:
+    if not published or rejected:
         raise tool_error(
             VALIDATION_ERROR,
             "lint를 통과한 spec이 하나도 없습니다.",
             gameId=game_id,
             rejected=rejected,
         )
+
+    graph_errors = dependency_errors(published)
+    if graph_errors:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "specification dependency graph cannot be executed",
+            gameId=game_id,
+            dependencyErrors=graph_errors,
+        )
+
+    existing_specs = {
+        str(summary["specId"]): await context.store.get_spec(str(summary["specId"]))
+        for summary in await context.store.list_specs(game_id)
+    }
+    for spec in published:
+        previous = existing_specs.get(spec.spec_id)
+        if previous is not None:
+            spec.version = previous.version + 1
+            spec.change_log = [
+                *previous.change_log,
+                {"version": spec.version, "source": "planner", "change": "design revision"},
+            ]
+
+    # Neon HTTP does not support transactions. Validate all feature documents
+    # first, then write specs before the visible blueprint. A failed write can
+    # therefore leave only unreferenced rows, never a blueprint with missing specs.
+    for spec in published:
+        await context.store.save_spec(spec)
+    blueprint_document = _blueprint_document(blueprint, published)
+    blueprint_version = await context.store.save_blueprint(
+        game_id=game_id,
+        seed_prompt=str(blueprint.get("seedPrompt") or ""),
+        title=str(blueprint["title"]),
+        genre=str(blueprint["genre"]),
+        document=blueprint_document,
+        evidence=dict(blueprint.get("evidence") or {}),
+    )
+    for spec in published:
+        spec.blueprint_version = blueprint_version
+        await context.store.save_spec(spec)
 
     design = {
         "game_id": game_id,
@@ -171,9 +238,14 @@ async def publish_game_design(
         "created_at": _utcnow(),
     }
 
+    ready_for_execution = publication_state == "published" and not rejected
     return {
         "gameDesign": design,
-        "featurePrompts": [_to_feature_prompt(spec) for spec in published],
+        "designState": publication_state,
+        "readyForExecution": ready_for_execution,
+        "featurePrompts": [_to_feature_prompt(spec) for spec in published]
+        if ready_for_execution
+        else [],
         "blueprintVersion": blueprint_version,
         "rejectedSpecs": rejected,
     }
@@ -202,8 +274,12 @@ def _to_spec(
         implementation_scope=raw["implementationScope"],
         out_of_scope=raw["outOfScope"],
         acceptance_criteria=raw["acceptanceCriteria"],
+        context=str(raw.get("context") or ""),
+        relevant_systems=list(raw.get("relevantSystems") or []),
+        constraints=list(raw.get("constraints") or []),
+        verification_method=list(raw.get("verificationMethod") or []),
         unity_hints=raw.get("unityHints", {}),
-        dependencies=[f"{game_id}__{d}" for d in raw.get("dependencies", [])],
+        dependencies=_dependencies_for(game_id, list(raw.get("dependencies") or [])),
         architecture=_architecture_for(raw["refs"], guidance),
     )
 
@@ -231,10 +307,19 @@ def _to_feature_prompt(spec: SpecDocument) -> dict[str, Any]:
     hints = spec.unity_hints or {}
     lines = [
         f"## Goal\n{spec.goal}",
+        (f"\n## Context\n{spec.context}" if spec.context else ""),
         "\n## Implementation scope\n" + "\n".join(f"- {x}" for x in spec.implementation_scope),
         "\n## Out of scope\n" + "\n".join(f"- {x}" for x in spec.out_of_scope),
         "\n## Acceptance criteria\n" + "\n".join(f"- {x}" for x in spec.acceptance_criteria),
     ]
+    if spec.relevant_systems:
+        lines.append("\n## Relevant systems\n" + "\n".join(f"- {x}" for x in spec.relevant_systems))
+    if spec.constraints:
+        lines.append("\n## Constraints\n" + "\n".join(f"- {x}" for x in spec.constraints))
+    if spec.verification_method:
+        lines.append(
+            "\n## Verification method\n" + "\n".join(f"- {x}" for x in spec.verification_method)
+        )
     if hints:
         lines.append(
             "\n## Unity hints"
@@ -258,11 +343,25 @@ def _to_feature_prompt(spec: SpecDocument) -> dict[str, Any]:
         "description": "\n".join(lines),
         "priority": "P0" if not spec.dependencies else "P1",
         "dependencies": spec.dependencies,
+        "objective": spec.goal,
+        "context": spec.context,
+        "relevantSystems": spec.relevant_systems,
+        "implementationRequirements": spec.implementation_scope,
+        "constraints": spec.constraints,
+        "acceptanceCriteria": spec.acceptance_criteria,
+        "verificationMethod": spec.verification_method,
         # 위 "필요 에셋" 줄과 같은 값을 구조체로도 낸다. 문장으로만 주면 AssetGen 이
         # 긴 description 전체를 프롬프트로 삼게 되고, 어떤 자산을 만들지가
         # 키워드 등장 순서로 정해지므로 구조화된 값도 함께 보낸다.
         "assets_needed": list(hints.get("assetsNeeded") or []),
     }
+
+
+def _attach_execution_prompt(payload: dict[str, Any], spec: SpecDocument) -> None:
+    """Expose implementation input only for an explicitly approved specification."""
+
+    payload["readyForExecution"] = spec.status == "published"
+    payload["featurePrompt"] = _to_feature_prompt(spec) if spec.status == "published" else None
 
 
 # ---------------------------------------------------------------------------
@@ -496,7 +595,7 @@ async def get_spec(ctx: Context, specId: str) -> dict[str, Any]:
         raise tool_error(VALIDATION_ERROR, f"존재하지 않는 specId: {spec_id}")
 
     payload = spec.to_dict()
-    payload["featurePrompt"] = _to_feature_prompt(spec)
+    _attach_execution_prompt(payload, spec)
     payload["feedbackHistory"] = await context.store.feedback_history(spec_id)
     return payload
 
@@ -527,6 +626,9 @@ async def revise_spec(
 
     known_ids = set(await context.research.card_index())
     revised_raw = dict(spec)
+    blueprint = await context.store.get_blueprint(current.game_id)
+    if blueprint is None:
+        raise tool_error(VALIDATION_ERROR, f"missing blueprint for spec: {spec_id}")
 
     refs = list(revised_raw.get("refs") or current.refs)
     try:
@@ -551,9 +653,20 @@ async def revise_spec(
         acceptance_criteria=list(
             revised_raw.get("acceptanceCriteria") or current.acceptance_criteria
         ),
-        unity_hints=revised_raw.get("unityHints", {}),
-        dependencies=current.dependencies,
-        status="published",
+        context=str(revised_raw.get("context") or current.context),
+        relevant_systems=list(revised_raw.get("relevantSystems") or current.relevant_systems),
+        constraints=list(revised_raw.get("constraints") or current.constraints),
+        verification_method=list(
+            revised_raw.get("verificationMethod") or current.verification_method
+        ),
+        unity_hints=revised_raw.get("unityHints", current.unity_hints),
+        dependencies=_dependencies_for(
+            current.game_id,
+            list(revised_raw["dependencies"])
+            if "dependencies" in revised_raw
+            else current.dependencies,
+        ),
+        status=current.status,
         architecture=_architecture_for(refs, guidance),
         change_log=[
             *current.change_log,
@@ -577,6 +690,34 @@ async def revise_spec(
             lintErrors=errors,
         )
 
+    all_specs: list[SpecDocument] = []
+    declared_ids = _blueprint_spec_ids(current.game_id, dict(blueprint.get("document") or {}))
+    for summary in await context.store.list_specs(current.game_id):
+        if str(summary["specId"]) not in declared_ids:
+            continue
+        candidate = await context.store.get_spec(str(summary["specId"]))
+        if candidate is not None:
+            all_specs.append(revised if candidate.spec_id == revised.spec_id else candidate)
+    graph_errors = dependency_errors(all_specs)
+    if graph_errors:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "specification dependency graph cannot be updated",
+            specId=spec_id,
+            dependencyErrors=graph_errors,
+        )
+
+    await context.store.save_spec(revised)
+    blueprint_document = _blueprint_document(dict(blueprint.get("document") or {}), all_specs)
+    blueprint_version = await context.store.save_blueprint(
+        game_id=current.game_id,
+        seed_prompt=str(blueprint.get("seedPrompt") or ""),
+        title=str(blueprint_document.get("title") or blueprint["title"]),
+        genre=str(blueprint_document.get("genre") or blueprint["genre"]),
+        document=blueprint_document,
+        evidence=dict(blueprint.get("evidence") or {}),
+    )
+    revised.blueprint_version = blueprint_version
     await context.store.save_spec(revised)
     feedback_id = await context.store.record_feedback(
         spec_id,
@@ -589,7 +730,7 @@ async def revise_spec(
     )
 
     payload = revised.to_dict()
-    payload["featurePrompt"] = _to_feature_prompt(revised)
+    _attach_execution_prompt(payload, revised)
     payload["feedbackId"] = feedback_id
     payload["previousVersion"] = current.version
     return payload
@@ -644,7 +785,7 @@ async def add_spec(ctx: Context, gameId: str, spec: dict[str, Any]) -> dict[str,
         ) from exc
 
     try:
-        new_spec = _to_spec(raw, game_id, blueprint["version"], guidance)
+        new_spec = _to_spec(raw, game_id, int(blueprint["version"]) + 1, guidance)
     except KeyError as exc:
         # 호스트가 직접 채운 spec은 필드 누락이 생길 수 있다.
         raise tool_error(
@@ -660,12 +801,113 @@ async def add_spec(ctx: Context, gameId: str, spec: dict[str, Any]) -> dict[str,
             lintErrors=errors,
         )
 
-    new_spec.status = "published"
+    blueprint_document = dict(blueprint.get("document") or {})
+    new_spec.status = _publication_state(blueprint_document)
+    existing_documents: list[SpecDocument] = []
+    declared_ids = _blueprint_spec_ids(game_id, blueprint_document)
+    for summary in existing:
+        if str(summary["specId"]) not in declared_ids:
+            continue
+        existing_spec = await context.store.get_spec(str(summary["specId"]))
+        if existing_spec is not None:
+            existing_documents.append(existing_spec)
+    graph_errors = dependency_errors([*existing_documents, new_spec])
+    if graph_errors:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "specification dependency graph cannot be updated",
+            gameId=game_id,
+            dependencyErrors=graph_errors,
+        )
+
+    blueprint_document = _blueprint_document(blueprint_document, [*existing_documents, new_spec])
+    blueprint_version = await context.store.save_blueprint(
+        game_id=game_id,
+        seed_prompt=str(blueprint.get("seedPrompt") or ""),
+        title=str(blueprint_document.get("title") or blueprint["title"]),
+        genre=str(blueprint_document.get("genre") or blueprint["genre"]),
+        document=blueprint_document,
+        evidence=dict(blueprint.get("evidence") or {}),
+    )
+    new_spec.blueprint_version = blueprint_version
     await context.store.save_spec(new_spec)
 
     payload = new_spec.to_dict()
-    payload["featurePrompt"] = _to_feature_prompt(new_spec)
+    _attach_execution_prompt(payload, new_spec)
     return payload
+
+
+@mcp.tool(
+    description=(
+        "Export a published, dependency-valid game design as immutable files for an execution AI."
+    )
+)
+@expects_dict_return
+async def export_execution_handoff(ctx: Context, gameId: str) -> dict[str, Any]:
+    """Create a versioned package under ``var/handoffs`` without leaking environment data."""
+
+    game_id = _require(gameId, "gameId")
+    context = _ctx(ctx)
+    blueprint_record = await context.store.get_blueprint(game_id)
+    if blueprint_record is None:
+        raise tool_error(VALIDATION_ERROR, f"unknown gameId: {game_id}", gameId=game_id)
+
+    blueprint = dict(blueprint_record.get("document") or {})
+    if _publication_state(blueprint) != "published":
+        raise tool_error(
+            VALIDATION_ERROR,
+            "draft game designs cannot be exported; revise the draft and publish it first",
+            gameId=game_id,
+        )
+
+    expected_ids = _blueprint_spec_ids(game_id, blueprint)
+    if not expected_ids:
+        raise tool_error(VALIDATION_ERROR, "published design declares no specifications", gameId=game_id)
+    summaries = await context.store.list_specs(game_id)
+    specs: list[SpecDocument] = []
+    for summary in summaries:
+        if str(summary["specId"]) not in expected_ids:
+            continue
+        spec = await context.store.get_spec(str(summary["specId"]))
+        if spec is not None:
+            specs.append(spec)
+    found_ids = {spec.spec_id for spec in specs}
+    missing_specs = sorted(expected_ids - found_ids)
+    if missing_specs:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "published design has missing specifications",
+            gameId=game_id,
+            missingSpecs=missing_specs,
+        )
+    not_published = [spec.spec_id for spec in specs if spec.status != "published"]
+    if not_published:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "all specifications must be published before hand-off",
+            gameId=game_id,
+            draftSpecs=not_published,
+        )
+    graph_errors = dependency_errors(specs)
+    if graph_errors:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "specification dependency graph cannot be exported",
+            gameId=game_id,
+            dependencyErrors=graph_errors,
+        )
+
+    try:
+        exported = export_handoff(
+            game_id=game_id,
+            blueprint=blueprint,
+            blueprint_version=int(blueprint_record["version"]),
+            specs=specs,
+            feature_prompts=[_to_feature_prompt(spec) for spec in specs],
+        )
+    except HandoffError as exc:
+        raise tool_error(VALIDATION_ERROR, str(exc), gameId=game_id) from exc
+    return {"gameId": game_id, **exported}
 
 
 @mcp.tool(description="Report Research DB connectivity and search mode.")

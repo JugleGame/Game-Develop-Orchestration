@@ -20,6 +20,7 @@ MCP SDK 의 전송 계층은 anyio 태스크 그룹 기반이라 **세션을 연
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -45,6 +46,58 @@ def default_relay_path() -> Path:
     return Path.home() / ".unity" / "relay" / name
 
 
+def _same_path(left: str | Path, right: str | Path) -> bool:
+    """Compare local paths without requiring that either target still exists."""
+
+    return os.path.normcase(os.path.abspath(str(left))) == os.path.normcase(
+        os.path.abspath(str(right))
+    )
+
+
+def discover_editor_instance_id(project_path: str, registry_dir: Path | None = None) -> str | None:
+    """Find the active Unity Editor PID recorded by its MCP bridge.
+
+    Unity 6 writes one JSON discovery record per running editor under the current user's
+    profile. Supplying that PID prevents Relay from selecting its legacy default instance.
+    Invalid, stale, and unrelated records are ignored.
+    """
+
+    override = os.getenv("UNITY_EDITOR_PID", "").strip()
+    if override:
+        if not override.isdecimal() or int(override) <= 0:
+            raise UnityBridgeError("UNITY_EDITOR_PID must be a positive integer.")
+        return override
+
+    directory = registry_dir or Path.home() / ".unity" / "mcp" / "connections"
+    if not directory.is_dir():
+        return None
+
+    candidates: list[tuple[float, int]] = []
+    for record in directory.glob("bridge-*.json"):
+        try:
+            payload = json.loads(record.read_text(encoding="utf-8"))
+            pid = payload.get("editor_pid")
+            recorded_project = payload.get("project_path")
+            pipe = payload.get("connection_path")
+            if (
+                not isinstance(pid, int)
+                or pid <= 0
+                or not isinstance(recorded_project, str)
+                or not isinstance(pipe, str)
+                or not _same_path(recorded_project, project_path)
+                or not pipe.startswith(r"\\.\pipe\unity-mcp-")
+                or not pipe.endswith(f"-{pid}")
+            ):
+                continue
+        except (OSError, UnicodeDecodeError, ValueError, TypeError, json.JSONDecodeError):
+            continue
+        candidates.append((record.stat().st_mtime, pid))
+
+    if not candidates:
+        return None
+    return str(max(candidates)[1])
+
+
 class UnityBridgeError(RuntimeError):
     """브리지 자체의 실패 (릴레이 없음, Editor 미접속 등)."""
 
@@ -67,6 +120,7 @@ class UnityBridge:
     relay_path: Path = field(default_factory=default_relay_path)
     project_path: str = ""
     startup_timeout: float = 60.0
+    editor_instance_id: str | None = None
 
     _queue: asyncio.Queue[_Request | object] = field(default_factory=asyncio.Queue, init=False)
     _task: asyncio.Task[None] | None = field(default=None, init=False)
@@ -118,9 +172,19 @@ class UnityBridge:
     # 소유자 태스크 — 세션 진입/이탈이 전부 여기서만 일어난다
     # ------------------------------------------------------------------
     async def _serve(self) -> None:
+        instance_id = self.editor_instance_id or discover_editor_instance_id(self.project_path)
+        args = ["--mcp", "--project-path", self.project_path]
+        if instance_id is not None:
+            args.extend(["--instance-id", instance_id])
+            logger.info("Targeting Unity Editor PID %s from MCP discovery.", instance_id)
+        else:
+            logger.warning(
+                "No Unity MCP discovery record found for %s; Relay will select an instance.",
+                self.project_path,
+            )
         params = StdioServerParameters(
             command=str(self.relay_path),
-            args=["--mcp", "--project-path", self.project_path],
+            args=args,
         )
         try:
             async with stdio_client(params) as (read_stream, write_stream):

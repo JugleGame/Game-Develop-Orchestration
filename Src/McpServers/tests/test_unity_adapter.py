@@ -6,6 +6,7 @@ Unity 를 실제로 태우는 확인은 운영 문서의 수동 절차를 따른
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -13,11 +14,67 @@ import pytest
 os.environ.setdefault("UNITY_PROJECT_PATH", "C:/nonexistent-unity-project")
 
 from unity import server as unity_server  # noqa: E402
+from unity.bridge import UnityBridgeError, discover_editor_instance_id  # noqa: E402
 from unity.codegen import (  # noqa: E402
     ScriptGenerator,
     _sanitize_class_name,
     looks_like_csharp,
 )
+
+
+def test_discovers_current_unity_editor_pid_from_matching_registry_record(tmp_path, monkeypatch):
+    project = tmp_path / "Game"
+    project.mkdir()
+    record = tmp_path / "connections" / "bridge-game-101.json"
+    record.parent.mkdir()
+    record.write_text(
+        json.dumps(
+            {
+                "project_path": str(project),
+                "editor_pid": 101,
+                "connection_path": r"\\.\pipe\unity-mcp-game-101",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("unity.bridge.os.kill", lambda pid, signal: None)
+
+    assert discover_editor_instance_id(str(project), record.parent) == "101"
+
+
+def test_discovery_ignores_other_projects_and_invalid_pipe_records(tmp_path, monkeypatch):
+    project = tmp_path / "Game"
+    project.mkdir()
+    registry = tmp_path / "connections"
+    registry.mkdir()
+    (registry / "bridge-other-101.json").write_text(
+        json.dumps(
+            {
+                "project_path": "C:/other",
+                "editor_pid": 101,
+                "connection_path": r"\\.\pipe\unity-mcp-other-101",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (registry / "bridge-invalid-102.json").write_text(
+        json.dumps(
+            {"project_path": str(project), "editor_pid": 102, "connection_path": "not-a-pipe"}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("unity.bridge.os.kill", lambda pid, signal: None)
+
+    assert discover_editor_instance_id(str(project), registry) is None
+
+
+def test_explicit_editor_pid_requires_positive_integer(monkeypatch):
+    monkeypatch.setenv("UNITY_EDITOR_PID", "123")
+    assert discover_editor_instance_id("C:/game") == "123"
+
+    monkeypatch.setenv("UNITY_EDITOR_PID", "not-a-pid")
+    with pytest.raises(UnityBridgeError, match="positive integer"):
+        discover_editor_instance_id("C:/game")
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +150,37 @@ def test_compile_error_never_returns_empty_file():
 
 def test_compile_error_survives_non_dict_entries():
     assert unity_server._to_compile_error("raw string")["message"] == "raw string"
+
+
+def test_build_defaults_to_webgl_with_a_project_relative_directory(monkeypatch):
+    monkeypatch.delenv("UNITY_BUILD_TARGET", raising=False)
+    monkeypatch.delenv("UNITY_BUILD_OUTPUT", raising=False)
+
+    assert unity_server._build_configuration("slice-001") == (
+        "WebGL",
+        "Builds/slice-001",
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "output"),
+    [
+        ("Injected; result.Log(\"unexpected\")", "Builds/game"),
+        ("WebGL", "../outside"),
+        ("WebGL", "C:/outside"),
+        ("WebGL", 'Builds/game"; result.Log("unexpected")'),
+    ],
+)
+def test_build_configuration_rejects_values_that_could_escape_generated_csharp(
+    monkeypatch, target, output
+):
+    monkeypatch.setenv("UNITY_BUILD_TARGET", target)
+    monkeypatch.setenv("UNITY_BUILD_OUTPUT", output)
+
+    with pytest.raises(Exception) as exc_info:
+        unity_server._build_configuration("slice-001")
+
+    assert "errorCode" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------

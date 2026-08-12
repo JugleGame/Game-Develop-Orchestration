@@ -28,6 +28,7 @@ Read only what the task needs:
 - MCP tools and ownership: [docs/contracts.md](docs/contracts.md)
 - Setup and runtime: [docs/operations.md](docs/operations.md)
 - Open work: [docs/backlog.md](docs/backlog.md)
+- AI migration, hand-off, graph, asset, and Unity-tool boards: [docs/guide-boards.md](docs/guide-boards.md)
 
 ## Workflow
 

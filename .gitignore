@@ -13,6 +13,7 @@ __pycache__/
 .env.*
 !.env.example
 .mcp.json
+.mcp.json.bak
 .claude/settings.local.json
 *.pem
 *.key

@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import asyncpg
 
@@ -85,6 +85,10 @@ class SpecDocument:
     implementation_scope: list[str]
     out_of_scope: list[str]
     acceptance_criteria: list[str]
+    context: str = ""
+    relevant_systems: list[str] = field(default_factory=list)
+    constraints: list[str] = field(default_factory=list)
+    verification_method: list[str] = field(default_factory=list)
     unity_hints: dict[str, Any] = field(default_factory=dict)
     dependencies: list[str] = field(default_factory=list)
     status: str = "draft"
@@ -117,6 +121,17 @@ class SpecDocument:
         lines += [f"- {item}" for item in self.out_of_scope]
         lines += ["", "## Acceptance criteria"]
         lines += [f"- {item}" for item in self.acceptance_criteria]
+        if self.context:
+            lines += ["", "## Context", self.context]
+        if self.relevant_systems:
+            lines += ["", "## Relevant systems"]
+            lines += [f"- {item}" for item in self.relevant_systems]
+        if self.constraints:
+            lines += ["", "## Constraints"]
+            lines += [f"- {item}" for item in self.constraints]
+        if self.verification_method:
+            lines += ["", "## Verification method"]
+            lines += [f"- {item}" for item in self.verification_method]
 
         # 아키텍처 지침은 카드 원문이므로 개발 AI 가 읽을 spec 안에 함께 남는다.
         # 필수 섹션이 아니라 추가 섹션이라 lint_spec 의 S4 와 무관하다.
@@ -145,6 +160,10 @@ class SpecDocument:
             "implementationScope": self.implementation_scope,
             "outOfScope": self.out_of_scope,
             "acceptanceCriteria": self.acceptance_criteria,
+            "context": self.context,
+            "relevantSystems": self.relevant_systems,
+            "constraints": self.constraints,
+            "verificationMethod": self.verification_method,
             "unityHints": self.unity_hints,
             "dependencies": self.dependencies,
             "status": self.status,
@@ -203,6 +222,88 @@ def lint_spec(spec: SpecDocument, known_card_ids: set[str]) -> list[str]:
     errors += _lint_contamination(spec)
     errors += _lint_role_boundary(spec)
     return errors
+
+
+def dependency_errors(specs: Iterable[SpecDocument]) -> list[str]:
+    """Return missing, self-referential, and cyclic spec dependencies.
+
+    Feature prompts are executed in dependency order.  Accepting a graph that
+    cannot be topologically ordered would let an execution agent start from an
+    arbitrary feature, so this is checked before a plan can be handed off.
+    """
+
+    documents = list(specs)
+    by_id = {spec.spec_id: spec for spec in documents}
+    errors: list[str] = []
+    for spec in documents:
+        for dependency in spec.dependencies:
+            if dependency == spec.spec_id:
+                errors.append(f"dependency: {spec.spec_id} cannot depend on itself")
+            elif dependency not in by_id:
+                errors.append(
+                    f"dependency: {spec.spec_id} references missing specification {dependency}"
+                )
+
+    state: dict[str, int] = {}
+    stack: list[str] = []
+    seen_cycles: set[tuple[str, ...]] = set()
+
+    def visit(spec_id: str) -> None:
+        state[spec_id] = 1
+        stack.append(spec_id)
+        for dependency in by_id[spec_id].dependencies:
+            if dependency not in by_id:
+                continue
+            if state.get(dependency, 0) == 0:
+                visit(dependency)
+            elif state[dependency] == 1:
+                cycle = tuple(stack[stack.index(dependency) :] + [dependency])
+                if cycle not in seen_cycles:
+                    seen_cycles.add(cycle)
+                    errors.append(f"dependency: cycle detected: {' -> '.join(cycle)}")
+        stack.pop()
+        state[spec_id] = 2
+
+    for spec_id in by_id:
+        if state.get(spec_id, 0) == 0:
+            visit(spec_id)
+    return errors
+
+
+def dependency_order(specs: Iterable[SpecDocument]) -> list[SpecDocument]:
+    """Return a stable topological order after validating the feature graph."""
+
+    documents = list(specs)
+    errors = dependency_errors(documents)
+    if errors:
+        raise ValueError("; ".join(errors))
+
+    remaining = {spec.spec_id: set(spec.dependencies) for spec in documents}
+    by_id = {spec.spec_id: spec for spec in documents}
+    ordered: list[SpecDocument] = []
+    while remaining:
+        ready = sorted(spec_id for spec_id, dependencies in remaining.items() if not dependencies)
+        # dependency_errors already proves this cannot happen; retain the guard
+        # so a future caller never receives a silently partial hand-off.
+        if not ready:
+            raise ValueError("dependency graph cannot be topologically ordered")
+        for spec_id in ready:
+            ordered.append(by_id[spec_id])
+            del remaining[spec_id]
+        completed = set(ready)
+        for dependencies in remaining.values():
+            dependencies.difference_update(completed)
+    return ordered
+
+
+def declared_spec_ids(specs: Iterable[SpecDocument]) -> list[str]:
+    """Return the ordered feature IDs stored on a game-level blueprint.
+
+    A blueprint owns game-level decisions and ordering only. Complete feature
+    documents live only in ``strategic_specs`` so revisions cannot diverge.
+    """
+
+    return [spec.spec_id for spec in dependency_order(specs)]
 
 
 def _lint_measurable(spec: SpecDocument) -> list[str]:
@@ -535,6 +636,10 @@ def _from_dict(data: dict[str, Any]) -> SpecDocument:
         implementation_scope=data["implementationScope"],
         out_of_scope=data["outOfScope"],
         acceptance_criteria=data["acceptanceCriteria"],
+        context=data.get("context", ""),
+        relevant_systems=data.get("relevantSystems", []),
+        constraints=data.get("constraints", []),
+        verification_method=data.get("verificationMethod", []),
         unity_hints=data.get("unityHints", {}),
         dependencies=data.get("dependencies", []),
         status=data.get("status", "draft"),

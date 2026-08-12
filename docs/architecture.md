@@ -7,11 +7,12 @@ Web, FastAPI, or LangGraph orchestrator.
 
 ```mermaid
 flowchart TB
-    U["User"] --> H["Host agent: Codex / Claude Code"]
-    H --> R["Research MCP: evidence, counterexamples, spec storage/lint"]
+    U["User"] --> H["Planning / execution host agent"]
+    H --> R["Research MCP: evidence, draft/spec storage, dependency lint"]
     H --> N["Unity MCP: apply, assemble, build, PlayMode, validation"]
     H --> A["Asset MCP: PixelLab, style, review metadata"]
     R --> DB["Research DB"]
+    R -->|"published only"| HO["var/handoffs: hashed versioned files"] --> H
     N --> UE["Unity Editor"]
     A --> PX["PixelLab"]
     A --> V["var/assets"]
@@ -30,7 +31,7 @@ flowchart TB
 ### Research MCP
 
 - Retrieve source cards, supporting evidence, and counterexamples.
-- Store concept decisions, blueprints, and specs.
+- Store concept decisions, game-level blueprints, and feature-level specs.
 - Validate spec schema, citations, and role boundaries.
 
 ### Unity MCP
@@ -55,6 +56,16 @@ flowchart TB
 
 ## Ordering and exit
 
-After spec approval, code and asset requests may be prepared in parallel. Import and bind assets
+Drafts are directly editable. Only a fully published, acyclic specification graph may be exported
+as a hand-off package. After export, code and asset requests may be prepared in parallel. Import and bind assets
 only after validation. Make the final feature judgment only after build, compile, PlayMode, and
 layout evidence is available. Retry the same failure at most three times, then ask the user.
+
+## Source of truth and write order
+
+- A blueprint stores game-level decisions and an ordered `specIds` list only.
+- A feature spec stores the complete task document exactly once.
+- Validation completes before storage. Since the Neon HTTP fallback has no transaction support,
+  spec rows are written before the blueprint that makes them visible to a hand-off.
+- Each accepted spec revision also creates a new blueprint version, so a new immutable hand-off
+  version is available instead of overwriting a prior execution input.
