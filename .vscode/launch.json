@@ -2,65 +2,16 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Mock MCP Servers",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/Src/DeveloperAI/scripts/mock_mcp_servers.py",
-      "cwd": "${workspaceFolder}/Src/DeveloperAI",
-      "python": "${workspaceFolder}/Src/DeveloperAI/.venv/Scripts/python.exe",
-      "console": "integratedTerminal",
-      "justMyCode": true
-    },
-    {
-      "name": "Dev Server (no Postgres/Redis)",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/Src/DeveloperAI/scripts/dev_server.py",
-      "cwd": "${workspaceFolder}/Src/DeveloperAI",
-      "python": "${workspaceFolder}/Src/DeveloperAI/.venv/Scripts/python.exe",
-      "console": "integratedTerminal",
-      "justMyCode": true
-    },
-    {
-      "name": "FastAPI (production, uvicorn)",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "uvicorn",
-      "args": ["app.main:app", "--reload", "--port", "8000"],
-      "cwd": "${workspaceFolder}/Src/DeveloperAI",
-      "python": "${workspaceFolder}/Src/DeveloperAI/.venv/Scripts/python.exe",
-      "console": "integratedTerminal",
-      "justMyCode": true
-    },
-    {
-      "name": "pytest: DeveloperAI (current file)",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": ["${file}", "-v"],
-      "cwd": "${workspaceFolder}/Src/DeveloperAI",
-      "python": "${workspaceFolder}/Src/DeveloperAI/.venv/Scripts/python.exe",
-      "console": "integratedTerminal",
-      "justMyCode": false
-    },
-    {
-      "name": "pytest: McpServers (current file)",
+      "name": "pytest: current MCP test",
       "type": "debugpy",
       "request": "launch",
       "module": "pytest",
       "args": ["${file}", "-v"],
       "cwd": "${workspaceFolder}/Src/McpServers",
-      "python": "${workspaceFolder}/Src/DeveloperAI/.venv/Scripts/python.exe",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
       "env": { "PYTHONPATH": "." },
       "console": "integratedTerminal",
       "justMyCode": false
-    }
-  ],
-  "compounds": [
-    {
-      "name": "Dev Server + Mock MCP",
-      "configurations": ["Mock MCP Servers", "Dev Server (no Postgres/Redis)"],
-      "stopAll": true
     }
   ]
 }

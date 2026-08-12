@@ -1,38 +1,10 @@
-"""설계 패스 — 코드를 쓰기 전에 게임 전체의 구조를 한 번에 정한다.
-
-**왜 이 단계가 있는가.** 기획은 기능 경계까지만 정하고(`unityHints.components`
-가 "청크 좌표 계산" 같은 우리말 기능 덩어리인 이유), 그 기능들을 어떤 클래스·
-파일·프리팹으로 나눌지는 개발 AI 가 정한다 — 사람이 그렇게 정했다
-(`Doc/설계/06_코드생성_아키텍처_진단_260730.md` §3.1).
-
-그 결정을 파일을 만들면서 하나씩 내리면 세 가지가 어긋난다.
-
-* **첫 파일이 눈을 감고 쓰인다.** 지금까지 만들어진 타입 목록(`existing_types`)은
-  이름 그대로 *지금까지*라서, 첫 번째 파일에는 형제가 하나도 없다.
-* **재시도마다 구조가 흔들린다.** 분해를 매번 다시 판단하면 같은 spec 이 회차마다
-  다르게 쪼개진다.
-* **조립할 대상을 아무도 모른다.** 프리팹과 씬 구성이 "코드를 다 짜고 나서 추측"
-  이 된다.
-
-그래서 설계를 **먼저, 한 번만** 한다. 결과는 게임 안에서 불변이므로 이후 모든
-``create_script`` 호출의 캐시 접두사로도 쓸 수 있다.
-
-**검증이 이 모듈의 알맹이다.** 모델이 만들었든 사람이 ``design`` 인자로 넘겼든
-같은 규칙으로 거른다 (CLAUDE.md 의 두-경로 규칙). 특히
-:func:`validate_design` 의 "모든 MonoBehaviour 는 프리팹이나 씬 중 한 곳에
-반드시 등장한다" 규칙은, 스크립트가 어디에도 안 붙은 채 빌드되는 사고를
-**설계 시점에** 막는다 — 나중에 검사기가 잡는 것이 아니라 애초에 만들어지지
-않게 하는 쪽이다.
-"""
+"""호스트가 작성한 Unity 파일·프리팹·씬 설계안을 결정론적으로 검증한다."""
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
-
-from common.usage import usage_of
 
 # "문서 번호에서 온 이름" 판정은 레이아웃 검사기와 **같은 것을 써야** 한다.
 # 두 벌을 두면 설계 단계에서 통과한 이름이 검사 단계에서 막히는(또는 그 반대의)
@@ -48,130 +20,6 @@ KINDS = ("MonoBehaviour", "ScriptableObject", "plain", "static")
 
 # 씬이나 프리팹에 붙어야만 실행되는 종류.
 _ATTACHABLE = "MonoBehaviour"
-
-SYSTEM_PROMPT = """You are a Unity 6 lead developer planning the code architecture \
-of one small 2D game before any code is written.
-
-You are given the game design and a list of feature specs. Each spec states what a \
-mechanism must do, in functional terms. Your job is to decide how those mechanisms \
-become C# types, files, prefabs and scene objects.
-
-Rules:
-- Name types after game concepts, never after the spec that requested them.
-  `ChunkLoader`, `PlayerController`, `LootTable` are right. `Spec001`, `Feature003`
-  are wrong and will be rejected.
-- One file declares one public type, and the file is named after it.
-- Split a mechanism when its responsibilities differ in kind - data definition,
-  runtime behaviour, and presentation are three different jobs. Do not split a
-  mechanism that genuinely does one thing; a file per responsibility, not a file
-  per sentence.
-- Put each file under a category folder: Assets/Scripts/<Category>/<ClassName>.cs.
-  Categories are yours to choose (World, Player, Systems, UI, Data are typical).
-- Every MonoBehaviour must appear either on a prefab or on a scene object. A
-  MonoBehaviour attached to nothing never runs. If a type does not need to live on
-  a GameObject, make it `plain` or `ScriptableObject` instead of a MonoBehaviour.
-- Things that repeat in the world (enemies, pickups, projectiles) are prefabs.
-  Single long-lived systems live directly on scene objects.
-- `dependsOn` lists the file paths a file needs to already exist. No cycles.
-- Cover every feature id at least once. `featureIds` is how a file traces back to
-  the specs it implements.
-- This is a 2D game: Rigidbody2D / Collider2D / Vector2, never their 3D counterparts.
-
-Output JSON only, matching the given schema. No prose."""
-
-DESIGN_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "files": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Assets/Scripts/<Category>/<ClassName>.cs",
-                    },
-                    "className": {"type": "string", "description": "PascalCase, 게임 개념"},
-                    "kind": {"type": "string", "enum": list(KINDS)},
-                    "featureIds": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "이 파일이 구현하는 spec id 목록 (최소 1개)",
-                    },
-                    "responsibility": {
-                        "type": "string",
-                        "description": "이 타입이 맡는 일 한 문장. 생성 프롬프트가 된다.",
-                    },
-                    "dependsOn": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "먼저 만들어져야 하는 파일 경로",
-                    },
-                },
-                "required": [
-                    "path",
-                    "className",
-                    "kind",
-                    "featureIds",
-                    "responsibility",
-                    "dependsOn",
-                ],
-                "additionalProperties": False,
-            },
-        },
-        "prefabs": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "path": {"type": "string", "description": "Assets/Prefabs/<Name>.prefab"},
-                    "components": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "붙일 타입 이름 (생성한 것 + Unity 내장)",
-                    },
-                    "sprite": {"type": "string", "description": "없으면 빈 문자열"},
-                },
-                "required": ["name", "path", "components", "sprite"],
-                "additionalProperties": False,
-            },
-        },
-        "scene": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "objects": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "parent": {"type": "string", "description": "없으면 빈 문자열"},
-                            "components": {"type": "array", "items": {"type": "string"}},
-                            "prefab": {
-                                "type": "string",
-                                "description": "이 오브젝트가 프리팹 인스턴스면 그 이름",
-                            },
-                        },
-                        "required": ["name", "parent", "components", "prefab"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-            "required": ["name", "objects"],
-            "additionalProperties": False,
-        },
-        "notes": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "기획 힌트와 다르게 나눈 곳과 그 이유. 없으면 빈 배열.",
-        },
-    },
-    "required": ["files", "prefabs", "scene", "notes"],
-    "additionalProperties": False,
-}
-
 
 class ArchitectureError(RuntimeError):
     """설계안이 규칙을 어겼거나 생성에 실패했다."""
@@ -201,7 +49,6 @@ class Design:
     prefabs: list[dict[str, Any]] = field(default_factory=list)
     scene: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
-    usage: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -222,12 +69,7 @@ class Design:
         }
 
     def type_map(self) -> str:
-        """생성 단계가 캐시 접두사로 싣는 전체 타입 지도.
-
-        이게 있어서 **첫 파일부터** 게임의 모든 타입을 알고 쓰인다. 게임 안에서
-        불변이라 캐시 접두사로 안전하다 — 정렬이나 시각처럼 호출마다 달라지는
-        값을 넣으면 캐시가 매번 깨진다.
-        """
+        """Return the complete type map for cross-file dependency review."""
 
         lines = ["Types in this game (all of them, decided up front):"]
         for item in self.files:
@@ -280,7 +122,7 @@ def _order_files(files: list[PlannedFile]) -> list[PlannedFile]:
 def validate_design(raw: Any, feature_ids: list[str]) -> Design:
     """설계안을 검증해 :class:`Design` 으로 만든다. 생성이든 전달이든 같은 규칙.
 
-    거부 조건은 06 문서 §3.2 1단계의 표와 1:1로 대응한다.
+    거부 조건은 ``docs/contracts.md``의 Unity 설계 계약과 대응한다.
     """
 
     if not isinstance(raw, dict):
@@ -469,7 +311,7 @@ def _require_every_behaviour_is_attached(
     """모든 MonoBehaviour 가 프리팹이나 씬 중 한 곳에는 등장해야 한다.
 
     이 규칙 하나가 이 저장소의 실제 사고를 막는다 — 스크립트 6개 중 5개가 어떤
-    GameObject 에도 붙지 않은 채 빌드되고 QA PASS 까지 났던 일 (06 문서 §1.2).
+    GameObject 에도 붙지 않은 채 빌드되는 일을 막기 위한 규칙이다.
     붙일 데가 없는 타입이라면 애초에 MonoBehaviour 가 아니어야 한다.
     """
 
@@ -485,88 +327,3 @@ def _require_every_behaviour_is_attached(
             f"어떤 프리팹·씬 오브젝트에도 붙지 않는 MonoBehaviour 가 있습니다: {orphans}. "
             "붙을 자리를 주거나, GameObject 가 필요 없다면 kind 를 plain/ScriptableObject 로 바꾸세요."
         )
-
-
-class ArchitectureDesigner:
-    """Claude 로 설계안을 만든다. 키가 없으면 명확히 실패한다."""
-
-    def __init__(self, model: str | None = None) -> None:
-        self._model = model or os.getenv("UNITY_DESIGN_MODEL", "claude-opus-5")
-        self._client = None
-
-    def _ensure_client(self):
-        if self._client is None:
-            if not os.getenv("ANTHROPIC_API_KEY"):
-                raise ArchitectureError(
-                    "ANTHROPIC_API_KEY 가 없어 설계안을 만들 수 없습니다. "
-                    "키를 설정하거나, design_architecture 호출 시 design 인자로 "
-                    "완성된 설계안을 직접 넘기세요."
-                )
-            from anthropic import AsyncAnthropic
-
-            self._client = AsyncAnthropic()
-        return self._client
-
-    @staticmethod
-    def _user_prompt(game_design: dict[str, Any], feature_prompts: list[dict[str, Any]]) -> str:
-        lines = [
-            "[Game design]",
-            f"Genre: {game_design.get('genre', '')}",
-            f"Art style: {game_design.get('art_style', '')}",
-            "Core mechanics:",
-        ]
-        lines += [f"- {item}" for item in game_design.get("core_mechanics") or []]
-        lines.append(f"World structure: {game_design.get('structure_overview', '')}")
-        lines.append("\n[Feature specs]")
-        for feature in feature_prompts:
-            lines.append(f"\n--- {feature['feature_id']} — {feature.get('title', '')} ---")
-            lines.append(str(feature.get("description", "")))
-        lines.append(
-            "\nPlan the file, prefab and scene layout for this game. "
-            "Every feature id above must be covered by at least one file."
-        )
-        return "\n".join(lines)
-
-    async def design(
-        self,
-        game_design: dict[str, Any],
-        feature_prompts: list[dict[str, Any]],
-    ) -> Design:
-        client = self._ensure_client()
-        feature_ids = [str(item["feature_id"]) for item in feature_prompts]
-
-        response = await client.messages.create(
-            model=self._model,
-            max_tokens=8000,
-            system=[{"type": "text", "text": SYSTEM_PROMPT}],
-            messages=[
-                {
-                    "role": "user",
-                    "content": self._user_prompt(game_design, feature_prompts),
-                }
-            ],
-            tools=[
-                {
-                    "name": "emit_design",
-                    "description": "Return the planned architecture.",
-                    "input_schema": DESIGN_SCHEMA,
-                }
-            ],
-            tool_choice={"type": "tool", "name": "emit_design"},
-            thinking={"type": "adaptive"},
-            output_config={"effort": "high"},
-        )
-
-        if response.stop_reason == "refusal":
-            raise ArchitectureError(f"설계안 생성이 거부되었습니다: {response.stop_details}")
-
-        payload = next(
-            (block.input for block in response.content if block.type == "tool_use"),
-            None,
-        )
-        if payload is None:
-            raise ArchitectureError("모델이 설계안을 반환하지 않았습니다.")
-
-        design = validate_design(payload, feature_ids)
-        design.usage = usage_of(response, self._model)
-        return design

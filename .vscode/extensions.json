@@ -4,8 +4,6 @@
     "ms-python.vscode-pylance",
     "ms-python.debugpy",
     "ms-python.black-formatter",
-    "dbaeumer.vscode-eslint",
-    "esbenp.prettier-vscode",
     "ms-dotnettools.csdevkit",
     "eamodio.gitlens"
   ]

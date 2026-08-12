@@ -108,7 +108,12 @@ def test_markdown_has_toml_frontmatter_and_required_sections():
     assert markdown.startswith("+++\n")
     assert 'spec_id = "g1__spec-001"' in markdown
     assert "blueprint_version = 1" in markdown
-    for section in ("## 목표", "## 구현 범위", "## 제외 범위", "## 합격 기준"):
+    for section in (
+        "## Goal",
+        "## Implementation scope",
+        "## Out of scope",
+        "## Acceptance criteria",
+    ):
         assert section in markdown
 
 
@@ -137,7 +142,13 @@ def test_feature_prompt_carries_everything_needed_to_implement():
     prompt = _to_feature_prompt(spec)
 
     assert prompt["feature_id"] == "g1__spec-001"
-    for heading in ("## 목표", "## 구현 범위", "## 제외 범위", "## 합격 기준", "## Unity 구현 힌트"):
+    for heading in (
+        "## Goal",
+        "## Implementation scope",
+        "## Out of scope",
+        "## Acceptance criteria",
+        "## Unity hints",
+    ):
         assert heading in prompt["description"]
     assert "Rigidbody2D" in prompt["description"]
     assert "GENRE-006" in prompt["description"]  # 근거 카드가 함께 간다

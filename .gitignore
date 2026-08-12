@@ -1,4 +1,4 @@
-# 저장소 전역. 하위 프로젝트는 각자의 .gitignore 를 더한다.
+# 저장소 전역 ignore 규칙
 
 # Python
 __pycache__/
@@ -8,58 +8,36 @@ __pycache__/
 .mypy_cache/
 *.egg-info/
 
-# 자격증명 — 커밋 금지
+# 로컬 설정과 자격증명
 .env
 .env.*
 !.env.example
-
-# Claude Code 개인 설정. 공유 설정은 .claude/settings.json 에 둔다.
+.mcp.json
 .claude/settings.local.json
-
-# OS
-.DS_Store
-Thumbs.db
-
-
-# Environment Variables
-.env
-.env.local
-.env.*.local
-
-# API Key & Secret files
 *.pem
 *.key
 *.pfx
 
-# Dependency directories
-node_modules/
-jspm_packages/
-
-# Logs
-logs
+# 재생성 가능한 런타임 산출물
+/var/
+/asset_output/
+/Games/
+logs/
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
 
-# Editor directories and files
+# 편집기
 .vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
 .idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
 *.swp
 
-# OS generated files
+# 운영체제
 .DS_Store
-.DS_Store?
 ._*
 .Spotlight-V100
 .Trashes
-ehthumbs.db
 Thumbs.db
+ehthumbs.db

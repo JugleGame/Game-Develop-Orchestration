@@ -1,68 +1,36 @@
 {
   "mcpServers": {
-    "asset": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/Src/DeveloperAI/.venv/Scripts/python.exe",
+    "research": {
+      "command": "C:\\Users\\SSAFY\\Desktop\\jyp\\Game-Develop-Orchestration\\.venv\\Scripts\\python.exe",
       "args": [
         "-m",
-        "asset.server",
-        "--transport",
-        "stdio"
+        "strategic.server"
       ],
-      "cwd": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers",
+      "cwd": "C:\\Users\\SSAFY\\Desktop\\jyp\\Game-Develop-Orchestration\\Src\\McpServers",
       "env": {
-        "PYTHONPATH": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers"
+        "PYTHONPATH": "C:\\Users\\SSAFY\\Desktop\\jyp\\Game-Develop-Orchestration\\Src\\McpServers"
       }
     },
     "unity": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/Src/DeveloperAI/.venv/Scripts/python.exe",
+      "command": "C:\\Users\\SSAFY\\Desktop\\jyp\\Game-Develop-Orchestration\\.venv\\Scripts\\python.exe",
       "args": [
         "-m",
-        "unity.server",
-        "--transport",
-        "stdio"
+        "unity.server"
       ],
-      "cwd": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers",
+      "cwd": "C:\\Users\\SSAFY\\Desktop\\jyp\\Game-Develop-Orchestration\\Src\\McpServers",
       "env": {
-        "PYTHONPATH": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers"
+        "PYTHONPATH": "C:\\Users\\SSAFY\\Desktop\\jyp\\Game-Develop-Orchestration\\Src\\McpServers"
       }
     },
-    "strategic": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/Src/DeveloperAI/.venv/Scripts/python.exe",
+    "asset": {
+      "command": "C:\\Users\\SSAFY\\Desktop\\jyp\\Game-Develop-Orchestration\\.venv\\Scripts\\python.exe",
       "args": [
         "-m",
-        "strategic.server",
-        "--transport",
-        "stdio"
+        "asset.server"
       ],
-      "cwd": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers",
+      "cwd": "C:\\Users\\SSAFY\\Desktop\\jyp\\Game-Develop-Orchestration\\Src\\McpServers",
       "env": {
-        "PYTHONPATH": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers"
-      }
-    },
-    "qa": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/Src/DeveloperAI/.venv/Scripts/python.exe",
-      "args": [
-        "-m",
-        "qa.server",
-        "--transport",
-        "stdio"
-      ],
-      "cwd": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers",
-      "env": {
-        "PYTHONPATH": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers"
-      }
-    },
-    "git": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/Src/DeveloperAI/.venv/Scripts/python.exe",
-      "args": [
-        "-m",
-        "gitmcp.server",
-        "--transport",
-        "stdio"
-      ],
-      "cwd": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers",
-      "env": {
-        "PYTHONPATH": "${CLAUDE_PROJECT_DIR:-.}/Src/McpServers"
+        "PYTHONPATH": "C:\\Users\\SSAFY\\Desktop\\jyp\\Game-Develop-Orchestration\\Src\\McpServers"
       }
     }
   }

@@ -44,7 +44,7 @@ class PixelLabUnavailable(Exception):
     """API key missing, request failed, or the response was malformed.
 
     There is nothing to fall back to: PixelLab is the only generation path
-    (``asset/server.py::_generate_image``), so callers turn this into a §03
+    (``asset/server.py::_generate_image``), so callers turn this into an MCP
     code-3000 tool error rather than drawing something else.
     """
 

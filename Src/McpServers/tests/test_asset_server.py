@@ -1,6 +1,6 @@
 """Tests for AssetGenMcpServer.
 
-Driven through a real MCP session (SDK in-memory transport), so the §03
+Driven through a real MCP session (SDK in-memory transport), so the MCP
 contract — tool names, argument casing, structuredContent, error codes — is
 exercised exactly as the orchestrator will exercise it.
 """
@@ -42,7 +42,7 @@ async def session() -> AsyncIterator[ClientSession]:
 
 
 # --------------------------------------------------------------------------
-# §03 contract
+# Agent-first MCP contract
 # --------------------------------------------------------------------------
 
 
@@ -79,7 +79,7 @@ async def test_generate_2d_sprite_returns_asset_path_in_structured_content():
 
 
 async def test_validation_failure_carries_error_code_1000():
-    """§03 error codes must survive FastMCP's message prefix."""
+    """Contract error codes must survive the MCP message prefix."""
 
     async with session() as client:
         result = await client.call_tool(
@@ -358,7 +358,7 @@ async def test_review_status_is_recorded_in_the_manifest_not_the_path():
 
 
 async def test_omitting_game_id_collides_two_games_onto_one_project():
-    """Documents the cost of the missing gameId argument (§03 contract gap).
+    """Documents the legacy behavior when gameId is omitted.
 
     Two games with the same feature id and prompt land on the same assetId,
     palette and file. This test asserts the *current* behaviour so that wiring
@@ -416,7 +416,7 @@ def test_colourful_art_style_is_left_colourful():
 
 
 async def test_art_style_argument_reaches_the_palette():
-    """The design document's art_style has no §03 route to this server, so the
+    """When artStyle is omitted, the server uses the project's locked style, so the
     optional artStyle argument is the only way it can arrive."""
 
     async with session() as client:

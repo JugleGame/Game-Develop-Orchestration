@@ -13,13 +13,9 @@
 없는 파일을 요구하며 계속 실패했다. 연구 저장소에 spec 검사를 다시 들이면
 git 이력에서 되살린다 (지운 검사 이름: ``TestMirrorStaysInSync``).
 
-남은 것은 규칙 파일과 그것을 읽는 쪽이 어긋나지 않는지다 — 상수를 코드에
-다시 적지 않았는지, 스킬 문서의 단어 목록이 규칙과 같은지.
+남은 것은 규칙 파일과 그것을 읽는 코드가 어긋나지 않는지다. 호스트별 스킬에
+규칙을 복제하지 않고 Research MCP의 단일 규칙 파일만 검증한다.
 """
-
-from pathlib import Path
-
-import pytest
 
 from strategic.specs import (
     BANNED_WORDS,
@@ -28,9 +24,6 @@ from strategic.specs import (
     REQUIRED_SECTIONS,
     SPEC_RULES,
 )
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
-
 
 class TestRulesLoadFromData:
     def test_constants_come_from_the_rules_file(self) -> None:
@@ -47,27 +40,3 @@ class TestRulesLoadFromData:
             assert CARD_ID_PATTERN.fullmatch(card_id), card_id
         for bogus in ("ELEM-1", "elem-001", "SPEC-001", "GAME-1234"):
             assert not CARD_ID_PATTERN.fullmatch(bogus), bogus
-
-
-class TestSkillDocsQuoteTheSameWords:
-    """스킬 문서가 금지어·관찰 키워드를 눈으로 읽으라고 나열한다.
-
-    사람이 그 표를 보고 합격 기준을 쓰므로, 목록이 낡으면 사람은 규칙에 없는
-    단어를 피하고 규칙에 있는 단어를 쓴다 — 검사기가 조용히 반려한다.
-    """
-
-    def _skill_text(self, relative: str) -> str:
-        path = REPO_ROOT / ".claude" / "skills" / relative
-        assert path.is_file(), path
-        return path.read_text(encoding="utf-8")
-
-    @pytest.mark.parametrize("skill", ["spec-lint/SKILL.md", "game-planning/SKILL.md"])
-    def test_banned_words_are_all_listed(self, skill: str) -> None:
-        text = self._skill_text(skill)
-        missing = [word for word in BANNED_WORDS if word not in text]
-        assert not missing, f"{skill} 의 금지어 목록에 빠진 단어: {missing}"
-
-    def test_spec_lint_lists_every_observable_word(self) -> None:
-        text = self._skill_text("spec-lint/SKILL.md")
-        missing = [word for word in OBSERVABLE_WORDS if f"`{word}`" not in text]
-        assert not missing, f"spec-lint/SKILL.md 의 관찰 키워드에 빠진 단어: {missing}"

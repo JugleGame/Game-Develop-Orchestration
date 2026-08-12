@@ -1,28 +1,8 @@
-"""Load the repository-root ``.env`` into ``os.environ``.
+"""저장소 루트의 ``.env``를 MCP 프로세스 환경에 적용한다.
 
-Every setting in this package is read with ``os.getenv`` at import time, so
-until now the only way to configure a tool server was to export the variable
-in the shell *before* launching it. That works for path A (``serve_all.py``
-inherits the shell), but not for path B: Claude Code spawns the servers from
-``.mcp.json`` and passes on whatever environment it was started with, so a
-forgotten export surfaces minutes later as an empty ``RESEARCH_DSN``.
-
-``common/__init__.py`` calls :func:`load_repo_env` before any server module
-body runs, which makes the committed ``.env.example`` -> ``.env`` file the one
-place a new machine has to fill in.
-
-Two rules keep this from surprising anyone:
-
-* **A real environment variable always wins.** Anything already exported —
-  CI secrets, a one-off ``GIT_ROOT=... python -m gitmcp.server`` — is left
-  alone. An empty value counts as unset, because ``.mcp.json``-style
-  ``${VAR:-}`` expansion produces empty strings for variables nobody set.
-* **Tests opt out** via ``GDAI_SKIP_DOTENV``, so a developer's local ``.env``
-  cannot change what the suite asserts.
-
-No dependency is added for this: ``python-dotenv`` belongs to the
-orchestrator's distribution, not this one, and the format below is the subset
-of it that a ``.env`` written from ``.env.example`` actually uses.
+실제 프로세스 환경이 항상 우선하며 빈 예시 값은 적용하지 않는다. 테스트는
+``GDAI_SKIP_DOTENV``로 로컬 설정의 영향을 차단할 수 있다. 별도 dotenv 의존성 없이
+이 저장소의 단순한 ``KEY=VALUE`` 형식만 읽는다.
 """
 
 from __future__ import annotations

@@ -60,7 +60,7 @@ def _resolve_targets(arguments: list[str]) -> list[Path]:
     if arguments:
         return [Path(item).resolve() for item in arguments]
 
-    root = Path(os.getenv("GIT_ROOT", str(_DEFAULT_ROOT))).resolve()
+    root = Path(os.getenv("UNITY_PROJECT_PATH", str(_DEFAULT_ROOT))).resolve()
     if root.name != "work" and (root / "work").is_dir():
         root = root / "work"
     return find_projects(root)
@@ -72,7 +72,7 @@ def main(argv: list[str]) -> int:
 
     if not targets:
         print("검사할 Unity 프로젝트를 찾지 못했습니다 (Assets/ 를 가진 폴더가 없습니다).")
-        print("경로를 인자로 주거나 GIT_ROOT 를 설정하세요.")
+        print("경로를 인자로 주거나 UNITY_PROJECT_PATH를 설정하세요.")
         return 0
 
     reports: list[LayoutReport] = []

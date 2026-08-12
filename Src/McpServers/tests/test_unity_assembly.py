@@ -5,7 +5,7 @@
 이미 두 번 겪은 실패가 그대로 재발한다 — ``build_project`` 의 C# 이 클래스명
 하나(``AutoGenBuild`` vs ``CommandScript``) 때문에 **한 번도 동작하지 않았고**,
 증상이 로그도 없는 "No logs available" 이라 원인을 찾는 데 오래 걸렸다
-(`Doc/설계/00_미완료_작업_목록.md`).
+(``docs/backlog.md``의 Unity 실동작 항목).
 
 그 실패들은 전부 **소스 텍스트만 보면 알 수 있는 것들**이다. Unity 가 이 코드를
 컴파일 이전에 텍스트로 검사해 거부하기 때문이다. 그래서 여기서도 텍스트로 본다.
@@ -216,7 +216,7 @@ def test_prefab_command_wires_the_sprite_when_one_is_planned():
 
 
 # ---------------------------------------------------------------------------
-# §03 도구 경계
+# Agent-first MCP 도구 경계
 # ---------------------------------------------------------------------------
 def test_assembly_tools_are_exposed_with_camel_case_arguments():
     """오케스트레이터는 camelCase 로 보낸다. snake_case 면 -32602 로 튕긴다."""

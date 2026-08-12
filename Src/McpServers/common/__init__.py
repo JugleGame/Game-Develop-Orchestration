@@ -1,4 +1,4 @@
-"""Shared plumbing for the five MCP tool servers.
+"""Shared plumbing for the three Agent-first MCP boundaries.
 
 Importing this package applies the repository-root ``.env`` (see
 ``common/env.py``). Every server module reads its configuration with

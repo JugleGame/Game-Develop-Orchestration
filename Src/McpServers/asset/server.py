@@ -1,27 +1,21 @@
-"""AssetGenMcpServer — PixelLab-backed 2D asset generation for Unity games.
-
-Implements the three §03 tools the orchestrator calls, plus four tools for the
-requirements the §03 contract does not cover: per-project style locking and
-human review.
+"""AssetGenMcpServer — Unity 게임용 PixelLab 2D 에셋 경계.
 
 Design decisions worth knowing before editing:
 
 * **PixelLab only, no fallback.** Generation requires ``PIXELLAB_API_KEY``.
-  A missing key or a failed call is a tool error (§03 code 3000), not a
+  A missing key or a failed call is an MCP error (code 3000), not a
   silent degrade to placeholder art (see ``_generate_image``). ``render.py``
   keeps only the prompt classifier and the deterministic seed derivation
   PixelLab's call depends on — it no longer draws pixels itself.
 * **Generation never blocks the pipeline.** ``generate_2d_sprite`` returns an
   ``assetPath`` immediately and records the asset as ``pending``. Human review
   is tracked alongside, not in front of, the build. Gating the pipeline on
-  approval needs an orchestrator change — see ``../README.md``.
+  approval is the host's policy decision — see ``docs/contracts.md``.
 * **An asset's path never changes.** Review status lives in the manifest, not
   in the directory name. Files used to be moved into ``pending/``,
   ``approved/`` or ``rejected/`` as they were reviewed — but
-  ``app/graph/nodes/assetgen.py`` hands ``assetPath`` straight to
-  UnityMcpServer's ``import_asset``, so *any* review decision (approve as much
-  as reject) invalidated the path Unity had already imported. Verified: the
-  original path stopped existing after both approval and rejection.
+  the host can hand ``assetPath`` to UnityMcpServer's ``import_asset`` before
+  review metadata changes, so moving the file would invalidate that path.
 * **Return type is ``dict[str, Any]``.** A bare ``dict`` leaves
   ``structuredContent`` empty; see ``common/server.py``.
 """
@@ -46,9 +40,9 @@ from .style import load_or_create
 
 logger = logging.getLogger(__name__)
 
-mcp = build("AssetGenMcpServer", 9104)
+mcp = build("AssetGenMcpServer")
 
-ROOT = Path(os.getenv("ASSET_ROOT", "./asset_output")).resolve()
+ROOT = Path(os.getenv("ASSET_ROOT", "./var/assets")).resolve()
 DEFAULT_ART_STYLE = "pixel art"
 
 PENDING = "pending"
@@ -132,7 +126,7 @@ def _save_manifest(manifest: dict[str, Any]) -> None:
 
 
 def _require(value: str, field: str) -> str:
-    """§03 validation errors must carry code 1000, not the generic 3000."""
+    """Validation errors carry code 1000, not the generic 3000."""
 
     if not value or not value.strip():
         raise tool_error(VALIDATION_ERROR, f"{field} must not be empty")
@@ -142,7 +136,7 @@ def _require(value: str, field: str) -> str:
 def _resolve_game_id(explicit: str | None) -> str:
     """Resolve which game an asset belongs to.
 
-    The §03 asset tools only receive ``featureId``/``prompt`` — no game id — so
+    Legacy callers can omit ``gameId``, so
     an explicit ``gameId`` is accepted where callers can supply one, and
     otherwise the server falls back to a single shared project.
 
@@ -373,7 +367,7 @@ def _generate(
 
 
 # --------------------------------------------------------------------------
-# §03 contract tools — the orchestrator calls these
+# Agent-first asset tools
 # --------------------------------------------------------------------------
 
 
@@ -593,7 +587,7 @@ def generate_map_object(
 
 
 # --------------------------------------------------------------------------
-# Style + human review — required by the project brief, not by §03
+# Style + human review metadata
 # --------------------------------------------------------------------------
 
 

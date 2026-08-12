@@ -1,10 +1,7 @@
-"""One-off diagnostic: print the raw similarity score of every counterexample
-``gather_evidence`` actually returns for each case in ``evals/retrieval.jsonl``.
+"""검색 회귀 케이스마다 반례 유사도 원점수를 출력하는 일회성 진단 도구.
 
-Purpose: §2.3 of Doc/설계/06_3-4군_인수인계.md wants a similarity floor on the
-counterexample query so an irrelevant failure/mixed card does not fill the
-slot just because too few exist. Picking that floor needs to see real score
-distributions first — this script is that measurement, not the fix itself.
+무관한 실패/혼재 카드가 후보 부족만으로 반례 슬롯을 채우지 않는지 확인하고,
+``RESEARCH_COUNTEREXAMPLE_MIN_SCORE`` 조정 근거를 수집한다.
 
 Uses ``strategic.neon_http.connect_pool``, which falls back to Neon's
 SQL-over-HTTP(443) endpoint when TCP 5432 is blocked (e.g. a corporate

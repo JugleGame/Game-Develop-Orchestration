@@ -1,6 +1,6 @@
 """Tests for the PixelLab routing wired into asset/server.py::_generate_image.
 
-There is no fallback tier: a missing key or a failing call is a §03 code-3000
+There is no fallback tier: a missing key or a failing call is an MCP code-3000
 tool error, not a silent degrade to placeholder art.
 """
 
@@ -194,7 +194,7 @@ def test_configured_but_failing_raises_error(style, rng, monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# imagesGenerated surfaces through the §03 tool result
+# imagesGenerated surfaces through the MCP tool result
 # --------------------------------------------------------------------------
 
 

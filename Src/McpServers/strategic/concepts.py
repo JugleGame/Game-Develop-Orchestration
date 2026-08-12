@@ -1,16 +1,13 @@
 """아이디어 제안(concept proposal) — 청사진을 쓰기 전에 근거만 먼저 사람이 검토한다.
 
-``generate_game_design`` 은 spec-lint 를 통과하면 즉시 발행하므로, 지금까지
-사람이 실제로 개입할 수 있는 지점은 발행 *이후* (``ApprovalGate``,
-``revise_spec``) 뿐이었다. 이 모듈은 그 앞에 한 단계를 더한다.
+청사진을 저장하기 전에 사람이 아이디어와 근거를 검토할 수 있게 한다.
 
     research_idea 로 DB 근거를 모은다
         → propose_concept 으로 그 근거 + 아이디어를 저장하고 사람 앞에 세운다
         → decide_concept 으로 사람이 승인(approve) / 수정(revise) / 거부(reject) 한다
-        → 승인된 idea 텍스트만 generate_game_design 의 prompt 로 넘어간다
+        → 승인된 idea 텍스트를 호스트가 청사진 작성에 사용한다
 
-LLM 을 쓰지 않으므로(``research_idea`` 와 동일하게) ``ANTHROPIC_API_KEY`` 없이도
-동작한다 — 경로 A/B 어느 쪽에서 호출하든 같다.
+모델을 호출하지 않는다.
 
 ``strategic_concepts`` 는 ``game_id`` 를 PK 로 하는 단일 행 테이블이다. 청사진
 (``strategic_blueprints``)과 같은 버저닝 관례(재저장 시 version + 1)를 따른다:

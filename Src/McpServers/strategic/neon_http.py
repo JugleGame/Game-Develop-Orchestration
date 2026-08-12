@@ -526,7 +526,7 @@ def _raise_postgres_error(response: httpx.Response) -> NoReturn:
     """Neon 의 오류 payload 를 `asyncpg.PostgresError` 로 올린다.
 
     호출부가 asyncpg 예외를 기대하므로 타입을 맞춘다. 메시지에 SQLSTATE 를
-    붙여 §03 에러코드로 감쌀 때 원인이 남게 한다.
+    붙여 MCP 계약 오류로 감쌀 때 원인이 남게 한다.
     """
 
     try:

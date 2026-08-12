@@ -1,24 +1,13 @@
 [project]
 name = "game-mcp-servers"
 version = "0.1.0"
-description = "MCP tool servers for the AI Game Platform (§03 contract)"
+description = "Agent-first Unity game development MCP boundaries"
 requires-python = ">=3.12"
-# One venv serves all five servers, so this is the union of every server's
-# requirements.txt. anthropic's floor follows the highest any server asks for
-# (strategic/unity request >=0.60.0); asyncpg is imported unconditionally by
-# strategic/research_repo.py, so omitting it breaks test collection for the
-# whole suite, not just that server.
 dependencies = [
     "mcp>=2.0.0,<3.0.0",
     "Pillow>=11.0.0",
-    "anthropic>=0.60.0",
-    "GitPython>=3.1.40",
     "asyncpg>=0.30.0",
-    # research_repo.py::build_ssl_context() 가 직접 임포트한다. httpx 를 통해
-    # 딸려 오기는 하지만, TLS 검증의 근거를 남의 전이 의존성에 맡기지 않는다.
     "certifi>=2024.2.2",
-    # asset/pixellab_client.py 가 PixelLab REST API 를 직접 호출한다. anthropic
-    # 의 전이 의존성으로 이미 설치돼 있었지만, 직접 임포트하는 이상 명시한다.
     "httpx>=0.27.0",
 ]
 
@@ -30,6 +19,14 @@ dependencies = [
 #
 #   pip install -e ".[semantic-search]"
 semantic-search = ["sentence-transformers>=3,<6"]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24"]
+
+[tool.setuptools]
+py-modules = ["project_layout"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["asset*", "common*", "evals*", "strategic*", "unity*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

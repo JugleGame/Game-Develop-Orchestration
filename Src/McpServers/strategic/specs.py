@@ -37,7 +37,7 @@ CONTAMINATION_GUARDS: list[dict[str, Any]] = SPEC_RULES.get("contaminationGuards
 
 # S8 — 기획이 코드 경계를 침범했는지. 영문 한 덩어리(PlayerController,
 # InventoryManager, Rigidbody2D)는 C# 타입명이지 기능 이름이 아니다.
-# 06 문서 §3.1: 기능 경계는 기획, 코드 경계는 개발 AI 의 design_architecture.
+# ``docs/contracts.md``: 기능 경계는 기획, 코드 경계는 호스트의 design_architecture.
 _CSHARP_TYPE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 # 규칙 파일의 패턴은 앵커가 없는 알맹이다. 여기서는 ``\b`` 를 둘러 본문에서
 # 카드 ID 를 긁는 용도와 ``fullmatch`` 로 형식을 검사하는 용도에 함께 쓴다.
@@ -107,21 +107,21 @@ class SpecDocument:
             "",
             f"# {self.title}",
             "",
-            "## 목표",
+            "## Goal",
             self.goal,
             "",
-            "## 구현 범위",
+            "## Implementation scope",
         ]
         lines += [f"- {item}" for item in self.implementation_scope]
-        lines += ["", "## 제외 범위"]
+        lines += ["", "## Out of scope"]
         lines += [f"- {item}" for item in self.out_of_scope]
-        lines += ["", "## 합격 기준"]
+        lines += ["", "## Acceptance criteria"]
         lines += [f"- {item}" for item in self.acceptance_criteria]
 
         # 아키텍처 지침은 카드 원문이므로 개발 AI 가 읽을 spec 안에 함께 남는다.
         # 필수 섹션이 아니라 추가 섹션이라 lint_spec 의 S4 와 무관하다.
         if self.architecture:
-            lines += ["", "## 아키텍처 지침"]
+            lines += ["", "## Architecture guidance"]
             for guidance in self.architecture:
                 lines += ["", guidance.to_markdown()]
 
@@ -182,10 +182,10 @@ def lint_spec(spec: SpecDocument, known_card_ids: set[str]) -> list[str]:
 
     # S4 — 필수 섹션 (내용이 비면 섹션이 없는 것과 같다)
     for name, value in (
-        ("목표", spec.goal),
-        ("구현 범위", spec.implementation_scope),
-        ("제외 범위", spec.out_of_scope),
-        ("합격 기준", spec.acceptance_criteria),
+        ("Goal", spec.goal),
+        ("Implementation scope", spec.implementation_scope),
+        ("Out of scope", spec.out_of_scope),
+        ("Acceptance criteria", spec.acceptance_criteria),
     ):
         if not value:
             errors.append(f"S4: 필수 섹션 비어 있음 — {name}")
@@ -312,7 +312,7 @@ def _lint_contamination(spec: SpecDocument) -> list[str]:
 def _lint_role_boundary(spec: SpecDocument) -> list[str]:
     """S8 — 기획이 개발의 몫(코드 경계)을 미리 정해버렸는지.
 
-    06 문서 §3.1 이 역할을 나눠 놓았다: **기획은 기능 경계**("이 메커니즘은 어떤
+    ``docs/contracts.md``가 역할을 나눈다: **기획은 기능 경계**("이 메커니즘은 어떤
     일들을 해야 하는가"), **개발은 코드 경계**("그 일들을 어떤 클래스·파일로
     나누는가"). 기획 프롬프트도 "ChunkLoader, PlayerController 같은 C# 타입명은
     쓰지 않는다"고 명시한다.

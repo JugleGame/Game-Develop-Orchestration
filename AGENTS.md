@@ -1,4 +1,4 @@
-# Claude Code Adapter
+# Codex Adapter
 
 Read `README.md` first, then only the document required by the task:
 

@@ -1,21 +1,4 @@
-"""UnityMcpServer — §03 계약을 Unity 공식 MCP 위에 얹는 어댑터.
-
-이 서버는 **MCP 서버이자 MCP 클라이언트**다::
-
-    오케스트레이터 --Streamable HTTP :9102--> [이 어댑터] --stdio--> relay_win.exe --pipe--> Unity Editor
-                     §03 도구 이름                                     Unity_* 도구 이름
-
-Unity 공식 MCP(``com.unity.ai.assistant``)가 §03 과 어긋나는 지점 세 가지를
-여기서 흡수한다.
-
-1. **전송이 다르다.** Unity 는 stdio 릴레이 + 명명 파이프. 오케스트레이터는
-   Streamable HTTP. → ``bridge.UnityBridge``.
-2. **코드를 생성하지 않는다.** ``Unity_CreateScript`` 는 완성된 ``Contents``
-   를 요구하는데 §03 ``create_script`` 는 자연어 ``prompt`` 를 준다.
-   → ``codegen.ScriptGenerator`` 가 C# 을 만들어 넣는다.
-3. **빌드 도구가 없다.** Unity 의 54개 도구 어디에도 빌드가 없다.
-   → ``Unity_RunCommand`` 로 ``BuildPipeline`` C# 을 실행한다.
-"""
+"""Validate host-authored architecture and C#, then apply it through Unity Editor."""
 
 from __future__ import annotations
 
@@ -30,23 +13,21 @@ from mcp.types import CallToolResult, TextContent
 
 from common.errors import MCP_ERROR, UNITY_BUILD_ERROR, VALIDATION_ERROR, tool_error
 from common.server import build, expects_dict_return, serve
-from common.usage import merge_usage
 from project_layout import ProjectLayoutError, analyze_project
 
 from . import assemblies, assembly, csharp_check
-from .architecture import ArchitectureDesigner, ArchitectureError, validate_design
+from .architecture import ArchitectureError, validate_design
 from .assembly import AssemblyError
 from .bridge import UnityBridge, UnityBridgeError
-from .codegen import CodeGenerationError, ScriptGenerator, looks_like_csharp
+from .codegen import CodeGenerationError, ScriptGenerator
 
-mcp = build("UnityMcpServer", 9102)
+mcp = build("UnityMcpServer")
 
 logger = logging.getLogger("UnityMcpServer")
 
 PROJECT_PATH = os.getenv("UNITY_PROJECT_PATH", "")
 _bridge = UnityBridge(project_path=PROJECT_PATH)
 _generator = ScriptGenerator()
-_designer = ArchitectureDesigner()
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +70,7 @@ def _payload_of(result: CallToolResult) -> dict[str, Any]:
 async def _call_unity(
     tool: str, arguments: dict[str, Any], timeout: float = 120.0, build_error: bool = False
 ) -> dict[str, Any]:
-    """Unity 도구를 부르고 실패를 §03 오류로 정규화한다."""
+    """Unity 도구를 부르고 실패를 MCP 계약 오류로 정규화한다."""
 
     bridge = await _ensure_bridge()
     try:
@@ -197,7 +178,7 @@ async def _read_error_console(count: int = 200) -> list[dict[str, Any]]:
 
     그래서 **전부 읽고 우리가 분류한다.** ``Type`` 이 맞게 왔으면 그것을 믿고,
     아니면 메시지 모양으로 판정한다. 이 필터가 조용히 비면 재시도 루프는 고칠
-    것이 없다고 판단하고 QA 는 근거 없이 통과시킨다 — 06 문서가 말하는
+    것이 없다고 판단할 수 있다. ``docs/contracts.md``가 요구하는
     "잘못된 결과가 합격으로 기록되는" 경로가 정확히 이것이다.
     """
 
@@ -233,34 +214,21 @@ async def _read_error_console(count: int = 200) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# §03 도구
+# Agent-first MCP 도구
 # ---------------------------------------------------------------------------
 @mcp.tool(
     description=(
-        "코드를 쓰기 전에 게임 전체의 파일·타입·프리팹·씬 구성을 한 번에 설계한다. "
-        "게임당 한 번만 부른다. design 인자로 완성된 설계안을 넘기면 모델을 부르지 않는다."
+        "Validate the host-authored file, type, prefab, and scene plan for one game. "
+        "Call once per game."
     )
 )
 @expects_dict_return
 async def design_architecture(
     gameId: str,
-    gameDesign: dict[str, Any] | None = None,
-    featurePrompts: list[dict[str, Any]] | None = None,
-    design: dict[str, Any] | None = None,
+    featurePrompts: list[dict[str, Any]],
+    design: dict[str, Any],
 ) -> dict[str, Any]:
-    """기획의 **기능 경계**를 코드 경계로 옮긴다.
-
-    기획(``unityHints.components``)은 "청크 좌표 계산" 같은 우리말 기능 덩어리까지만
-    정하고, 그것을 어떤 클래스·파일·프리팹으로 나눌지는 여기서 정해진다 — 사람이
-    그렇게 정했다 (06 문서 §3.1).
-
-    **게임당 한 번만 부른다.** 결과가 게임 안에서 불변이라 이후 ``create_script``
-    호출들의 캐시 접두사로 쓰이고, 재시도가 설계를 다시 뽑지 않아야 회차마다
-    구조가 흔들리지 않는다.
-
-    ``design`` 을 채우면 서버는 모델을 호출하지 않고 **검증만** 한다 (경로 B).
-    넘긴 값도 생성한 값과 똑같이 검증되므로 이 우회가 규칙에 구멍을 내지 않는다.
-    """
+    """기획의 기능 경계를 호스트가 정한 코드 경계로 검증한다."""
 
     gameId = _require(gameId, "gameId")
     prompts = featurePrompts or []
@@ -277,10 +245,7 @@ async def design_architecture(
     feature_ids = [str(item["feature_id"]) for item in prompts]
 
     try:
-        if design is not None:
-            planned = validate_design(design, feature_ids)
-        else:
-            planned = await _designer.design(gameDesign or {}, prompts)
+        planned = validate_design(design, feature_ids)
     except ArchitectureError as exc:
         raise tool_error(VALIDATION_ERROR, str(exc), gameId=gameId) from exc
 
@@ -291,115 +256,40 @@ async def design_architecture(
             "files": len(planned.files),
             "prefabs": len(planned.prefabs),
             "scene_objects": len(planned.scene.get("objects", [])),
-            "supplied": design is not None,
+            "supplied": True,
         },
     )
 
     body = planned.to_dict()
     body["gameId"] = gameId
-    # 생성 단계가 캐시 접두사로 싣는다 — 첫 파일부터 전체 타입 지도를 보게 된다.
     body["typeMap"] = planned.type_map()
-    # 넘겨받은 설계안은 지출이 0 이므로 usage 를 싣지 않는다.
-    if planned.usage is not None:
-        body["usage"] = planned.usage
     return body
 
 
-@mcp.tool(description="기능 설명으로 C# 스크립트를 생성해 Unity 프로젝트에 추가한다.")
+@mcp.tool(description="Validate host-authored C#, then create or update its Unity script.")
 @expects_dict_return
 async def create_script(
     featureId: str,
-    prompt: str,
-    contents: str = "",
-    projectContext: str = "",
-    existingTypes: list[str] | None = None,
-    previousSource: str = "",
+    contents: str,
     plannedPath: str = "",
     plannedClass: str = "",
+    update: bool = False,
 ) -> dict[str, Any]:
-    """프롬프트를 C# 으로 바꿔 ``Unity_CreateScript`` 에 넣는다.
-
-    §03 필수 인자는 ``featureId``/``prompt`` 뿐이고 나머지는 모두 옵션이라,
-    계약대로만 부르는 호출자도 그대로 동작한다.
-
-    * ``contents`` — 완성된 C# 을 직접 준다. 생성 단계를 건너뛴다 (키 불필요).
-    * ``projectContext`` — 이 게임의 청사진 요약·코드 규약. 한 게임 안에서
-      불변이라 프롬프트 캐시의 접두사로 쓰인다.
-    * ``existingTypes`` — 이미 만들어진 타입 목록. 같은 게임의 다른 스크립트를
-      알아보게 한다.
-    * ``previousSource`` — 재시도일 때 이전 소스. 주어지면 백지 재작성이 아니라
-      **수정**으로 동작한다.
-    * ``plannedPath`` / ``plannedClass`` — ``design_architecture`` 가 정한 파일
-      경로와 타입 이름. 주어지면 이름을 여기서 다시 짓지 않는다. **이 둘이 없을
-      때만** ``feature_id`` 에서 이름을 만드는 옛 규칙이 돌고, 그 규칙이
-      ``Spec001`` 같은 문서 번호 이름의 출처였다 (06 문서 §1.3).
-
-    한 번에 파일 **하나**를 만든다. spec 하나가 파일 여럿이 되는 것은 설계안이
-    파일을 여럿으로 나누고 호출자가 그만큼 부르기 때문이지, 이 도구가 여러 개를
-    돌려주기 때문이 아니다 — 그래서 §03 의 ``{file}`` 반환이 그대로 유지된다.
-
-    Unity 에 넣기 **전에** 로컬 문법 게이트를 통과시킨다. 통과하지 못하면
-    (그리고 우리가 생성한 소스라면) 그 오류를 근거로 한 번 고쳐 보고, 그래도
-    안 되면 Unity 를 건드리지 않고 실패한다 — 명백한 구문 오류를 30분짜리
-    빌드로 확인하지 않기 위해서다.
-    """
+    """완성된 C#을 정적 검사한 뒤 Unity에 반영한다."""
 
     featureId = _require(featureId, "featureId")
-    supplied = bool(contents.strip()) or looks_like_csharp(prompt)
 
     try:
-        if contents.strip():
-            script = _generator.plan(
-                featureId,
-                contents.strip(),
-                planned_path=plannedPath,
-                planned_class=plannedClass,
-            )
-        elif looks_like_csharp(prompt):
-            # 호출자가 프롬프트 자리에 이미 C# 을 넣은 경우.
-            script = _generator.plan(
-                featureId,
-                prompt.strip(),
-                planned_path=plannedPath,
-                planned_class=plannedClass,
-            )
-        else:
-            script = await _generator.generate(
-                featureId,
-                _require(prompt, "prompt"),
-                project_context=projectContext,
-                existing_types=existingTypes or [],
-                previous_source=previousSource,
-                planned_path=plannedPath,
-                planned_class=plannedClass,
-            )
+        script = _generator.plan(
+            featureId,
+            _require(contents, "contents"),
+            planned_path=plannedPath,
+            planned_class=plannedClass,
+        )
     except CodeGenerationError as exc:
         raise tool_error(VALIDATION_ERROR, str(exc), featureId=featureId) from exc
 
     gate = csharp_check.check(script.contents)
-    repair_usage: dict[str, Any] | None = None
-
-    if not gate.ok and not supplied:
-        # 우리가 만든 소스이므로 한 번은 스스로 고쳐 본다. 넘겨받은 소스는
-        # 호출자의 산출물이라 말없이 바꾸지 않는다.
-        logger.warning(
-            "Generated C# failed the local syntax gate; attempting one repair",
-            extra={"feature_id": featureId, "gate_errors": list(gate.errors)},
-        )
-        try:
-            repaired = await _generator.generate(
-                featureId,
-                "The file has these syntax errors:\n"
-                + "\n".join(f"- {item}" for item in gate.errors),
-                project_context=projectContext,
-                existing_types=existingTypes or [],
-                previous_source=script.contents,
-            )
-        except CodeGenerationError as exc:
-            raise tool_error(VALIDATION_ERROR, str(exc), featureId=featureId) from exc
-        repair_usage = script.usage
-        script = repaired
-        gate = csharp_check.check(script.contents)
 
     if not gate.ok:
         # Unity 를 건드리기 전에 멈춘다. 여기서 통과시키면 이 오류를 확인하는
@@ -411,7 +301,7 @@ async def create_script(
             syntaxErrors=list(gate.errors),
         )
 
-    if previousSource.strip():
+    if update:
         # A retry repairing an existing file. Unity_CreateScript has no update
         # capability at all — its schema (Path/Contents/ScriptType/Namespace)
         # carries no Action field, so an "Action": "Update" key here is simply
@@ -452,13 +342,10 @@ async def create_script(
     except Exception:  # noqa: BLE001 — 검증 실패가 생성 성공을 뒤집지는 않는다
         diagnostics = {"validated": False}
 
-    # §03: 오케스트레이터는 body["file"] 만 읽는다. 반드시 채워야 한다.
+    # 호스트가 안정적으로 파일을 찾도록 계약의 ``file``을 항상 채운다.
     body: dict[str, Any] = {
         "file": script.path,
         "className": script.class_name,
-        # 이 파일이 선언한 **모든** 타입. 호출자가 다음 스크립트의
-        # ``existingTypes`` 로 넘겨, 같은 파일 안의 형제 타입이 뒤에 오는
-        # 스크립트에게 보이지 않던 문제를 없앤다 (06 문서 §2.1).
         "types": list(script.types),
         "namespace": script.namespace,
         "featureId": featureId,
@@ -466,20 +353,14 @@ async def create_script(
         "syntaxGate": {
             "ok": gate.ok,
             "checkedBy": gate.checked_by,
-            "repaired": repair_usage is not None,
+            "repaired": False,
         },
-        # 재시도 루프가 이전 소스를 되돌려 받아 다음 라운드에 넘긴다.
         "contents": script.contents,
     }
-    # 생성 경로로 왔을 때만 붙는다. contents 를 직접 받은 호출은 토큰을 쓰지 않는다.
-    # 게이트 재시도가 있었다면 두 호출의 지출을 모두 합산한다 — 한쪽만 실으면
-    # 그만큼이 통째로 안 보이게 된다.
-    if script.usage is not None:
-        body["usage"] = merge_usage(repair_usage, script.usage)
     return body
 
 
-@mcp.tool(description="Unity 씬을 생성한다.")
+@mcp.tool(description="Create an empty Unity scene.")
 @expects_dict_return
 async def create_scene(featureId: str, sceneName: str) -> dict[str, Any]:
     featureId = _require(featureId, "featureId")
@@ -501,7 +382,7 @@ async def create_scene(featureId: str, sceneName: str) -> dict[str, Any]:
     }
 
 
-@mcp.tool(description="생성된 에셋을 Unity 프로젝트로 임포트한다.")
+@mcp.tool(description="Import a generated asset into the Unity project.")
 @expects_dict_return
 async def import_asset(featureId: str, assetPath: str) -> dict[str, Any]:
     """AssetGenMcpServer 가 만든 파일을 Unity 가 인식하게 만든다.
@@ -542,20 +423,20 @@ async def import_asset(featureId: str, assetPath: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 조립 3종 — 설계안을 실행만 한다 (06 문서 §3.2 3단계)
+# 조립 3종 — ``docs/contracts.md``의 설계안을 Unity에서 실행한다.
 #
 # 이 셋은 새로 판단하지 않는다. ``design_architecture`` 의 ``prefabs[]`` 가
 # ``create_prefab`` 의 인자이고 ``scene`` 이 ``compose_scene`` 의 인자다. 그래서
 # 같은 설계안이면 조립 결과가 실행마다 같다.
 #
 # 이 셋이 생기기 전에는 모델이 런타임 ``new GameObject`` + ``AddComponent`` 로
-# 조립을 흉내 낼 수밖에 없었다 (06 문서 §1.2). 그 부트스트랩이 더 이상 나오지
+# 조립을 흉내 내는 런타임 부트스트랩이 생길 수 있었다. 이 도구로 그 우회를 막는다.
 # 않는 것이 3단계 성공의 신호다.
 # ---------------------------------------------------------------------------
 @mcp.tool(
     description=(
-        "설계안의 프리팹 하나를 실제로 만든다 — 오브젝트에 컴포넌트를 붙여 "
-        "Assets/Prefabs/ 에 저장한다. Unity Editor 가 떠 있어야 한다."
+        "Create one planned prefab, attach its components, and save it under Assets/Prefabs. "
+        "Requires a running Unity Editor."
     )
 )
 @expects_dict_return
@@ -570,7 +451,7 @@ async def create_prefab(
 
     반복 등장하는 것(적·아이템·발사체)은 프리팹이어야 한다 — 04 명세의
     **Prefab Rule** 이다. 지금까지는 이 규칙을 이행할 도구 자체가 없어서
-    준수 여부를 논할 수조차 없었다 (06 문서 §2.2).
+    준수 여부를 판정할 수 없었다.
 
     ``components`` 에는 우리가 만든 타입과 Unity 내장 타입을 섞어 넣어도 된다.
     이름으로 못 찾은 것은 실패가 아니라 ``missing`` 으로 보고된다 — 아직
@@ -614,8 +495,8 @@ async def create_prefab(
 
 @mcp.tool(
     description=(
-        "설계안의 씬 계층을 실제로 만든다 — 오브젝트를 배치하고 컴포넌트를 붙여 "
-        "저장하고 빌드 설정에 등록한다. Unity Editor 가 떠 있어야 한다."
+        "Create the planned scene hierarchy, attach components, save it, and register it in "
+        "build settings. Requires a running Unity Editor."
     )
 )
 @expects_dict_return
@@ -626,7 +507,7 @@ async def compose_scene(
 
     ``create_scene`` 이 만드는 것은 빈 씬이다. 지금까지 파이프라인 7단계
     「씬 구성」의 실제 도구가 그것뿐이라, 스크립트가 어디에도 붙지 않은 채
-    빌드까지 갔다 (06 문서 §1.2). 이 도구가 그 자리를 채운다.
+    빌드까지 갈 수 있었다. 이 도구가 그 자리를 채운다.
 
     부모가 자식보다 먼저 만들어지도록 순서를 여기서 확정한다 — 설계 검증은
     "부모가 씬에 있는가"만 보고 순서는 보지 않기 때문이다.
@@ -678,8 +559,8 @@ async def compose_scene(
 
 @mcp.tool(
     description=(
-        "인스펙터의 [SerializeField] 칸에 스프라이트나 프리팹을 꽂는다. "
-        "target 은 .prefab 경로이거나 씬 안의 계층 경로다."
+        "Bind a sprite or prefab to a serialized Inspector field. Target is a prefab path or "
+        "a scene hierarchy path."
     )
 )
 @expects_dict_return
@@ -689,7 +570,7 @@ async def bind_reference(
     """생성된 그림을 실제로 **화면에 나오게** 만드는 단계다.
 
     ``import_asset`` 은 임포트만 하고 참조를 꽂지 않는다. 그래서 그림 아홉 장을
-    만들어 놓고 그것을 참조하는 코드가 0줄인 상태가 나왔다 (06 문서 §1.2).
+    만들어 놓고 그것을 참조하는 코드가 0줄인 상태를 막는다.
 
     ``field`` 는 ``"enemyPrefab"`` 처럼 필드 이름만 주거나
     ``"EnemySpawner.enemyPrefab"`` 처럼 컴포넌트까지 못박을 수 있다. 못박는 쪽이
@@ -740,13 +621,12 @@ async def bind_reference(
 
 
 # ---------------------------------------------------------------------------
-# 4단계 — 어셈블리 분리 (06 문서 §3.2 4단계)
+# 마지막 단계 — 어셈블리 분리 (``docs/architecture.md``의 종료 조건)
 # ---------------------------------------------------------------------------
 @mcp.tool(
     description=(
-        "카테고리 폴더마다 .asmdef 를 놓아 빌드를 나눈다 — 한 파일을 고칠 때 전체 "
-        "재컴파일을 피한다. 순환이 생길 조합은 계획 단계에서 빠지므로 나누다 만 "
-        "상태가 되어도 컴파일은 깨지지 않는다."
+        "Plan or create per-category .asmdef files to reduce recompilation. Skip any split that "
+        "could introduce a dependency cycle."
     )
 )
 @expects_dict_return
@@ -894,7 +774,7 @@ internal class CommandScript : IRunCommand
 """
 
 
-@mcp.tool(description="Unity 프로젝트를 빌드한다 (BuildPipeline 실행).")
+@mcp.tool(description="Build the Unity project through BuildPipeline.")
 @expects_dict_return
 async def build_project(gameId: str) -> dict[str, Any]:
     """Unity 에는 빌드 도구가 없어 ``Unity_RunCommand`` 로 C# 을 실행한다.
@@ -1009,7 +889,7 @@ def _decode_embedded_json(value: str) -> dict[str, Any] | None:
     return None
 
 
-@mcp.tool(description="플레이 모드를 실행해 런타임 오류를 수집한다.")
+@mcp.tool(description="Run PlayMode and collect runtime errors.")
 @expects_dict_return
 async def run_playmode_test(gameId: str) -> dict[str, Any]:
     """Editor 를 Play 로 전환했다가 멈추고 그 사이의 콘솔을 걷어온다."""
@@ -1039,10 +919,10 @@ async def run_playmode_test(gameId: str) -> dict[str, Any]:
     }
 
 
-@mcp.tool(description="마지막 컴파일/실행에서 발생한 오류를 반환한다.")
+@mcp.tool(description="Return errors from the latest compile or run.")
 @expects_dict_return
 async def get_compile_errors(gameId: str) -> dict[str, Any]:
-    """§03: 오케스트레이터는 ``body["errors"]`` 를 ``CompileError`` 로 읽는다.
+    """호스트는 ``body["errors"]``를 ``CompileError`` 증거로 읽는다.
 
     ``CompileError`` 는 ``{file, line, message}`` 이므로 Unity 콘솔 항목을
     그 모양으로 변환해서 돌려준다.
@@ -1083,8 +963,8 @@ def _to_compile_error(entry: Any) -> dict[str, Any]:
 
 @mcp.tool(
     description=(
-        "Unity 프로젝트의 구조를 보고한다 — 스크립트가 실제로 씬·프리팹에 붙어 있는지, "
-        "이름 규칙과 폴더 규칙을 지키는지. Unity Editor 없이 파일만 읽는다."
+        "Inspect script attachment, naming, and folder structure from project files. "
+        "Does not require Unity Editor."
     )
 )
 @expects_dict_return
@@ -1095,7 +975,7 @@ async def inspect_project_layout(gameId: str = "", projectPath: str = "") -> dic
     결과뿐이라, 판정자가 "이 스크립트가 어디에 붙어 있는가" 를 알 방법이 없었다.
     그래서 ``verify_prototype_structure`` 는 이름과 달리 ``core_mechanics``
     커버리지만 봤고, 여섯 스크립트 중 다섯이 어디에도 안 붙은 프로토타입이
-    PASS 로 통과했다 (06 문서 §2.1).
+    통과하는 일을 막기 위한 구조 검사다.
 
     Unity Editor 가 필요 없다 — ``.cs.meta`` 의 guid 와 ``.unity``/``.prefab`` 의
     ``m_Script`` 참조를 대조하는 텍스트 판정이라, 에디터가 꺼져 있어도, CI 에서도
@@ -1138,7 +1018,7 @@ async def inspect_project_layout(gameId: str = "", projectPath: str = "") -> dic
     }
 
 
-@mcp.tool(description="Unity 브리지 상태와 사용 가능한 Unity 도구를 보고한다.")
+@mcp.tool(description="Report Unity bridge status and available Unity tools.")
 @expects_dict_return
 async def unity_bridge_status() -> dict[str, Any]:
     """진단용 — 오케스트레이터는 부르지 않는다."""

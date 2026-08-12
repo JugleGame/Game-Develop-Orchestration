@@ -1,7 +1,7 @@
 """UnityMcpServer 어댑터 검증 — 실행 중인 Unity Editor 없이 도는 부분만.
 
-Unity 를 실제로 태우는 확인은 README 의 수동 절차를 따른다. 여기서는 §03
-계약 준수와 순수 변환 로직을 고정한다.
+Unity 를 실제로 태우는 확인은 운영 문서의 수동 절차를 따른다. 여기서는 MCP
+계약과 순수 변환 로직을 고정한다.
 """
 
 from __future__ import annotations
@@ -17,12 +17,11 @@ from unity.codegen import (  # noqa: E402
     ScriptGenerator,
     _sanitize_class_name,
     looks_like_csharp,
-    strip_fences,
 )
 
 
 # ---------------------------------------------------------------------------
-# §03 계약
+# Agent-first 계약
 # ---------------------------------------------------------------------------
 def test_exposes_every_contract_tool():
     names = {tool.name for tool in unity_server.mcp._tool_manager.list_tools()}
@@ -34,8 +33,6 @@ def test_exposes_every_contract_tool():
         "build_project",
         "run_playmode_test",
         "get_compile_errors",
-        # 06 문서 §3.2 로 추가된 둘. 설계 패스는 코드 생성보다 먼저 돌고,
-        # 레이아웃 조회는 QA 가 구조를 판정할 근거를 만든다.
         "design_architecture",
         "inspect_project_layout",
     } <= names
@@ -44,7 +41,7 @@ def test_exposes_every_contract_tool():
 @pytest.mark.parametrize(
     ("tool_name", "required"),
     [
-        ("create_script", {"featureId", "prompt"}),
+        ("create_script", {"featureId", "contents"}),
         ("create_scene", {"featureId", "sceneName"}),
         ("import_asset", {"featureId", "assetPath"}),
         ("build_project", {"gameId"}),
@@ -61,7 +58,7 @@ def test_tools_use_camel_case_argument_names(tool_name: str, required: set[str])
 
 
 # ---------------------------------------------------------------------------
-# 콘솔 항목 → §5 CompileError 변환
+# 콘솔 항목 → CompileError 변환
 # ---------------------------------------------------------------------------
 def test_compile_error_parses_unity_message_format():
     """Unity 는 파일/라인을 메시지 문자열 안에 넣는다."""
@@ -150,10 +147,6 @@ def test_class_name_is_taken_from_the_source_not_the_feature_id():
     assert planned.path == "Assets/Scripts/PlayerController2D.cs"
 
 
-def test_markdown_fences_are_stripped():
-    assert strip_fences("```csharp\npublic class A {}\n```") == "public class A {}"
-
-
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
@@ -164,31 +157,24 @@ def test_markdown_fences_are_stripped():
     ],
 )
 def test_csharp_detection(text: str, expected: bool):
-    """프롬프트 자리에 이미 C# 이 온 경우 LLM 호출을 건너뛰기 위한 판별."""
+    """호스트 입력이 C# 소스 형태인지 빠르게 판별한다."""
 
     assert looks_like_csharp(text) is expected
 
 
-def test_code_generation_without_api_key_fails_clearly(monkeypatch):
+def test_non_csharp_contents_fail_clearly():
     from unity.codegen import CodeGenerationError
 
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     generator = ScriptGenerator()
 
     with pytest.raises(CodeGenerationError) as exc_info:
-        generator._ensure_client()
+        generator.plan("f-1", "Add a double jump")
 
     assert "contents" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
-# create_script 갱신 경로 — 백로그 「unity 서버 create_script 에 갱신 경로가
-# 없다」. Unity_CreateScript 는 Action 파라미터 자체가 없어(Path/Contents/
-# ScriptType/Namespace 뿐) Action=Update 를 실어도 조용히 무시되고, Unity 가
-# "Script already exists ... Use 'update' action to modify" 로 거부한다
-# (실측 확인, 2026-08-02). previousSource 가 있으면(=재시도) 대신
-# Unity_ManageScript 를 action="update" 로 불러야 한다 — 이 도구만 기존 파일
-# 갱신을 지원하고, 인자 모양도 소문자 action/name/path/contents 로 다르다.
+# create_script 갱신 경로. update=True이면 Unity_ManageScript를 사용한다.
 # ---------------------------------------------------------------------------
 def _record_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict]]:
     calls: list[tuple[str, dict]] = []
@@ -209,9 +195,8 @@ async def test_create_script_retry_calls_manage_script_update(monkeypatch):
 
     await unity_server.create_script(
         featureId="f-1",
-        prompt="",
         contents="public class F1 : MonoBehaviour { }",
-        previousSource="public class F1 : MonoBehaviour { /* old */ }",
+        update=True,
     )
 
     assert not any(c[0] == "Unity_CreateScript" for c in calls)
@@ -228,7 +213,6 @@ async def test_create_script_first_pass_omits_action(monkeypatch):
 
     await unity_server.create_script(
         featureId="f-1",
-        prompt="",
         contents="public class F1 : MonoBehaviour { }",
     )
 

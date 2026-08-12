@@ -15,4 +15,3 @@ os.environ["GDAI_SKIP_DOTENV"] = "1"
 
 # Every test writes into a throwaway root so runs never touch real output.
 os.environ.setdefault("ASSET_ROOT", tempfile.mkdtemp(prefix="mcpservers_test_"))
-os.environ.setdefault("GIT_ROOT", tempfile.mkdtemp(prefix="mcpservers_test_git_"))

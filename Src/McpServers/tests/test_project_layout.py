@@ -5,7 +5,7 @@
 **위반 케이스와 정상 케이스를 짝으로** 둔다.
 
 실물 대조는 ``test_catches_the_shipped_sample`` 이 맡는다 —
-``Doc/설계/06_코드생성_아키텍처_진단_260730.md`` 가 근거로 삼은 그 산출물이
+``docs/contracts.md``의 구조 규칙이 겨냥하는 결함이
 정말 FAIL 로 나오는지 보는, 이 검사기의 존재 이유다.
 """
 
@@ -331,7 +331,7 @@ def test_catches_the_shipped_sample():
     """QA PASS 로 배포됐던 산출물이 이 검사기에서는 FAIL 이어야 한다.
 
     이게 통과(=OK)로 나오면 검사기가 잘못된 것이다. 그 산출물은 스크립트 6개가
-    전부 문서 번호 이름이고 그중 다섯이 어디에도 붙어 있지 않다 (06 문서 §1.2).
+    전부 문서 번호 이름이고 대부분 어디에도 붙어 있지 않다.
     """
 
     report = analyze_project(SHIPPED_SAMPLE)

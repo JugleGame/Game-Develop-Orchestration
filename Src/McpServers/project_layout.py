@@ -1,12 +1,8 @@
 """생성된 Unity 프로젝트의 **구조**를 판정한다 — Unity Editor 없이, 텍스트만 읽어서.
 
-왜 필요한가. 기존 검사 넷 중 어느 것도 산출물의 구조를 보지 않는다.
-``verify_contract.py`` 는 MCP 도구 목록만, ``qa.verify_prototype_structure`` 는
-청사진의 ``core_mechanics`` 커버리지만, ``evals/codegen.jsonl`` 은 파일 하나 안의
-단어만, ``spec_rules.json`` 은 spec 문서 형식만 본다. 그래서
-``Assets/Scripts/Spec001.cs`` ~ ``Spec006.cs`` 가 나오고 그중 다섯 개가 **어떤
-GameObject 에도 붙어 있지 않은** 상태로 QA PASS 가 나 태그까지 붙었다
-(`Doc/설계/06_코드생성_아키텍처_진단_260730.md` §2.1).
+왜 필요한가. 컴파일 성공만으로는 스크립트가 씬·프리팹에 연결됐는지, 타입 경계가
+역할을 반영하는지 알 수 없다. 이 검사는 ``docs/contracts.md``의 Unity 구조 계약을
+Unity Editor 없이 검증한다.
 
 **이 모듈은 판정만 한다.** 출력·종료 코드는 ``verify_project_layout.py`` 가 맡는다.
 그래야 같은 판정을 테스트에서도 부를 수 있다.

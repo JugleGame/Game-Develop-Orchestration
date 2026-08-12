@@ -1,0 +1,60 @@
+# Architecture
+
+## Decision
+
+Agent-first is the default. Codex or Claude Code is the sole reasoning layer. There is no
+Web, FastAPI, or LangGraph orchestrator.
+
+```mermaid
+flowchart TB
+    U["User"] --> H["Host agent: Codex / Claude Code"]
+    H --> R["Research MCP: evidence, counterexamples, spec storage/lint"]
+    H --> N["Unity MCP: apply, assemble, build, PlayMode, validation"]
+    H --> A["Asset MCP: PixelLab, style, review metadata"]
+    R --> DB["Research DB"]
+    N --> UE["Unity Editor"]
+    A --> PX["PixelLab"]
+    A --> V["var/assets"]
+    N --> E["Validation evidence"] --> H
+    H -->|"after user approval"| G["Native Git"]
+```
+
+## Ownership
+
+### Host agent
+
+- Interpret requests; plan; draft blueprints, specs, architecture, and code.
+- Judge validation evidence and control bounded retries.
+- Obtain user approval and perform native Git operations.
+
+### Research MCP
+
+- Retrieve source cards, supporting evidence, and counterexamples.
+- Store concept decisions, blueprints, and specs.
+- Validate spec schema, citations, and role boundaries.
+
+### Unity MCP
+
+- Validate completed architecture and C#.
+- Apply files; assemble scenes, prefabs, and references.
+- Return raw compile, build, PlayMode, and layout evidence.
+
+### Asset MCP
+
+- Call PixelLab and return usage metadata.
+- Lock per-project style and validate file metadata.
+- Store output under `var/assets` and record human review metadata.
+
+## Deliberately absent
+
+- LLM calls inside MCP servers
+- Git MCP or automatic deployment nodes
+- Web dashboard, REST/SSE API, job database, Redis event bus
+- Committed generated images, blueprints, or experiment output
+- Provider/factory/interface layers with one implementation
+
+## Ordering and exit
+
+After spec approval, code and asset requests may be prepared in parallel. Import and bind assets
+only after validation. Make the final feature judgment only after build, compile, PlayMode, and
+layout evidence is available. Retry the same failure at most three times, then ask the user.

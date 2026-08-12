@@ -64,10 +64,11 @@ logger = logging.getLogger(__name__)
 
 # tools/embed_cards.py 와 반드시 같아야 한다. 다르면 벡터 공간이 어긋난다.
 # 차원이 다르면 pgvector 가 즉시 에러를 내므로 조용히 틀리지는 않는다.
-EMBEDDING_MODEL = os.getenv("RESEARCH_EMBEDDING_MODEL", "BAAI/bge-m3")
+DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
+EMBEDDING_MODEL = os.getenv("RESEARCH_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
 EMBEDDING_DIM = 1024
 
-COUNTEREXAMPLE_MISSING = "반례 조사 부족"
+COUNTEREXAMPLE_MISSING = "Insufficient counterexample evidence"
 
 # 반례가 사는 절. **내용만으로 반례임이 분명한 절**만 넣는다.
 #
@@ -83,10 +84,10 @@ COUNTEREXAMPLE_MISSING = "반례 조사 부족"
 #   확률 조작 제재)를 밀어냈다.
 # * ``cause_analysis`` (GAME 성공/실패 원인) — 무조건은 아니고 아래 참조.
 COUNTER_SECTION_KEYS = [
-    "failure_cases",     # ELEM: 실패 사례
-    "risk",              # ELEM: 리스크
-    "antipatterns",      # ARCH: 안티패턴
-    "market_saturation", # GENRE: 시장 포화도
+    "failure_cases",     # ELEM: Failure Cases
+    "risk",              # ELEM: Risks
+    "antipatterns",      # ARCH: Anti-patterns
+    "market_saturation", # GENRE: Market Saturation
 ]
 
 # ``## 성공/실패 원인`` 은 실패·혼재 사례 카드일 때만 반례다.
@@ -490,20 +491,12 @@ class ResearchRepository:
 
     # ------------------------------------------------------------------
     async def arch_guidance(self, card_ids: list[str]) -> dict[str, ArchGuidance]:
-        """ARCH 카드 본문에서 구현 지침을 잘라 카드 ID → 지침으로 돌려준다.
-
-        모델을 거치지 않는 유일한 카드 원문 전달 경로다 (``arch_cards.py``).
-        존재하지 않는 ID 는 조용히 빠지고, 그 결과 spec 에 지침이 실리지 않아
-        ``lint_spec`` 의 S6 가 반려한다 — 여기서 던지는 대신 검사에 맡긴다.
-        """
+        """Return implementation guidance from normalized ARCH-card sections."""
 
         wanted = arch_ids(card_ids)
         if not wanted:
             return {}
-        # 절은 DB가 이미 나눠 갖고 있다 (sync_db.py 가 표준 사전으로 분할).
-        # 본문을 받아 여기서 다시 정규식으로 자르면 파싱이 두 곳에 살게 되고,
-        # 그중 하나(여기)는 절 제목이 한국어라고 가정한다 - 카드를 영어로 옮기는
-        # 순간 조용히 빈 지침이 나온다.
+        # sync_db.py already splits English Markdown into language-neutral section keys.
         rows = await self._pool.fetch(
             "SELECT s.card_id, c.title, s.section_key, s.body "
             "FROM card_sections s JOIN cards c ON c.card_id = s.card_id "

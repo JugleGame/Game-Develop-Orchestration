@@ -2,55 +2,24 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "pytest: DeveloperAI",
+      "label": "pytest: MCP boundaries",
       "type": "shell",
-      "command": "${workspaceFolder}/Src/DeveloperAI/.venv/Scripts/python.exe",
-      "args": ["-m", "pytest"],
-      "options": { "cwd": "${workspaceFolder}/Src/DeveloperAI" },
-      "group": "test",
-      "problemMatcher": []
-    },
-    {
-      "label": "pytest: McpServers",
-      "type": "shell",
-      "command": "${workspaceFolder}/Src/DeveloperAI/.venv/Scripts/python.exe",
-      "args": ["-m", "pytest"],
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["-m", "pytest", "Src/McpServers/tests"],
       "options": {
-        "cwd": "${workspaceFolder}/Src/McpServers",
-        "env": { "PYTHONPATH": "." }
+        "cwd": "${workspaceFolder}",
+        "env": { "PYTHONPATH": "${workspaceFolder}/Src/McpServers" }
       },
       "group": "test",
       "problemMatcher": []
     },
     {
-      "label": "MCP: verify_contract",
+      "label": "MCP: verify contract",
       "type": "shell",
-      "command": "${workspaceFolder}/Src/DeveloperAI/.venv/Scripts/python.exe",
-      "args": ["verify_contract.py"],
-      "options": {
-        "cwd": "${workspaceFolder}/Src/McpServers",
-        "env": { "PYTHONPATH": "." }
-      },
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["Src/McpServers/verify_contract.py"],
+      "options": { "cwd": "${workspaceFolder}" },
       "group": "test",
-      "problemMatcher": []
-    },
-    {
-      "label": "Web: dev",
-      "type": "shell",
-      "command": "npm",
-      "args": ["run", "dev"],
-      "options": { "cwd": "${workspaceFolder}/Src/Web" },
-      "group": "build",
-      "isBackground": true,
-      "problemMatcher": []
-    },
-    {
-      "label": "Web: build",
-      "type": "shell",
-      "command": "npm",
-      "args": ["run", "build"],
-      "options": { "cwd": "${workspaceFolder}/Src/Web" },
-      "group": "build",
       "problemMatcher": []
     }
   ]
