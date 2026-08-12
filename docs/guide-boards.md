@@ -18,7 +18,7 @@ current official documentation on this date.
 
 ## Current hand-off state
 
-- Implemented: Research, Unity, and Asset MCP boundaries; draft/published design states; dependency validation; immutable planning-file export; PixelLab asset review metadata.
+- Implemented: Research, Unity, and Asset MCP boundaries; draft/published design states; dependency validation; immutable planning-file export; asset review metadata.
 - Source configuration: `.mcp.json` is intentionally not versioned. Run bootstrap to create a local configuration for the current checkout.
 - Local runtime integrations (Unity project and relay, Research DSN, and PixelLab key) are intentionally not recorded in versioned documentation. Check their availability through the MCP status tools before use.
 - Verified locally: Python unit tests, Python bytecode compilation, and MCP contract schemas.
@@ -33,7 +33,7 @@ flowchart LR
     R -->|"published only"| H["Hashed hand-off files\nvar/handoffs/<game>/v<version>"]
     H --> E["Execution AI"]
     E --> U["Unity MCP\nC# gate · Editor · build · PlayMode"]
-    E --> A["Asset MCP\nPixelLab · style lock · review state"]
+    E --> A["Asset MCP\nasset requests · review state"]
     A --> V["var/assets"]
     U --> Q["Compile · layout · PlayMode evidence"]
     Q --> P
@@ -63,11 +63,11 @@ review approves the complete dependency graph.
 
 ```json
 {
-  "title": "예시 게임",
-  "genre": "플랫포머",
+  "title": "Example game",
+  "genre": "platformer",
   "coreMechanics": ["run", "jump", "collect"],
-  "artStyle": "프로젝트에서 정한 비주얼 스타일",
-  "structureOverview": "이동과 수집 기능을 각각 테스트할 수 있는 하나의 플레이 가능한 씬입니다. 기능 명세에 2D 또는 3D 여부를 명시하세요.",
+  "artStyle": "project-defined visual style",
+  "structureOverview": "Describe the playable structure and independently testable features.",
   "specs": []
 }
 ```
@@ -106,7 +106,7 @@ the exported feature prompt contains these execution-ready keys:
 | `relevantSystems`, `dependencies` | Planning | State feature-level relationships without choosing C# types. |
 | `implementationRequirements`, `constraints` | Planning | Define behavior and boundaries. |
 | `acceptanceCriteria`, `verificationMethod` | Planning + QA | Define observable completion and its evidence. |
-| `assets_needed` | Planning | Request only the assets required by this feature. |
+| `assets_needed` | Planning | Declare the assets associated with this feature. |
 | file/type/scene mapping | Execution | Produced by `design_architecture`; this prevents planning from dictating implementation details. |
 
 `status` remains on the stored spec. A draft can be edited directly; a published
@@ -128,10 +128,10 @@ listed by the manifest.
 
 ### Asset AI
 
-1. Read only `assets_needed` from the execution manifest and the corresponding feature spec.
-2. Lock the game's art style before the first asset request.
-3. Generate one asset per explicit request, preserve the generated provenance, and require human review metadata.
-4. Return a rejected asset with the structured feedback below; do not silently substitute placeholder art.
+1. Read the asset declarations from the execution manifest and corresponding feature spec.
+2. Select a provider appropriate to the requested asset, such as PixelLab for 2D pixel art, an image generator for other 2D work, or a 3D provider for models.
+3. Preserve generated provenance and require human review metadata.
+4. Return structured feedback for a rejected asset; do not silently substitute placeholder art.
 
 ### Unity execution AI
 
@@ -149,18 +149,15 @@ listed by the manifest.
 
 ## Asset prompt and feedback board
 
-Use a prompt that declares the subject, gameplay role, silhouette, material,
-camera view, and exclusions. Do not place credentials, personal data, or local
-absolute paths in prompts or feedback.
+Choose the fields that make the requested asset unambiguous. Do not place
+credentials, personal data, or local absolute paths in prompts or feedback.
 
 ```text
-Subject: [one concrete object or character]
-Gameplay role: [player / enemy / terrain / UI]
-Silhouette: [recognizable shape at the target sprite size]
-Material and palette role: [wood / stone / grass / character palette]
-View and scale: [side / low top-down / high top-down, target size]
-Required states: [idle, walk, attack, damaged]
-Exclude: [text, watermark, background, unrelated objects]
+Asset type and dimension: [2D illustration / UI / texture / 3D model / audio / other]
+Gameplay role: [player / enemy / terrain / UI / other]
+Subject and visual requirements: [project-specific description]
+Technical requirements: [size, format, rigging, animation, material, or other applicable constraints]
+Exclude: [unwanted content]
 ```
 
 Use this feedback payload after human review:
@@ -169,7 +166,7 @@ Use this feedback payload after human review:
 {
   "assetId": "<asset id>",
   "approved": false,
-  "note": "Silhouette is not readable at 32 px; retain the same palette and side view, enlarge the weapon hand separation by at least 3 px."
+  "note": "State the observable correction required before approval."
 }
 ```
 

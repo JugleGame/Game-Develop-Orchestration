@@ -10,11 +10,11 @@ flowchart TB
     U["User"] --> H["Planning / execution host agent"]
     H --> R["Research MCP: evidence, draft/spec storage, dependency lint"]
     H --> N["Unity MCP: apply, assemble, build, PlayMode, validation"]
-    H --> A["Asset MCP: PixelLab, style, review metadata"]
+    H --> A["Asset MCP: asset requests and review metadata"]
     R --> DB["Research DB"]
     R -->|"published only"| HO["var/handoffs: hashed versioned files"] --> H
     N --> UE["Unity Editor"]
-    A --> PX["PixelLab"]
+    A --> PX["Configured asset providers"]
     A --> V["var/assets"]
     N --> E["Validation evidence"] --> H
     H -->|"after user approval"| G["Native Git"]
@@ -42,8 +42,8 @@ flowchart TB
 
 ### Asset MCP
 
-- Call PixelLab and return usage metadata.
-- Lock per-project style and validate file metadata.
+- Call configured asset providers and return usage metadata.
+- Validate file metadata and record human review metadata.
 - Store output under `var/assets` and record human review metadata.
 
 ## Deliberately absent

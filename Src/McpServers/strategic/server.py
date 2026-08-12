@@ -233,7 +233,7 @@ async def publish_game_design(
         "genre": blueprint["genre"],
         "core_mechanics": blueprint["coreMechanics"],
         "art_style": blueprint["artStyle"],
-        "target_platform": "PC",
+        "target_platform": "Web",
         "structure_overview": blueprint["structureOverview"],
         "created_at": _utcnow(),
     }

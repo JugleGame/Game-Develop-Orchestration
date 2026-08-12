@@ -56,7 +56,7 @@ Server: `AssetGenMcpServer`.
 - Generation takes a game ID, feature ID, asset kind, and host-authored prompt.
 - Keep all output under `ASSET_ROOT`.
 - Style and manifests are runtime state, never committed source.
-- Surface PixelLab failures; never hide them with fake placeholders.
+- Surface configured-provider failures; never hide them with fake placeholders.
 - Human approval is metadata, not a model judgment.
 
 ## Role-boundary lint
