@@ -28,14 +28,22 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import os
+import re
 import time
+from functools import partial
 from typing import Any
 
+import anyio
 import httpx
+import httpx2
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
 from PIL import Image
 
 BASE_URL = "https://api.pixellab.ai/v2"
+MCP_URL = "https://api.pixellab.ai/mcp"
 _GENERATE_PATH = "/create-image-pixflux"
 _TIMEOUT_SECONDS = 60.0
 
@@ -74,6 +82,380 @@ def _palette_swatch_b64(colors: list[tuple[int, int, int]]) -> str:
     buf = io.BytesIO()
     swatch.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode()
+
+
+def _image_b64(image: Image.Image) -> str:
+    """Encode an image in PixelLab's Base64Image shape without changing pixels."""
+
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _prototype_tool(tools: list[Any], kind: str) -> Any:
+    """Choose a compatible image-creation tool exposed by PixelLab's MCP server."""
+
+    by_name = {tool.name: tool for tool in tools}
+    preferred = {
+        "character": ("create_image_pixflux", "create_image_pixen", "create_character"),
+        "monster": ("create_image_pixflux", "create_image_pixen", "create_character"),
+        "tile": ("create_image_pixflux", "create_image_pixen", "create_isometric_tile"),
+        "prop": ("create_image_pixflux", "create_image_pixen", "create_map_object"),
+        "icon": ("create_image_pixflux", "create_image_pixen", "create_ui_asset"),
+        "ui_button": ("create_image_pixflux", "create_image_pixen", "create_ui_asset"),
+        "ui_panel": ("create_image_pixflux", "create_image_pixen", "create_ui_asset"),
+    }[kind]
+    for name in preferred:
+        if name in by_name:
+            return by_name[name]
+
+    for tool in tools:
+        properties = (tool.input_schema or {}).get("properties") or {}
+        name = tool.name.casefold()
+        if ("description" in properties or "prompt" in properties) and any(
+            word in name for word in ("image", "character", "object", "tile", "ui")
+        ):
+            return tool
+    raise PixelLabUnavailable("PixelLab MCP exposes no compatible 2D prototype tool")
+
+
+def _prototype_arguments(
+    tool: Any,
+    prompt: str,
+    width: int,
+    height: int,
+    seed: int,
+    style_description: str,
+    style_params: dict[str, str],
+    palette: list[str],
+) -> dict[str, Any]:
+    """Map the common prototype request onto the selected official tool schema."""
+
+    schema = tool.input_schema or {}
+    properties = schema.get("properties") or {}
+    arguments: dict[str, Any] = {}
+    if "description" in properties:
+        arguments["description"] = prompt
+    elif "prompt" in properties:
+        arguments["prompt"] = prompt
+    if "image_size" in properties:
+        arguments["image_size"] = {"width": width, "height": height}
+    if "width" in properties:
+        arguments["width"] = width
+    if "height" in properties:
+        arguments["height"] = height
+    if "size" in properties:
+        arguments["size"] = max(width, height)
+    if "no_background" in properties:
+        arguments["no_background"] = True
+    if "seed" in properties:
+        arguments["seed"] = seed
+    if "text_guidance_scale" in properties:
+        # PixelLab defaults to 8, which favored atmosphere over required
+        # object structure in review prototypes. A stronger literal setting
+        # keeps named parts such as bottle necks and platform edges readable.
+        arguments["text_guidance_scale"] = 16.0
+    if "style_description" in properties:
+        arguments["style_description"] = style_description
+    for field, value in style_params.items():
+        if field in properties:
+            arguments[field] = value
+    if "color_palette" in properties:
+        arguments["color_palette"] = ", ".join(palette)
+    if "forced_palette" in properties:
+        arguments["forced_palette"] = palette
+    if "color_image_base64" in properties and palette:
+        colors = [
+            (int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16))
+            for color in palette
+        ]
+        arguments["color_image_base64"] = _palette_swatch_b64(colors)
+    if "n_directions" in properties:
+        arguments["n_directions"] = 4
+    if "lower" in properties:
+        arguments["lower"] = prompt
+    if "upper" in properties:
+        arguments["upper"] = prompt
+
+    missing = set(schema.get("required") or ()) - set(arguments)
+    if missing:
+        raise PixelLabUnavailable(
+            f"PixelLab MCP tool {tool.name!r} has unsupported required fields: {sorted(missing)}"
+        )
+    return arguments
+
+
+def _encoded_image(value: Any) -> str | None:
+    """Find the first inline image in a tool result or nested structured payload."""
+
+    if isinstance(value, dict):
+        encoded = value.get("base64")
+        if isinstance(encoded, str) and encoded:
+            return encoded
+        for nested in value.values():
+            found = _encoded_image(nested)
+            if found:
+                return found
+    elif isinstance(value, list | tuple):
+        for nested in value:
+            found = _encoded_image(nested)
+            if found:
+                return found
+    return None
+
+
+def _image_url(value: Any) -> str | None:
+    """Find the first downloadable image URL in a structured MCP result."""
+
+    if isinstance(value, dict):
+        for key in ("download_url", "image_url", "url"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.startswith("https://"):
+                return candidate
+        for nested in value.values():
+            found = _image_url(nested)
+            if found:
+                return found
+    elif isinstance(value, list | tuple):
+        for nested in value:
+            found = _image_url(nested)
+            if found:
+                return found
+    elif isinstance(value, str):
+        match = re.search(r"https://[^\s)\]>'\"]+", value)
+        if match:
+            return match.group(0)
+    return None
+
+
+def _result_payloads(result: Any) -> list[Any]:
+    """Collect structured and JSON text payloads from an MCP tool result."""
+
+    payloads: list[Any] = []
+    structured = getattr(result, "structured_content", None)
+    if structured:
+        payloads.append(structured)
+    for block in result.content:
+        if getattr(block, "type", "") != "text":
+            continue
+        text = getattr(block, "text", "")
+        try:
+            payloads.append(json.loads(text))
+        except (TypeError, ValueError):
+            payloads.append(text)
+    return payloads
+
+
+def _result_image(result: Any) -> tuple[str | None, str | None]:
+    """Return the first inline image or download URL from an MCP result."""
+
+    for block in result.content:
+        if getattr(block, "type", "") == "image":
+            encoded = getattr(block, "data", None)
+            if encoded:
+                return encoded, None
+    for payload in _result_payloads(result):
+        encoded = _encoded_image(payload)
+        if encoded:
+            return encoded, None
+        url = _image_url(payload)
+        if url:
+            return None, url
+    return None, None
+
+
+def _identifier(value: Any, keys: tuple[str, ...]) -> str | None:
+    """Find a job-like identifier in a nested MCP result."""
+
+    if isinstance(value, dict):
+        for key in keys:
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate:
+                return candidate
+        for nested in value.values():
+            found = _identifier(nested, keys)
+            if found:
+                return found
+    elif isinstance(value, list | tuple):
+        for nested in value:
+            found = _identifier(nested, keys)
+            if found:
+                return found
+    elif isinstance(value, str):
+        match = re.search(
+            r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+            value,
+            re.IGNORECASE,
+        )
+        if match:
+            return match.group(0)
+    return None
+
+
+def _result_usage(result: Any) -> dict[str, Any]:
+    for payload in _result_payloads(result):
+        if isinstance(payload, dict) and isinstance(payload.get("usage"), dict):
+            return dict(payload["usage"])
+    return {}
+
+
+async def _generate_prototype_async(
+    *,
+    prompt: str,
+    width: int,
+    height: int,
+    kind: str,
+    seed: int,
+    style_description: str,
+    style_params: dict[str, str],
+    palette: list[str],
+) -> tuple[Image.Image, dict[str, Any], str]:
+    api_key = os.getenv("PIXELLAB_API_KEY")
+    if not api_key:
+        raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+
+    client = httpx2.AsyncClient(
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=httpx2.Timeout(_TIMEOUT_SECONDS),
+    )
+    try:
+        async with client:
+            async with streamable_http_client(MCP_URL, http_client=client) as (read, write):
+                async with ClientSession(
+                    read, write, read_timeout_seconds=_TIMEOUT_SECONDS
+                ) as session:
+                    await session.initialize()
+                    tool = _prototype_tool((await session.list_tools()).tools, kind)
+                    result = await session.call_tool(
+                        tool.name,
+                        _prototype_arguments(
+                            tool,
+                            prompt,
+                            width,
+                            height,
+                            seed,
+                            style_description,
+                            style_params,
+                            palette,
+                        ),
+                        read_timeout_seconds=_TIMEOUT_SECONDS,
+                    )
+                    if getattr(result, "is_error", False):
+                        text = " ".join(
+                            getattr(block, "text", "") for block in result.content
+                        )
+                        raise PixelLabUnavailable(f"PixelLab MCP tool failed: {text[:400]}")
+                    usage = _result_usage(result)
+                    encoded, image_url = _result_image(result)
+                    if not encoded and not image_url:
+                        payloads = _result_payloads(result)
+                        if tool.name == "create_character":
+                            identifier = next(
+                                (
+                                    found
+                                    for payload in payloads
+                                    if (found := _identifier(payload, ("character_id",)))
+                                ),
+                                None,
+                            )
+                            poll_tool = "get_character"
+                            poll_arguments = {"character_id": identifier, "include_preview": True}
+                        else:
+                            identifier = next(
+                                (
+                                    found
+                                    for payload in payloads
+                                    if (
+                                        found := _identifier(
+                                            payload, ("job_id", "background_job_id")
+                                        )
+                                    )
+                                ),
+                                None,
+                            )
+                            poll_tool = "get_image"
+                            poll_arguments = {"job_id": identifier}
+                        if not identifier:
+                            raise PixelLabUnavailable(
+                                f"PixelLab MCP tool {tool.name!r} returned no job identifier"
+                            )
+
+                        for _ in range(60):
+                            await anyio.sleep(5)
+                            result = await session.call_tool(
+                                poll_tool,
+                                poll_arguments,
+                                read_timeout_seconds=_TIMEOUT_SECONDS,
+                            )
+                            if getattr(result, "is_error", False):
+                                text = " ".join(
+                                    getattr(block, "text", "") for block in result.content
+                                )
+                                raise PixelLabUnavailable(
+                                    f"PixelLab MCP polling failed: {text[:400]}"
+                                )
+                            usage = _result_usage(result) or usage
+                            encoded, image_url = _result_image(result)
+                            if encoded or image_url:
+                                break
+                        else:
+                            raise PixelLabUnavailable(
+                                f"PixelLab MCP job {identifier} did not finish within 300 seconds"
+                            )
+    except PixelLabUnavailable:
+        raise
+    except Exception as exc:
+        raise PixelLabUnavailable(f"PixelLab MCP request failed: {exc}") from exc
+
+    if getattr(result, "is_error", False):
+        text = " ".join(getattr(block, "text", "") for block in result.content)
+        raise PixelLabUnavailable(f"PixelLab MCP tool failed: {text[:400]}")
+
+    if encoded:
+        image = _decode(encoded)
+    elif image_url:
+        try:
+            async with httpx2.AsyncClient(
+                headers={"Authorization": f"Bearer {api_key}"}, timeout=_TIMEOUT_SECONDS
+            ) as download_client:
+                downloaded = await download_client.get(image_url)
+                downloaded.raise_for_status()
+            image = Image.open(io.BytesIO(downloaded.content)).convert("RGBA")
+        except Exception as exc:
+            raise PixelLabUnavailable(f"PixelLab MCP image download failed: {exc}") from exc
+    else:
+        raise PixelLabUnavailable(
+            f"PixelLab MCP tool {tool.name!r} returned no downloadable image"
+        )
+    return image, usage, tool.name
+
+
+def generate_prototype(
+    *,
+    prompt: str,
+    width: int,
+    height: int,
+    kind: str,
+    seed: int,
+    style_description: str,
+    style_params: dict[str, str],
+    palette: list[str],
+) -> tuple[Image.Image, dict[str, Any], str]:
+    """Generate one style prototype through PixelLab's official remote MCP."""
+
+    return anyio.run(
+        partial(
+            _generate_prototype_async,
+            prompt=prompt,
+            width=width,
+            height=height,
+            kind=kind,
+            seed=seed,
+            style_description=style_description,
+            style_params=style_params,
+            palette=palette,
+        )
+    )
 
 
 def generate_image(
@@ -164,6 +546,113 @@ def generate_image(
         raise PixelLabUnavailable(f"malformed PixelLab response: {exc}") from exc
 
     return image, dict(data.get("usage") or {})
+
+
+def generate_with_style(
+    *,
+    prompt: str,
+    style_images: list[Image.Image],
+    output_size: tuple[int, int],
+    style_description: str,
+    seed: int,
+    poll_seconds: float = 5.0,
+    max_polls: int = 60,
+) -> tuple[list[Image.Image], dict[str, Any], str]:
+    """Generate a variation set through the style-reference REST endpoint."""
+
+    api_key = os.getenv("PIXELLAB_API_KEY")
+    if not api_key:
+        raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    if not 1 <= len(style_images) <= 4:
+        raise PixelLabUnavailable("style_images must contain between 1 and 4 images")
+    if any(max(image.size) > 512 for image in style_images):
+        raise PixelLabUnavailable("style image dimensions must not exceed 512 pixels")
+    if output_size[0] != output_size[1] or not 16 <= output_size[0] <= 512:
+        raise PixelLabUnavailable("generate-with-style-v2 output must be square and 16-512 pixels")
+
+    payload = {
+        "style_images": [
+            {
+                "image": {"type": "base64", "base64": _image_b64(image)},
+                "width": image.width,
+                "height": image.height,
+            }
+            for image in style_images
+        ],
+        "image_size": {"width": output_size[0], "height": output_size[1]},
+        "description": prompt,
+        "style_description": style_description[:500],
+        "seed": seed,
+        "no_background": True,
+    }
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    try:
+        with httpx.Client(timeout=_TIMEOUT_SECONDS) as client:
+            created = client.post(
+                f"{BASE_URL}/generate-with-style-v2", json=payload, headers=headers
+            )
+            if created.status_code >= 400:
+                raise PixelLabUnavailable(
+                    f"PixelLab rejected the variation request ({created.status_code}): "
+                    f"{created.text[:400]}"
+                )
+            created_data = created.json()
+            job_id = created_data.get("background_job_id")
+            if not job_id:
+                raise PixelLabUnavailable("PixelLab returned no background_job_id")
+
+            data: dict[str, Any] | None = None
+            for _ in range(max_polls):
+                got = client.get(f"{BASE_URL}/background-jobs/{job_id}", headers=headers)
+                if got.status_code in (404, 423):
+                    time.sleep(poll_seconds)
+                    continue
+                if got.status_code >= 400:
+                    raise PixelLabUnavailable(
+                        f"PixelLab returned {got.status_code}: {got.text[:400]}"
+                    )
+                candidate = got.json()
+                status = candidate.get("status")
+                if status == "failed":
+                    raise PixelLabUnavailable(
+                        f"PixelLab variation job failed: {candidate.get('last_response')!r}"
+                    )
+                if status == "completed":
+                    data = candidate
+                    break
+                time.sleep(poll_seconds)
+            if data is None:
+                raise PixelLabUnavailable(
+                    f"variation job {job_id} not ready after "
+                    f"{max_polls * poll_seconds:.0f}s"
+                )
+    except httpx.HTTPError as exc:
+        raise PixelLabUnavailable(f"PixelLab variation request failed: {exc}") from exc
+
+    response = data.get("last_response") or {}
+    response_dict = response if isinstance(response, dict) else {}
+    encoded_images: list[str] = []
+    raw_images = response_dict.get("images")
+    if isinstance(raw_images, list):
+        for item in raw_images:
+            encoded = _encoded_image(item)
+            if encoded:
+                encoded_images.append(encoded)
+    else:
+        encoded = _encoded_image(response)
+        if encoded:
+            encoded_images.append(encoded)
+    if not encoded_images:
+        raise PixelLabUnavailable("malformed PixelLab variation response: no images")
+
+    usage = data.get("usage") or created_data.get("usage") or response_dict.get("usage") or {}
+    images = [_decode(encoded) for encoded in encoded_images]
+    if any(image.size != output_size for image in images):
+        raise PixelLabUnavailable(
+            f"PixelLab returned an inconsistent variation size; expected {output_size}"
+        )
+    return images, dict(usage), job_id
 
 
 def _reject_unless_in(field: str, value: str | None, allowed: tuple[str, ...]) -> None:
@@ -411,5 +900,7 @@ __all__ = [
     "create_map_object",
     "create_tileset",
     "generate_image",
+    "generate_prototype",
+    "generate_with_style",
     "is_configured",
 ]

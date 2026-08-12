@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+import re
 from typing import Literal
 
 from .style import ArtStyle
@@ -107,13 +108,17 @@ def classify(prompt: str) -> AssetKind:
 
 
 def _matches(keyword: str, lowered: str, words: list[str]) -> bool:
-    """Substring match, except a one-syllable Korean keyword must be its own word.
+    """Match English keywords as words and preserve Korean phrase matching.
 
-    "적" is a substring of ordinary words a *character* prompt uses ("도적",
-    "목적", "정적"), so substring-matching it sent humanoids down the monster
-    branch and onto its square canvas.
+    Short English keywords such as ``cta`` occur inside unrelated words such
+    as ``rectangular``. Treating them as substrings can send terrain prompts
+    down the UI branch. Korean phrases still use substring matching, except
+    the one-syllable ``적`` keyword, which must remain a standalone word so
+    ordinary words such as ``도적`` do not become monsters.
     """
 
+    if keyword.isascii():
+        return re.search(rf"(?<!\w){re.escape(keyword)}(?!\w)", lowered) is not None
     if len(keyword) == 1:
         return keyword in words
     return keyword in lowered

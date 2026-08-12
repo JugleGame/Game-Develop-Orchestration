@@ -1,4 +1,4 @@
-"""세 Agent-first MCP 서버의 정적 계약을 검증한다."""
+"""Verify the static contract of all three Agent-first MCP servers."""
 
 from __future__ import annotations
 
@@ -29,10 +29,14 @@ REQUIRED_TOOLS = {
         "inspect_project_layout": set(),
     },
     "asset": {
+        "prepare_asset_prompt": {"assetKind"},
         "generate_2d_sprite": {"featureId", "prompt"},
+        "generate_2d_variations": {"featureId", "prototypeAssetId", "prompts"},
         "generate_ui_asset": {"featureId", "prompt"},
         "generate_tileset": {"featureId", "lowerDescription", "upperDescription"},
         "establish_art_style": {"gameId"},
+        "inspect_asset": {"assetId"},
+        "list_assets": {"gameId"},
         "review_asset": {"assetId", "approved"},
     },
 }

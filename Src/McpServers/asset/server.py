@@ -1,4 +1,4 @@
-"""AssetGenMcpServer — Unity 게임용 PixelLab 2D 에셋 경계.
+"""AssetGenMcpServer — PixelLab 2D asset boundary for Unity games.
 
 Design decisions worth knowing before editing:
 
@@ -7,10 +7,9 @@ Design decisions worth knowing before editing:
   silent degrade to placeholder art (see ``_generate_image``). ``render.py``
   keeps only the prompt classifier and the deterministic seed derivation
   PixelLab's call depends on — it no longer draws pixels itself.
-* **Generation never blocks the pipeline.** ``generate_2d_sprite`` returns an
-  ``assetPath`` immediately and records the asset as ``pending``. Human review
-  is tracked alongside, not in front of, the build. Gating the pipeline on
-  approval is the host's policy decision — see ``docs/contracts.md``.
+* **Generation enters review as pending.** ``generate_2d_sprite`` records its
+  output as ``pending``. Human review is metadata; whether approval gates a
+  build remains the host's policy decision — see ``docs/contracts.md``.
 * **An asset's path never changes.** Review status lives in the manifest, not
   in the directory name. Files used to be moved into ``pending/``,
   ``approved/`` or ``rejected/`` as they were reviewed — but
@@ -28,14 +27,14 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 from PIL import Image
 
 from common.errors import MCP_ERROR, VALIDATION_ERROR, tool_error
 from common.server import build, expects_dict_return, serve
 
-from . import pixellab_client, render
+from . import pixellab_client, prompting, quality, render
 from .style import load_or_create
 
 logger = logging.getLogger(__name__)
@@ -151,6 +150,17 @@ def _resolve_game_id(explicit: str | None) -> str:
     if explicit and explicit.strip():
         return explicit.strip()
     return os.getenv("ASSET_DEFAULT_GAME_ID", "default")
+
+
+def _asset_kind(value: str | None) -> render.AssetKind | None:
+    """Validate an optional explicit kind before prompt classification."""
+
+    if value is None:
+        return None
+    normalized = _require(value, "assetKind")
+    if normalized not in get_args(render.AssetKind):
+        raise tool_error(VALIDATION_ERROR, f"unsupported assetKind: {normalized}")
+    return normalized  # type: ignore[return-value]
 
 
 def _pixellab_provenance(
@@ -321,9 +331,11 @@ def _generate(
         ROOT, resolved_game, art_style or os.getenv("ASSET_ART_STYLE", DEFAULT_ART_STYLE)
     )
     kind = forced_kind or render.classify(prompt)
+    prompt_plan = prompting.compose(prompt, kind)
     rng = render.rng_for(style, feature_id, prompt)
 
-    image, provenance = _generate_image(style, kind, rng, prompt, feature_id)
+    image, provenance = _generate_image(style, kind, rng, prompt_plan.prompt, feature_id)
+    provenance["prompt"] = prompt_plan.metadata()
 
     prompt_digest = hashlib.sha256(prompt.encode()).hexdigest()[:8]
     asset_id = f"{resolved_game}__{feature_id}__{kind}__{prompt_digest}"
@@ -337,6 +349,7 @@ def _generate(
         "feature_id": feature_id,
         "kind": kind,
         "prompt": prompt,
+        "provider_prompt": prompt_plan.prompt,
         "status": PENDING,
         "asset_path": str(out_path),
         "created_at": _now(),
@@ -354,6 +367,7 @@ def _generate(
         "status": PENDING,
         "styleSeed": style.seed,
         "generatedBy": provenance["method"],
+        "promptMetrics": prompt_plan.metadata(),
     }
     # PixelLab charges per image against a monthly quota; token-usage
     # accounting (common/usage.py) is Anthropic-specific and does not apply
@@ -366,28 +380,361 @@ def _generate(
     return result
 
 
+def _generate_prototype(
+    feature_id: str,
+    prompt: str,
+    game_id: str | None,
+    forced_kind: render.AssetKind | None = None,
+    art_style: str | None = None,
+) -> dict[str, Any]:
+    """Generate the reviewable style prototype through PixelLab's official MCP."""
+
+    feature_id = _require(feature_id, "featureId")
+    prompt = _require(prompt, "prompt")
+    resolved_game = _resolve_game_id(game_id)
+    style = load_or_create(
+        ROOT, resolved_game, art_style or os.getenv("ASSET_ART_STYLE", DEFAULT_ART_STYLE)
+    )
+    kind = forced_kind or render.classify(prompt)
+    prompt_plan = prompting.compose(prompt, kind)
+    width, height = _size_for(style, kind)
+    seed = render.rng_for(style, feature_id, prompt).getrandbits(32)
+    palette_rgb = _pixellab_palette(style, kind, prompt)
+    palette = [f"#{red:02x}{green:02x}{blue:02x}" for red, green, blue in palette_rgb or []]
+
+    try:
+        image, usage, tool_name = pixellab_client.generate_prototype(
+            prompt=prompt_plan.prompt,
+            width=width,
+            height=height,
+            kind=kind,
+            seed=seed,
+            style_description=style.art_style,
+            style_params=_pixellab_style_params(style, kind),
+            palette=palette,
+        )
+    except pixellab_client.PixelLabUnavailable as exc:
+        raise tool_error(
+            MCP_ERROR, f"PixelLab MCP prototype failed: {exc}", featureId=feature_id
+        ) from exc
+
+    target_size = (width * _PIXELLAB_UPSCALE, height * _PIXELLAB_UPSCALE)
+    if image.size != target_size:
+        image = image.resize(target_size, Image.NEAREST)
+
+    prompt_digest = hashlib.sha256(prompt.encode()).hexdigest()[:8]
+    asset_id = f"{resolved_game}__{feature_id}__{kind}__{prompt_digest}"
+    out_path = _asset_path(resolved_game, feature_id, kind, prompt_digest)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(out_path)
+
+    provenance = {
+        "method": "pixellab-mcp",
+        "generator": "https://api.pixellab.ai/mcp",
+        "tool": tool_name,
+        "kind": kind,
+        "derived_from": f"seed={seed} feature={feature_id}",
+        "usage": usage,
+        "prompt": prompt_plan.metadata(),
+        "expected_size": list(target_size),
+        "commercial_use": "see PixelLab terms of service",
+    }
+    manifest = _load_manifest(resolved_game)
+    manifest["assets"][asset_id] = {
+        "asset_id": asset_id,
+        "feature_id": feature_id,
+        "kind": kind,
+        "prompt": prompt,
+        "provider_prompt": prompt_plan.prompt,
+        "status": PENDING,
+        "asset_path": str(out_path),
+        "created_at": _now(),
+        "reviewed_at": None,
+        "review_note": None,
+        "provenance": provenance,
+    }
+    _save_manifest(manifest)
+    result = {
+        "assetPath": str(out_path),
+        "assetId": asset_id,
+        "kind": kind,
+        "gameId": resolved_game,
+        "status": PENDING,
+        "workflowStage": "prototype",
+        "styleSeed": style.seed,
+        "generatedBy": provenance["method"],
+        "promptMetrics": prompt_plan.metadata(),
+    }
+    images = _images_generated(usage)
+    result["imagesGenerated"] = images or 1
+    return result
+
+
 # --------------------------------------------------------------------------
 # Agent-first asset tools
 # --------------------------------------------------------------------------
 
 
-@mcp.tool(description="Generate a 2D sprite for a feature, in the game's locked art style.")
+@mcp.tool(
+    description=(
+        "Collect a complete asset brief and return a deterministic, kind-aware prompt. "
+        "This preflight does not generate an image or call a model."
+    )
+)
+@expects_dict_return
+def prepare_asset_prompt(
+    assetKind: str,
+    subject: str = "",
+    purpose: str = "",
+    composition: str = "",
+    mustHave: list[str] | None = None,
+    avoid: list[str] | None = None,
+    artStyle: str = "",
+    isRevision: bool = False,
+    preserve: list[str] | None = None,
+    change: list[str] | None = None,
+) -> dict[str, Any]:
+    kind = _asset_kind(assetKind)
+    assert kind is not None
+    return prompting.prepare(
+        kind,
+        subject=subject,
+        purpose=purpose,
+        composition=composition,
+        must_have=mustHave,
+        avoid=avoid,
+        art_style=artStyle,
+        is_revision=isRevision,
+        preserve=preserve,
+        change=change,
+    )
+
+
+@mcp.tool(
+    description=(
+        "Generate the initial 2D style prototype through PixelLab's official MCP. "
+        "Approve it before requesting API variations."
+    )
+)
 @expects_dict_return
 def generate_2d_sprite(
-    featureId: str, prompt: str, gameId: str | None = None, artStyle: str | None = None
+    featureId: str,
+    prompt: str,
+    gameId: str | None = None,
+    artStyle: str | None = None,
+    assetKind: str | None = None,
 ) -> dict[str, Any]:
-    return _generate(featureId, prompt, gameId, art_style=artStyle)
+    return _generate_prototype(
+        featureId,
+        prompt,
+        gameId,
+        forced_kind=_asset_kind(assetKind),
+        art_style=artStyle,
+    )
 
 
-@mcp.tool(description="Generate a UI asset (panel, button, or icon) for a feature.")
+@mcp.tool(description="Generate an initial UI prototype through PixelLab's official MCP.")
 @expects_dict_return
 def generate_ui_asset(
-    featureId: str, prompt: str, gameId: str | None = None, artStyle: str | None = None
+    featureId: str,
+    prompt: str,
+    gameId: str | None = None,
+    artStyle: str | None = None,
+    assetKind: str | None = None,
 ) -> dict[str, Any]:
-    kind = render.classify(prompt)
+    kind = _asset_kind(assetKind) or render.classify(prompt)
     if not kind.startswith("ui_") and kind != "icon":
+        if assetKind is not None:
+            raise tool_error(VALIDATION_ERROR, "generate_ui_asset requires a UI assetKind")
         kind = "ui_panel"  # this tool always produces UI, whatever the wording
-    return _generate(featureId, prompt, gameId, forced_kind=kind, art_style=artStyle)
+    return _generate_prototype(featureId, prompt, gameId, forced_kind=kind, art_style=artStyle)
+
+
+@mcp.tool(
+    description=(
+        "Generate many same-kind variations through PixelLab's REST API, using an approved "
+        "MCP prototype as the shared style reference."
+    )
+)
+@expects_dict_return
+def generate_2d_variations(
+    featureId: str,
+    prototypeAssetId: str,
+    prompts: list[str],
+    gameId: str | None = None,
+    styleAssetIds: list[str] | None = None,
+) -> dict[str, Any]:
+    """Expand an approved MCP prototype using up to four approved style anchors."""
+
+    feature_id = _require(featureId, "featureId")
+    prototype_id = _require(prototypeAssetId, "prototypeAssetId")
+    if not 1 <= len(prompts) <= 25:
+        raise tool_error(VALIDATION_ERROR, "prompts must contain between 1 and 25 items")
+
+    prototype_game = prototype_id.split("__", 1)[0]
+    resolved_game = _resolve_game_id(gameId) if gameId else prototype_game
+    if resolved_game != prototype_game:
+        raise tool_error(VALIDATION_ERROR, "gameId must match the prototype asset")
+
+    manifest = _load_manifest(resolved_game)
+    prototype = manifest["assets"].get(prototype_id)
+    if prototype is None:
+        raise tool_error(VALIDATION_ERROR, f"unknown prototypeAssetId: {prototype_id}")
+    if prototype["status"] != APPROVED:
+        raise tool_error(VALIDATION_ERROR, "prototype asset must be approved before batching")
+    if (prototype.get("provenance") or {}).get("method") != "pixellab-mcp":
+        raise tool_error(VALIDATION_ERROR, "prototype asset must come from PixelLab's official MCP")
+
+    style_asset_ids = list(dict.fromkeys([prototype_id, *(styleAssetIds or [])]))
+    if not 1 <= len(style_asset_ids) <= 4:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "prototypeAssetId plus styleAssetIds must contain between 1 and 4 unique assets",
+        )
+    style_records: list[dict[str, Any]] = []
+    for style_asset_id in style_asset_ids:
+        if style_asset_id.split("__", 1)[0] != resolved_game:
+            raise tool_error(VALIDATION_ERROR, "every style asset must belong to gameId")
+        style_record = manifest["assets"].get(style_asset_id)
+        if style_record is None:
+            raise tool_error(VALIDATION_ERROR, f"unknown style asset: {style_asset_id}")
+        if style_record["status"] != APPROVED:
+            raise tool_error(VALIDATION_ERROR, "every style asset must be approved")
+        if (style_record.get("provenance") or {}).get("method") != "pixellab-mcp":
+            raise tool_error(
+                VALIDATION_ERROR, "every style asset must come from PixelLab's official MCP"
+            )
+        style_records.append(style_record)
+
+    kind = prototype["kind"]
+    if kind not in _KIND_SIZE_RATIO:
+        raise tool_error(VALIDATION_ERROR, f"unsupported prototype kind: {kind}")
+    cleaned_prompts = [
+        _require(prompt, f"prompts[{index}]") for index, prompt in enumerate(prompts)
+    ]
+    style_images: list[Image.Image] = []
+    for style_record in style_records:
+        style_path = Path(style_record["asset_path"])
+        if not style_path.is_file():
+            raise tool_error(VALIDATION_ERROR, f"style asset file is missing: {style_path}")
+        with Image.open(style_path) as opened:
+            style_images.append(opened.convert("RGBA").copy())
+    output_size = style_images[0].size
+    if output_size[0] != output_size[1]:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "generate-with-style-v2 requires a square primary prototype; "
+            "use a provider-specific character workflow for non-square assets",
+        )
+
+    style = load_or_create(ROOT, resolved_game, DEFAULT_ART_STYLE)
+    batch_digest = hashlib.sha256(
+        f"{'|'.join(style_asset_ids)}|{'|'.join(cleaned_prompts)}".encode()
+    ).hexdigest()[:8]
+    batch_id = f"{resolved_game}__{feature_id}__batch__{batch_digest}"
+    out_dir = ROOT / "assets" / resolved_game / "variations" / f"{feature_id}_{batch_digest}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    records: list[dict[str, Any]] = []
+    jobs: list[dict[str, Any]] = []
+    prompt_metrics: list[dict[str, object]] = []
+    style_description = f"{style.art_style}; {style.camera_view}; consistent with the reference"
+    for prompt_index, prompt in enumerate(cleaned_prompts):
+        plan = prompting.compose(prompt, kind)
+        seed = render.rng_for(style, f"{feature_id}:{prompt_index}", prompt).getrandbits(32)
+        try:
+            images, usage, job_id = pixellab_client.generate_with_style(
+                prompt=plan.prompt,
+                style_images=style_images,
+                output_size=output_size,
+                style_description=style_description,
+                seed=seed,
+            )
+        except pixellab_client.PixelLabUnavailable as exc:
+            raise tool_error(
+                MCP_ERROR,
+                f"PixelLab API variation batch failed: {exc}",
+                featureId=feature_id,
+            ) from exc
+
+        prompt_digest = hashlib.sha256(prompt.encode()).hexdigest()[:8]
+        metrics = {"promptIndex": prompt_index, **plan.metadata()}
+        prompt_metrics.append(metrics)
+        jobs.append({"jobId": job_id, "usage": usage, "promptMetrics": metrics})
+        for candidate_index, image in enumerate(images):
+            asset_id = (
+                f"{resolved_game}__{feature_id}__{kind}__{prompt_digest}__"
+                f"{prompt_index}__{candidate_index}"
+            )
+            path = out_dir / f"{prompt_index:02d}_{candidate_index:02d}_{prompt_digest}.png"
+            image.save(path)
+            record = {
+                "asset_id": asset_id,
+                "feature_id": feature_id,
+                "kind": kind,
+                "prompt": prompt,
+                "provider_prompt": plan.prompt,
+                "status": PENDING,
+                "asset_path": str(path),
+                "created_at": _now(),
+                "reviewed_at": None,
+                "review_note": None,
+                "prototype_asset_id": prototype_id,
+                "batch_id": batch_id,
+                "provenance": {
+                    "method": "pixellab-api",
+                    "endpoint": "generate-with-style-v2",
+                    "job_id": job_id,
+                    "candidate": candidate_index,
+                    "seed": seed,
+                    "style_asset_ids": style_asset_ids,
+                    "expected_size": list(output_size),
+                    "usage": usage,
+                    "prompt": plan.metadata(),
+                    "commercial_use": "see PixelLab terms of service",
+                },
+            }
+            manifest["assets"][asset_id] = record
+            records.append(
+                {
+                    "assetId": asset_id,
+                    "assetPath": str(path),
+                    "promptIndex": prompt_index,
+                    "candidate": candidate_index,
+                    "status": PENDING,
+                }
+            )
+
+    index_path = out_dir / "batch.json"
+    index_path.write_text(
+        json.dumps(
+            {
+                "batchId": batch_id,
+                "prototypeAssetId": prototype_id,
+                "styleAssetIds": style_asset_ids,
+                "kind": kind,
+                "assets": records,
+                "jobs": jobs,
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    _save_manifest(manifest)
+    return {
+        "batchId": batch_id,
+        "gameId": resolved_game,
+        "prototypeAssetId": prototype_id,
+        "styleAssetIds": style_asset_ids,
+        "kind": kind,
+        "status": PENDING,
+        "workflowStage": "variations",
+        "indexPath": str(index_path),
+        "assets": records,
+        "imagesGenerated": len(records),
+        "promptMetrics": prompt_metrics,
+    }
 
 
 @mcp.tool(description="Generate a placeholder stand-in for a 3D asset (rendered as a 2D sprite).")
@@ -620,9 +967,96 @@ def list_pending_assets(gameId: str) -> dict[str, Any]:
     return {"gameId": game_id, "pending": pending, "count": len(pending)}
 
 
-@mcp.tool(description="Record a human verification decision for one asset.")
+@mcp.tool(description="List resumable asset records, optionally filtered by status or feature.")
 @expects_dict_return
-def review_asset(assetId: str, approved: bool, note: str = "") -> dict[str, Any]:
+def list_assets(
+    gameId: str, status: str | None = None, featureId: str | None = None
+) -> dict[str, Any]:
+    game_id = _require(gameId, "gameId")
+    if status is not None and status not in (PENDING, APPROVED, REJECTED):
+        raise tool_error(VALIDATION_ERROR, f"unsupported status: {status}")
+    feature_id = featureId.strip() if featureId else None
+    assets = [
+        record
+        for record in _load_manifest(game_id)["assets"].values()
+        if (status is None or record["status"] == status)
+        and (feature_id is None or record["feature_id"] == feature_id)
+    ]
+    assets.sort(key=lambda record: (record["created_at"], record["asset_id"]))
+    return {"gameId": game_id, "assets": assets, "count": len(assets)}
+
+
+@mcp.tool(
+    description=(
+        "Inspect measurable asset defects and return the next workflow action. "
+        "Semantic fit still requires host-agent and human review."
+    )
+)
+@expects_dict_return
+def inspect_asset(assetId: str) -> dict[str, Any]:
+    asset_id = _require(assetId, "assetId")
+    game_id = asset_id.split("__", 1)[0]
+    manifest = _load_manifest(game_id)
+    record = manifest["assets"].get(asset_id)
+    if record is None:
+        raise tool_error(VALIDATION_ERROR, f"unknown assetId: {asset_id}")
+
+    path = Path(record["asset_path"])
+    if not path.is_file():
+        raise tool_error(VALIDATION_ERROR, f"asset file is missing: {path}")
+    with Image.open(path) as opened:
+        image = opened.convert("RGBA")
+
+    provenance = record.get("provenance") or {}
+    expected = provenance.get("expected_size")
+    if not (
+        isinstance(expected, list)
+        and len(expected) == 2
+        and all(isinstance(value, int) for value in expected)
+    ):
+        expected = list(image.size)
+    inspection = quality.inspect(image, record["kind"], (expected[0], expected[1]))
+
+    rejected_attempts = sum(
+        candidate.get("feature_id") == record.get("feature_id")
+        and candidate.get("kind") == record.get("kind")
+        and candidate.get("status") == REJECTED
+        and (candidate.get("provenance") or {}).get("method") == "pixellab-mcp"
+        for candidate in manifest["assets"].values()
+    )
+    if inspection["status"] == "fail":
+        next_action = "regenerate_after_technical_fix"
+    elif record["status"] == REJECTED:
+        next_action = "prepare_revision_from_feedback"
+    elif record["status"] == APPROVED:
+        next_action = "generate_style_locked_variations"
+    else:
+        next_action = "review_visual_intent"
+
+    return {
+        "assetId": asset_id,
+        "assetPath": str(path),
+        "kind": record["kind"],
+        "status": record["status"],
+        "prompt": record["prompt"],
+        "feedback": record.get("review_feedback"),
+        "inspection": inspection,
+        "rejectedPrototypeAttempts": rejected_attempts,
+        "escalationRequired": rejected_attempts >= 3,
+        "nextAction": next_action,
+    }
+
+
+@mcp.tool(description="Record a human verification decision and structured feedback.")
+@expects_dict_return
+def review_asset(
+    assetId: str,
+    approved: bool,
+    note: str = "",
+    preserve: list[str] | None = None,
+    change: list[str] | None = None,
+    artStyleFeedback: str = "",
+) -> dict[str, Any]:
     """Approve or reject an asset. The file is never moved or deleted.
 
     The decision is metadata, so it is recorded as metadata. Moving the file
@@ -639,16 +1073,23 @@ def review_asset(assetId: str, approved: bool, note: str = "") -> dict[str, Any]
         raise tool_error(VALIDATION_ERROR, f"unknown assetId: {asset_id}")
 
     target_status = APPROVED if approved else REJECTED
+    feedback = {
+        "preserve": list(prompting.normalize_items(preserve)),
+        "change": list(prompting.normalize_items(change)),
+        "artStyle": artStyleFeedback.strip() or None,
+    }
     record.update(
         status=target_status,
         reviewed_at=_now(),
         review_note=note or None,
+        review_feedback=feedback,
     )
     _save_manifest(manifest)
     return {
         "assetId": asset_id,
         "status": target_status,
         "assetPath": record["asset_path"],
+        "feedback": feedback,
     }
 
 

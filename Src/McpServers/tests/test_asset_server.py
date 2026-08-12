@@ -32,7 +32,16 @@ def _pixellab_stub(monkeypatch):
         colour = (seed & 0xFF, (seed >> 8) & 0xFF, (seed >> 16) & 0xFF, 255)
         return Image.new("RGBA", (width, height), colour), {"type": "usd", "usd": 0.001}
 
+    def _fake_prototype(*, prompt, width, height, seed, **kwargs):
+        colour = (seed & 0xFF, (seed >> 8) & 0xFF, (seed >> 16) & 0xFF, 255)
+        return (
+            Image.new("RGBA", (width, height), colour),
+            {"type": "generations", "generations": 1.0},
+            "create_image",
+        )
+
     monkeypatch.setattr(pixellab_client, "generate_image", _fake_generate)
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
 
 
 @asynccontextmanager
@@ -50,7 +59,14 @@ async def test_exposes_every_contract_tool():
     async with session() as client:
         names = {tool.name for tool in (await client.list_tools()).tools}
 
-    assert {"generate_2d_sprite", "generate_ui_asset", "generate_3d_placeholder"} <= names
+    assert {
+        "prepare_asset_prompt",
+        "generate_2d_sprite",
+        "generate_ui_asset",
+        "generate_3d_placeholder",
+        "inspect_asset",
+        "list_assets",
+    } <= names
 
 
 async def test_contract_tools_use_camel_case_argument_names():
@@ -62,6 +78,80 @@ async def test_contract_tools_use_camel_case_argument_names():
     for name in ("generate_2d_sprite", "generate_ui_asset", "generate_3d_placeholder"):
         properties = set(tools[name].input_schema["properties"])
         assert {"featureId", "prompt"} <= properties, name
+
+    assert "assetKind" in tools["generate_2d_sprite"].input_schema["properties"]
+
+
+async def test_prompt_preflight_returns_kind_specific_questions_when_incomplete():
+    async with session() as client:
+        result = await client.call_tool("prepare_asset_prompt", {"assetKind": "tile"})
+
+    body = result.structured_content
+    assert body["readyForPrototype"] is False
+    assert body["prompt"] is None
+    questions = {item["field"]: item for item in body["questions"]}
+    assert {"subject", "purpose", "composition", "mustHave", "artStyle"} <= questions.keys()
+    assert "repeat axis" in questions["composition"]["question"]
+    assert questions["avoid"]["required"] is False
+
+
+async def test_prompt_preflight_orders_structure_and_revision_feedback():
+    async with session() as client:
+        result = await client.call_tool(
+            "prepare_asset_prompt",
+            {
+                "assetKind": "prop",
+                "subject": "a mechanical lamp",
+                "purpose": "a 32 px gameplay pickup",
+                "composition": "side view with a broad base and narrow chimney",
+                "mustHave": ["one connected body", "three support feet"],
+                "avoid": ["floating parts"],
+                "artStyle": "limited-palette industrial pixel art",
+                "isRevision": True,
+                "preserve": ["warm glass color"],
+                "change": ["replace the flat base with three visible feet"],
+            },
+        )
+
+    body = result.structured_content
+    prompt = body["prompt"]
+    assert body["readyForPrototype"] is True
+    assert body["feedbackApplied"] is True
+    assert prompt.index("Required visual structure") < prompt.index("Revision target")
+    assert prompt.index("Revision target") < prompt.index("Exclude")
+    assert body["artStyle"] not in prompt
+
+
+async def test_explicit_asset_kind_overrides_ambiguous_prompt_keywords():
+    async with session() as client:
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-explicit-kind",
+                "prompt": "a fire bowl standing above the ground",
+                "gameId": "t-explicit-kind",
+                "assetKind": "prop",
+            },
+        )
+
+    assert result.structured_content["kind"] == "prop"
+
+
+async def test_invalid_explicit_asset_kind_is_a_validation_error():
+    async with session() as client:
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-bad-kind",
+                "prompt": "a lamp",
+                "gameId": "t-bad-kind",
+                "assetKind": "portrait",
+            },
+        )
+
+    assert result.is_error is True
+    text = "".join(getattr(block, "text", "") for block in result.content)
+    assert '"errorCode": 1000' in text
 
 
 async def test_generate_2d_sprite_returns_asset_path_in_structured_content():
@@ -148,6 +238,7 @@ async def test_same_inputs_regenerate_identical_bytes():
         ("inventory panel", "ui_panel"),
         ("start button", "ui_button"),
         ("quest marker icon", "icon"),
+        ("a rectangular side-view terrain tile", "tile"),
         # "적" is a substring of ordinary words; only the standalone/compound
         # forms mean "enemy".
         ("가죽 갑옷을 입은 여성 도적 캐릭터", "character"),
@@ -169,6 +260,293 @@ async def test_generate_ui_asset_always_produces_ui():
         )
 
     assert result.structured_content["kind"].startswith("ui_")
+
+
+async def test_variation_batch_requires_an_approved_mcp_prototype(monkeypatch):
+    async with session() as client:
+        prototype = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-batch-source",
+                "prompt": "treasure chest prop",
+                "gameId": "t-batch-approval",
+            },
+        )
+        result = await client.call_tool(
+            "generate_2d_variations",
+            {
+                "featureId": "f-batch",
+                "prototypeAssetId": prototype.structured_content["assetId"],
+                "prompts": ["red treasure chest prop"],
+                "gameId": "t-batch-approval",
+            },
+        )
+
+    assert result.is_error is True
+    assert "prototype asset must be approved" in "".join(
+        getattr(block, "text", "") for block in result.content
+    )
+
+
+async def test_variation_batch_uses_approved_style_references(monkeypatch):
+    captured = []
+
+    def _fake_variations(**kwargs):
+        captured.append(kwargs)
+        return (
+            [
+                Image.new("RGBA", (64, 64), (10, 20, 30, 255)),
+                Image.new("RGBA", (64, 64), (20, 30, 40, 255)),
+            ],
+            {"type": "generations", "generations": 2.0},
+            f"job-{len(captured)}",
+        )
+
+    monkeypatch.setattr(pixellab_client, "generate_with_style", _fake_variations)
+
+    async with session() as client:
+        prototype = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-batch-source",
+                "prompt": "treasure chest prop",
+                "gameId": "t-batch-style",
+                "artStyle": "dark fantasy pixel art",
+            },
+        )
+        await client.call_tool(
+            "review_asset",
+            {"assetId": prototype.structured_content["assetId"], "approved": True},
+        )
+        second_anchor = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-batch-anchor",
+                "prompt": "iron key prop",
+                "gameId": "t-batch-style",
+                "assetKind": "prop",
+            },
+        )
+        await client.call_tool(
+            "review_asset",
+            {"assetId": second_anchor.structured_content["assetId"], "approved": True},
+        )
+        result = await client.call_tool(
+            "generate_2d_variations",
+            {
+                "featureId": "f-batch",
+                "prototypeAssetId": prototype.structured_content["assetId"],
+                "prompts": ["red treasure chest prop", "blue treasure chest prop"],
+                "gameId": "t-batch-style",
+                "styleAssetIds": [second_anchor.structured_content["assetId"]],
+            },
+        )
+
+    body = result.structured_content
+    assert result.is_error is False
+    assert body["workflowStage"] == "variations"
+    assert body["imagesGenerated"] == 4
+    assert len(body["assets"]) == 4
+    assert len(captured) == 2
+    assert len(body["styleAssetIds"]) == 2
+    assert len(captured[0]["style_images"]) == 2
+    assert captured[0]["style_images"][0].tobytes() == captured[1]["style_images"][0].tobytes()
+    assert captured[0]["output_size"] == captured[0]["style_images"][0].size
+    assert all(Path(asset["assetPath"]).exists() for asset in body["assets"])
+
+
+async def test_variation_batch_rejects_unapproved_style_reference(monkeypatch):
+    async with session() as client:
+        prototype = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-approved",
+                "prompt": "chest prop",
+                "gameId": "t-style-gate",
+            },
+        )
+        pending_anchor = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-pending",
+                "prompt": "key prop",
+                "gameId": "t-style-gate",
+            },
+        )
+        await client.call_tool(
+            "review_asset",
+            {"assetId": prototype.structured_content["assetId"], "approved": True},
+        )
+        result = await client.call_tool(
+            "generate_2d_variations",
+            {
+                "featureId": "f-batch",
+                "prototypeAssetId": prototype.structured_content["assetId"],
+                "styleAssetIds": [pending_anchor.structured_content["assetId"]],
+                "prompts": ["closed chest prop"],
+                "gameId": "t-style-gate",
+            },
+        )
+
+    assert result.is_error is True
+    assert "every style asset must be approved" in "".join(
+        getattr(block, "text", "") for block in result.content
+    )
+
+
+async def test_variation_batch_rejects_non_square_primary_before_api_call(monkeypatch):
+    called = False
+
+    def _unexpected_variations(**kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("API must not be called for an unsupported canvas")
+
+    monkeypatch.setattr(pixellab_client, "generate_with_style", _unexpected_variations)
+    async with session() as client:
+        prototype = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-character",
+                "prompt": "player character",
+                "gameId": "t-square-gate",
+                "assetKind": "character",
+            },
+        )
+        await client.call_tool(
+            "review_asset",
+            {"assetId": prototype.structured_content["assetId"], "approved": True},
+        )
+        result = await client.call_tool(
+            "generate_2d_variations",
+            {
+                "featureId": "f-character-batch",
+                "prototypeAssetId": prototype.structured_content["assetId"],
+                "prompts": ["player character with a red cloak"],
+                "gameId": "t-square-gate",
+            },
+        )
+
+    assert result.is_error is True
+    assert "requires a square primary prototype" in "".join(
+        getattr(block, "text", "") for block in result.content
+    )
+    assert called is False
+
+
+async def test_inspect_asset_reports_technical_failure_and_next_action():
+    async with session() as client:
+        created = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-inspect",
+                "prompt": "lamp prop",
+                "gameId": "t-inspect",
+                "assetKind": "prop",
+            },
+        )
+        inspected = await client.call_tool(
+            "inspect_asset", {"assetId": created.structured_content["assetId"]}
+        )
+
+    body = inspected.structured_content
+    assert body["inspection"]["status"] == "fail"
+    assert "transparent_background_missing" in body["inspection"]["failures"]
+    assert body["inspection"]["requiresSemanticReview"] is True
+    assert body["nextAction"] == "regenerate_after_technical_fix"
+
+
+async def test_inspect_asset_restores_feedback_and_escalates_after_three_rejections():
+    latest = None
+    async with session() as client:
+        for index in range(3):
+            latest = await client.call_tool(
+                "generate_2d_sprite",
+                {
+                    "featureId": "f-retry",
+                    "prompt": f"lamp prop revision {index}",
+                    "gameId": "t-retry",
+                    "assetKind": "prop",
+                },
+            )
+            path = Path(latest.structured_content["assetPath"])
+            with Image.open(path) as opened:
+                width, height = opened.size
+            replacement = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            for x in range(width // 4, width * 3 // 4):
+                for y in range(height // 4, height * 3 // 4):
+                    replacement.putpixel((x, y), (30, 40, 50, 255))
+            replacement.save(path)
+            await client.call_tool(
+                "review_asset",
+                {
+                    "assetId": latest.structured_content["assetId"],
+                    "approved": False,
+                    "preserve": ["clear silhouette"],
+                    "change": ["make the support wider"],
+                },
+            )
+
+        inspected = await client.call_tool(
+            "inspect_asset", {"assetId": latest.structured_content["assetId"]}
+        )
+
+    body = inspected.structured_content
+    assert body["inspection"]["status"] == "pass"
+    assert body["feedback"]["preserve"] == ["clear silhouette"]
+    assert body["rejectedPrototypeAttempts"] == 3
+    assert body["escalationRequired"] is True
+    assert body["nextAction"] == "prepare_revision_from_feedback"
+
+
+async def test_list_assets_recovers_rejected_work_by_feature():
+    async with session() as client:
+        created = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-resume",
+                "prompt": "clock prop",
+                "gameId": "t-resume",
+                "assetKind": "prop",
+            },
+        )
+        await client.call_tool(
+            "review_asset",
+            {
+                "assetId": created.structured_content["assetId"],
+                "approved": False,
+                "change": ["make the hands readable"],
+            },
+        )
+        listed = await client.call_tool(
+            "list_assets",
+            {"gameId": "t-resume", "status": "rejected", "featureId": "f-resume"},
+        )
+
+    assert listed.structured_content["count"] == 1
+    assert listed.structured_content["assets"][0]["review_feedback"]["change"] == [
+        "make the hands readable"
+    ]
+
+
+async def test_inspect_solid_tile_passes_horizontal_seam_check():
+    async with session() as client:
+        created = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-tile-inspect",
+                "prompt": "stone tile",
+                "gameId": "t-tile-inspect",
+                "assetKind": "tile",
+            },
+        )
+        inspected = await client.call_tool(
+            "inspect_asset", {"assetId": created.structured_content["assetId"]}
+        )
+
+    body = inspected.structured_content["inspection"]
+    assert body["status"] == "pass"
+    assert body["metrics"]["horizontalSeamMeanRgbDelta"] == 0
 
 
 # --------------------------------------------------------------------------
@@ -250,7 +628,7 @@ async def test_every_asset_records_pixellab_provenance():
     manifest = json.loads((root / "manifests" / "t-prov.json").read_text(encoding="utf-8"))
     provenance = manifest["assets"][created.structured_content["assetId"]]["provenance"]
 
-    assert provenance["method"] == "pixellab"
+    assert provenance["method"] == "pixellab-mcp"
     assert provenance["commercial_use"] == "see PixelLab terms of service"
 
 
@@ -345,8 +723,16 @@ async def test_review_status_is_recorded_in_the_manifest_not_the_path():
             {"featureId": "f-meta", "prompt": "a tree", "gameId": "t-meta"},
         )
         asset_id = created.structured_content["assetId"]
-        await client.call_tool(
-            "review_asset", {"assetId": asset_id, "approved": False, "note": "off-palette"}
+        reviewed = await client.call_tool(
+            "review_asset",
+            {
+                "assetId": asset_id,
+                "approved": False,
+                "note": "off-palette",
+                "preserve": ["readable silhouette"],
+                "change": ["use the shared cool palette"],
+                "artStyleFeedback": "reduce saturation",
+            },
         )
 
     root = Path(created.structured_content["assetPath"]).parents[2]
@@ -354,6 +740,12 @@ async def test_review_status_is_recorded_in_the_manifest_not_the_path():
     record = manifest["assets"][asset_id]
     assert record["status"] == "rejected"
     assert record["review_note"] == "off-palette"
+    assert record["review_feedback"] == {
+        "preserve": ["readable silhouette"],
+        "change": ["use the shared cool palette"],
+        "artStyle": "reduce saturation",
+    }
+    assert reviewed.structured_content["feedback"] == record["review_feedback"]
     assert record["asset_path"] == created.structured_content["assetPath"]
 
 

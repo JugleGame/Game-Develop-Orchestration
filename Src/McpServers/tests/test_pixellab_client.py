@@ -6,6 +6,7 @@ what 12문서 §3 confirmed against PixelLab's own openapi.json (2026-08-02).
 
 import base64
 import io
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -31,6 +32,10 @@ class _FakeResponse:
 
     def json(self):
         return self._json_body
+
+    @property
+    def text(self):
+        return str(self._json_body)
 
 
 # --------------------------------------------------------------------------
@@ -214,3 +219,137 @@ def test_generate_image_bad_base64_raises_unavailable(monkeypatch):
 
     with pytest.raises(pixellab_client.PixelLabUnavailable):
         pixellab_client.generate_image(prompt="a rock", width=32, height=32)
+
+
+def test_official_mcp_prototype_arguments_keep_style_structured():
+    tool = SimpleNamespace(
+        name="create_image",
+        input_schema={
+            "properties": {
+                "description": {},
+                "image_size": {},
+                "seed": {},
+                "no_background": {},
+                "text_guidance_scale": {},
+                "outline": {},
+                "view": {},
+                "style_description": {},
+                "forced_palette": {},
+            },
+            "required": ["description", "image_size"],
+        },
+    )
+
+    arguments = pixellab_client._prototype_arguments(
+        tool,
+        "a mossy rock; single centered isolated object",
+        32,
+        32,
+        7,
+        "dark fantasy pixel art",
+        {"outline": "single color black outline", "view": "side"},
+        ["#112233", "#445566"],
+    )
+
+    assert arguments["description"] == "a mossy rock; single centered isolated object"
+    assert arguments["image_size"] == {"width": 32, "height": 32}
+    assert arguments["text_guidance_scale"] == 16.0
+    assert arguments["style_description"] == "dark fantasy pixel art"
+    assert arguments["outline"] == "single color black outline"
+    assert arguments["forced_palette"] == ["#112233", "#445566"]
+
+
+def test_official_mcp_prefers_pixflux_for_single_image_prototypes():
+    tools = [
+        SimpleNamespace(name="create_character", input_schema={"properties": {}}),
+        SimpleNamespace(name="create_image_pixen", input_schema={"properties": {}}),
+        SimpleNamespace(name="create_image_pixflux", input_schema={"properties": {}}),
+    ]
+
+    assert pixellab_client._prototype_tool(tools, "character").name == "create_image_pixflux"
+
+
+def test_official_mcp_result_helpers_read_async_job_and_image():
+    job_id = "123e4567-e89b-12d3-a456-426614174000"
+    queued = SimpleNamespace(
+        structured_content=None,
+        content=[SimpleNamespace(type="text", text=f'{{"job_id": "{job_id}"}}')],
+    )
+    completed = SimpleNamespace(
+        structured_content=None,
+        content=[SimpleNamespace(type="image", data=base64.b64encode(_png_bytes()).decode())],
+    )
+
+    payloads = pixellab_client._result_payloads(queued)
+    assert pixellab_client._identifier(payloads, ("job_id",)) == job_id
+    encoded, url = pixellab_client._result_image(completed)
+    assert encoded is not None
+    assert url is None
+
+
+def test_generate_with_style_uses_reference_and_returns_all_candidates(monkeypatch):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    encoded = base64.b64encode(_png_bytes(size=(64, 64))).decode()
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, json, headers):
+            captured["url"] = url
+            captured["payload"] = json
+            return _FakeResponse({"background_job_id": "job-1", "usage": {}} , 202)
+
+        def get(self, url, headers):
+            return _FakeResponse(
+                {
+                    "status": "completed",
+                    "last_response": {
+                        "images": [{"base64": encoded}, {"image": {"base64": encoded}}]
+                    },
+                    "usage": {"type": "generations", "generations": 2.0},
+                }
+            )
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+
+    images, usage, job_id = pixellab_client.generate_with_style(
+        prompt="a red treasure chest",
+        style_images=[
+            Image.new("RGBA", (64, 64), (1, 2, 3, 255)),
+            Image.new("RGBA", (64, 64), (4, 5, 6, 255)),
+        ],
+        output_size=(64, 64),
+        style_description="dark fantasy pixel art",
+        seed=9,
+        poll_seconds=0,
+    )
+
+    assert captured["url"] == "https://api.pixellab.ai/v2/generate-with-style-v2"
+    assert captured["payload"]["description"] == "a red treasure chest"
+    assert captured["payload"]["style_images"][0]["width"] == 64
+    assert len(captured["payload"]["style_images"]) == 2
+    assert captured["payload"]["image_size"] == {"width": 64, "height": 64}
+    assert len(images) == 2
+    assert usage["generations"] == 2.0
+    assert job_id == "job-1"
+
+
+def test_generate_with_style_rejects_non_square_output(monkeypatch):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(pixellab_client.PixelLabUnavailable, match="must be square"):
+        pixellab_client.generate_with_style(
+            prompt="a tall hero",
+            style_images=[Image.new("RGBA", (64, 128), (1, 2, 3, 255))],
+            output_size=(64, 128),
+            style_description="pixel art",
+            seed=9,
+        )
