@@ -1,0 +1,68 @@
+name: Pipeline maintenance
+description: A work contract for MCP servers, automation, validation, documentation, and developer environment changes.
+title: "[pipeline] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This Issue is a work contract for maintaining the development pipeline.
+        State exactly which MCP server, GitHub Action, test, document, or developer-environment behavior will change.
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: What pipeline behavior will you fix or make safer?
+      placeholder: "Example: Make the GitHub Actions check fail when the Issue and PR numbers differ."
+    validations:
+      required: true
+  - type: textarea
+    id: background
+    attributes:
+      label: Background
+      description: What is difficult or risky today? Include an error and reproduction steps when available.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: List the servers, workflows, documents, scripts, and tests that may change in this work.
+      placeholder: |
+        - .github/workflows/issue-contract.yml
+        - docs/github-issue-workflow.md
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of Scope
+      description: List servers, behavior, or external-service settings that must not change in this work.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      description: List one observable completion condition per line.
+      placeholder: |
+        - [ ] A PR from a branch without an Issue number fails automated validation.
+        - [ ] A PR with the matching Issue number and Closes reference passes validation.
+        - [ ] Existing MCP contract checks still pass.
+    validations:
+      required: true
+  - type: textarea
+    id: test
+    attributes:
+      label: Test
+      description: List commands, automated checks, and manual verification steps.
+      placeholder: |
+        - `python -m pytest Src/McpServers/tests`
+        - Check failing and passing PR examples in GitHub Actions.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Add logs, reproduction steps, related Issues or PRs, required external permissions, or manual settings.

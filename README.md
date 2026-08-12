@@ -29,6 +29,7 @@ Read only what the task needs:
 - Setup and runtime: [docs/operations.md](docs/operations.md)
 - Open work: [docs/backlog.md](docs/backlog.md)
 - AI migration, hand-off, graph, asset, and Unity-tool boards: [docs/guide-boards.md](docs/guide-boards.md)
+- GitHub Issue-based work and required repository settings: [docs/github-issue-workflow.md](docs/github-issue-workflow.md)
 
 ## Workflow
 

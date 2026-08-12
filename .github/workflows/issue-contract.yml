@@ -1,0 +1,74 @@
+name: Issue contract
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  validate:
+    name: Validate issue, branch, and PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = context.payload.pull_request.head.ref;
+            const body = context.payload.pull_request.body || "";
+            const issueBranch = /^(\d+)-(feat|fix|refactor|test|docs|chore)-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+            const docsException = /^docs\/[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+            if (docsException.test(branch)) {
+              if (!/^No-Issue-Reason:\s*Typo-only documentation change\s*$/mi.test(body)) {
+                core.setFailed("A no-Issue documentation typo PR requires the exact No-Issue-Reason.");
+                return;
+              }
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                per_page: 100,
+              });
+              const invalid = files.map(file => file.filename).filter(path => path !== "README.md" && !path.startsWith("docs/"));
+              if (invalid.length) {
+                core.setFailed(`A docs/ exception PR may change only README.md and docs/: ${invalid.join(", ")}`);
+              }
+              return;
+            }
+
+            const match = branch.match(issueBranch);
+            if (!match) {
+              core.setFailed("Branch names must use <issue-number>-<type>-<short-description>.");
+              return;
+            }
+
+            const issueNumber = Number(match[1]);
+            const closingReferences = [...body.matchAll(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b/gi)]
+              .map(reference => Number(reference[1]));
+            if (closingReferences.length !== 1 || closingReferences[0] !== issueNumber) {
+              core.setFailed(`The PR body must contain exactly one closing reference for this branch: Closes #${issueNumber}.`);
+              return;
+            }
+
+            try {
+              const { data: issue } = await github.rest.issues.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+              });
+              if (issue.pull_request) {
+                core.setFailed(`#${issueNumber} is a Pull Request, not a work Issue.`);
+              } else if (issue.state !== "open") {
+                core.setFailed(`#${issueNumber} is not open and cannot be used for work.`);
+              }
+            } catch (error) {
+              if (error.status === 404) {
+                core.setFailed(`The Issue referenced by the branch, #${issueNumber}, does not exist.`);
+                return;
+              }
+              throw error;
+            }
