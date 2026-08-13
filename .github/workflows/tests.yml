@@ -3,7 +3,7 @@ name: Tests
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [dev, main]
 
 permissions:
   contents: read
@@ -26,5 +26,7 @@ jobs:
           python -m pip install --no-deps --no-build-isolation ./Src/McpServers
       - name: Run tests
         run: python -m pytest Src/McpServers/tests
+      - name: Run workflow contract tests
+        run: node --test .github/scripts/issue-contract.test.js
       - name: Verify MCP contracts
         run: python Src/McpServers/verify_contract.py
