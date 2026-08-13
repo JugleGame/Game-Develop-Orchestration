@@ -8,10 +8,10 @@ Pull Request (PR) is **evidence that the work is complete**.
 ```text
 Create pipeline Issue #123
   -> Create branch 123-fix-issue-contract-check
-  -> Change and test
-  -> Write Closes #123 in the PR
-  -> Automated checks and human review
-  -> Merge, close the Issue, and delete the branch
+  -> Open a feature PR: branch -> dev, with Refs #123
+  -> Change, test, review, and merge into dev
+  -> Open an integration PR: dev -> main, with Closes #123
+  -> Merge into main, close the Issue, and delete the branch
 ```
 
 ## Everyday rules
@@ -22,9 +22,14 @@ Create pipeline Issue #123
 3. Use `<number>-<type>-<short-description>` for branches, for example
    `123-fix-issue-contract-check`. The allowed types are `feat`, `fix`,
    `refactor`, `test`, `docs`, and `chore`.
-4. Put exactly one matching reference such as `Closes #123` in the PR body.
-5. Keep one Issue's work in one PR. Create a new Issue for a different problem.
-6. Merge only after the automated tests and contract check are green.
+4. A feature PR must target `dev`, use the Issue branch name, and contain
+   exactly one matching `Refs #123` reference. It does not close the Issue.
+5. Only `dev` may target `main`. Its integration PR must contain one or more
+   `Closes #123` references for the open work Issues included in the release.
+   GitHub automatically closes those Issues when that PR merges into `main`.
+6. Keep one Issue's work in one feature PR. Create a new Issue for a different
+   problem.
+7. Merge only after the automated tests and contract check are green.
 
 ## Small exception
 
@@ -43,8 +48,12 @@ even when small.
 
 - `.github/ISSUE_TEMPLATE/work-item.yml` requires a complete pipeline-maintenance Issue.
 - `.github/pull_request_template.md` asks for the Issue link, change reason, tests, and acceptance evidence.
-- The `Issue contract` check validates the branch name, Issue existence and open state, and matching `Closes #<number>` reference.
+- The `Issue contract` check validates the complete `feature -> dev -> main`
+  path. It checks a feature branch, exactly one matching `Refs #<number>`, and
+  an open work Issue for feature PRs. For `dev -> main`, it requires one or
+  more valid `Closes #<number>` references and rejects every other main PR.
 - The `Tests` check runs the existing Python tests and MCP contract check.
+- The `Tests` check also runs automated tests for the Issue-contract rules.
 
 ## GitHub settings a repository administrator must apply
 
@@ -52,7 +61,8 @@ Repository files cannot block a merge on their own. An administrator must set
 the following in GitHub:
 
 1. Go to **Settings > Rules > Rulesets > New branch ruleset**.
-2. Name it, for example, `Protect main`, and target the `main` branch.
+2. Create one ruleset named, for example, `Protect dev`, targeting the `dev`
+   branch, and another named `Protect main`, targeting the `main` branch.
 3. Enable **Require a pull request before merging**.
 4. Enable **Require status checks to pass**, then require:
    - `Validate issue, branch, and PR`
@@ -60,6 +70,10 @@ the following in GitHub:
 5. Enable **Require approvals** and normally require at least one approval.
 6. Enable **Block force pushes**.
 7. Enable **Automatically delete head branches**.
+
+The Issue-contract check only permits Issue branches and the documentation
+exception to target `dev`. It only permits `dev` to target `main`; the main
+ruleset must require that check so this rule cannot be bypassed.
 
 Do not block the GitHub Actions `GITHUB_TOKEN` from reading Issues. If an
 organization policy restricts it, allow `issues: read`, `pull-requests: read`,
@@ -72,5 +86,6 @@ external secret.
   no agreed label for a more detailed ready-to-work state. Add a check later
   only after agreeing on a label such as `ready`.
 - The check reruns when the PR description changes.
-- GitHub automatically closes the linked Issue when the PR merges into the
-  default branch. Removing `Closes #<number>` prevents that automatic close.
+- GitHub automatically closes an Issue only when a PR with `Closes #<number>`
+  merges into the default branch. In this flow, put that text in the
+  `dev -> main` integration PR, not in the feature PR to `dev`.
