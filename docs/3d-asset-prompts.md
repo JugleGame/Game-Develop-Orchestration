@@ -30,7 +30,7 @@ required only when `animation.required` is `true`. The optional lists `materials
 |---|---|
 | Identity | `assetId`, `assetName`, `assetType`, `gameplayRole` |
 | Design | `description`, `style`, `proportions`, `colors`, required `form`, optional `materials`, `preserve`, `exclude` |
-| Geometry | `maxTriangles`, `separateMeshes` |
+| Geometry | `maxTriangles`, `separateMeshes`, required `shading` |
 | Output | `format`, `scale`, `pivot`, `pivotPolicy`, `collider` |
 | Texture | `required`, `description`, `maps` |
 | Animation | `required`, conditional `rigType`, `clips` |
@@ -50,6 +50,12 @@ budget. Do not approximate an inset frame by attaching four unrelated bars.
 props normally use `ground_center`: the lowest support point is on the ground plane and the
 horizontal center is the origin. Organic, animated, hanging, or gameplay-specific assets may use
 another explicit policy. Export and format conversion must preserve the selected origin.
+
+`geometry.shading` requires `normalPolicy`, outward `faceOrientation`, and non-empty
+`smoothingRules`. Hard-surface props normally use `explicit_hard`; organic surfaces use
+`explicit_smooth` or `mixed`. Exported meshes must carry explicit normals, keep all renderable
+faces outward, and split normals across intended hard edges so triangulation cannot create
+diagonal lighting gradients or expose flipped faces.
 Supported output formats are `fbx`, `glb`, and `gltf`.
 
 Asset-type differences are expressed through specification values.
@@ -110,7 +116,12 @@ a prompt is therefore rejected with error code `1000`.
   },
   "geometry": {
     "maxTriangles": 2500,
-    "separateMeshes": []
+    "separateMeshes": [],
+    "shading": {
+      "normalPolicy": "mixed",
+      "faceOrientation": "outward",
+      "smoothingRules": ["split normals across silhouette-defining hard edges"]
+    }
   },
   "output": {
     "format": "glb",

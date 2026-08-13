@@ -122,6 +122,25 @@ def _validate_asset_spec(asset_spec: dict[str, Any]) -> dict[str, Any]:
     separate_meshes = _require_text_list(
         geometry.get("separateMeshes"), "assetSpec.geometry.separateMeshes", allow_empty=True
     )
+    shading = _require_object(geometry.get("shading"), "assetSpec.geometry.shading")
+    normal_policy = _require_text(
+        shading.get("normalPolicy"), "assetSpec.geometry.shading.normalPolicy"
+    )
+    if normal_policy not in {"explicit_hard", "explicit_smooth", "mixed"}:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "assetSpec.geometry.shading.normalPolicy must be one of ['explicit_hard', 'explicit_smooth', 'mixed']",
+        )
+    face_orientation = _require_text(
+        shading.get("faceOrientation"), "assetSpec.geometry.shading.faceOrientation"
+    )
+    if face_orientation != "outward":
+        raise tool_error(
+            VALIDATION_ERROR, "assetSpec.geometry.shading.faceOrientation must be outward"
+        )
+    smoothing_rules = _require_text_list(
+        shading.get("smoothingRules"), "assetSpec.geometry.shading.smoothingRules"
+    )
 
     output = _require_object(asset_spec.get("output"), "assetSpec.output")
     model_format = _require_text(output.get("format"), "assetSpec.output.format").lower()
@@ -189,6 +208,9 @@ def _validate_asset_spec(asset_spec: dict[str, Any]) -> dict[str, Any]:
         "exclude": exclude,
         "maxTriangles": max_triangles,
         "separateMeshes": separate_meshes,
+        "normalPolicy": normal_policy,
+        "faceOrientation": face_orientation,
+        "smoothingRules": smoothing_rules,
         "modelFormat": model_format,
         "scale": scale,
         "pivot": pivot,
@@ -228,6 +250,9 @@ def _compose_prompts(asset_spec: dict[str, Any]) -> dict[str, Any]:
         clauses.append("Use a neutral pose with unobstructed parts and animation-ready deformation.")
     clauses.append(
         f"Keep the mesh at or below {spec['maxTriangles']} triangles and export {spec['modelFormat']}."
+    )
+    clauses.append(
+        f"Normals {spec['normalPolicy']}; faces {spec['faceOrientation']}; smoothing {', '.join(spec['smoothingRules'])}."
     )
     if spec["separateMeshes"]:
         clauses.append(f"Separate meshes: {', '.join(spec['separateMeshes'])}.")

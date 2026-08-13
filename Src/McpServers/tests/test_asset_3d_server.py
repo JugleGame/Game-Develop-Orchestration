@@ -44,6 +44,11 @@ def _asset_spec(asset_type: str = "slime", method: str = "image_to_3d") -> dict:
         "geometry": {
             "maxTriangles": 2500,
             "separateMeshes": ["body", "eyes"] if asset_type == "interactive" else [],
+            "shading": {
+                "normalPolicy": "explicit_hard" if asset_type in {"prop", "building"} else "mixed",
+                "faceOrientation": "outward",
+                "smoothingRules": ["split normals across silhouette-defining hard edges"],
+            },
         },
         "output": {
             "format": "glb",
@@ -197,6 +202,12 @@ async def test_requires_concrete_form_texture_and_pivot_policy():
         bad_pivot = await client.call_tool("compose_3d_asset_prompts", {"assetSpec": asset_spec})
     assert bad_pivot.is_error is True
 
+    asset_spec = _asset_spec("prop", "text_to_3d")
+    asset_spec["geometry"]["shading"]["faceOrientation"] = "mixed"
+    async with session() as client:
+        bad_winding = await client.call_tool("compose_3d_asset_prompts", {"assetSpec": asset_spec})
+    assert bad_winding.is_error is True
+
 
 async def test_prompt_preserves_shape_surface_texture_and_origin_requirements():
     prompt = (await _compose(_asset_spec("prop", "text_to_3d")))["generationPrompt"]["prompt"]
@@ -205,6 +216,7 @@ async def test_prompt_preserves_shape_surface_texture_and_origin_requirements():
     assert "Surface features: preserve intentional recesses and protrusions" in prompt
     assert "Bevel only: bevel only silhouette-defining hard edges" in prompt
     assert "Texture: matte stylized surface" in prompt
+    assert "Normals explicit_hard; faces outward" in prompt
     assert "pivot ground center (ground_center); preserve that origin after export" in prompt
 
 
