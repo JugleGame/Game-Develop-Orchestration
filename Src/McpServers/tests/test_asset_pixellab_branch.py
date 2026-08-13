@@ -72,6 +72,19 @@ def test_prompt_composition_removes_structured_duplication(kind, prompt, framing
     assert plan.removed_structured_clauses
 
 
+def test_prompt_composition_does_not_repeat_a_complete_prepared_brief():
+    prompt = (
+        "a brass lantern. Composition: centered with a broad base and narrow top handle. "
+        "Required visual structure: one connected silhouette; three support feet. "
+        "Readability target: a 32 px pickup. Exclude: text."
+    )
+
+    plan = prompting.compose(prompt, "prop")
+
+    assert "single centered isolated object" not in plan.prompt
+    assert plan.composed_characters <= plan.original_characters
+
+
 # --------------------------------------------------------------------------
 # No key configured -> hard error, no generation
 # --------------------------------------------------------------------------

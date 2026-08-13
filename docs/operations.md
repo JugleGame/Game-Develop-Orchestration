@@ -33,7 +33,7 @@ new dependency graph or downloading isolated build dependencies.
 | `UNITY_BUILD_TARGET` | Validated Unity build target | `WebGL` |
 | `UNITY_BUILD_OUTPUT` | Optional project-relative path under `Builds/` | target default |
 | `PIXELLAB_API_KEY` | Asset generation | none |
-| `ASSET_ROOT` | Asset output | `./var/assets` |
+| `ASSET_ROOT` | Asset output; relative paths resolve from the repository root | `./var/assets` |
 | `HANDOFF_ROOT` | Planning files for execution AI | `./var/handoffs` |
 | `UNITY_SCRIPT_ROOT` | C# root | `Assets/Scripts` |
 | `LOG_LEVEL` | Logging | `INFO` |

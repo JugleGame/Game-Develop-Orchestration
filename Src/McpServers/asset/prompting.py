@@ -203,7 +203,11 @@ def compose(prompt: str, kind: AssetKind) -> PromptPlan:
 
     subject = ", ".join(kept) or normalized
     framing = _FRAMING[kind]
-    if framing.casefold() not in subject.casefold():
+    structured_brief = all(
+        marker in subject.casefold()
+        for marker in ("composition:", "required visual structure:")
+    )
+    if not structured_brief and framing.casefold() not in subject.casefold():
         subject = f"{subject}; {framing}"
 
     return PromptPlan(

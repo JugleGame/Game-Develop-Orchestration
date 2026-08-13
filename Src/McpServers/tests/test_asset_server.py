@@ -7,6 +7,7 @@ exercised exactly as the orchestrator will exercise it.
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import json
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,7 @@ from PIL import Image
 
 from asset import pixellab_client
 from asset.render import classify
-from asset.server import mcp
+from asset.server import DEFAULT_ASSET_ROOT, _configured_asset_root, mcp
 from asset.style import derive
 
 
@@ -154,6 +155,37 @@ async def test_invalid_explicit_asset_kind_is_a_validation_error():
     assert '"errorCode": 1000' in text
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("gameId", "../outside"),
+        ("gameId", "game/name"),
+        ("gameId", "game__name"),
+        ("featureId", "..\\outside"),
+        ("featureId", "feature name"),
+    ],
+)
+async def test_generation_rejects_path_like_identifiers(field, value):
+    arguments = {
+        "featureId": "f-safe",
+        "gameId": "g-safe",
+        "prompt": "a lantern prop",
+    }
+    arguments[field] = value
+
+    async with session() as client:
+        result = await client.call_tool("generate_2d_sprite", arguments)
+
+    assert result.is_error is True
+    text = "".join(getattr(block, "text", "") for block in result.content)
+    assert '"errorCode": 1000' in text
+
+
+def test_default_asset_root_is_repository_runtime_output():
+    assert DEFAULT_ASSET_ROOT == Path(__file__).resolve().parents[3] / "var" / "assets"
+    assert _configured_asset_root("./var/assets") == DEFAULT_ASSET_ROOT
+
+
 async def test_generate_2d_sprite_returns_asset_path_in_structured_content():
     """assetgen.py reads body["assetPath"]; an empty structuredContent breaks it."""
 
@@ -166,6 +198,26 @@ async def test_generate_2d_sprite_returns_asset_path_in_structured_content():
     assert result.is_error is False
     assert result.structured_content is not None, "annotate the return as dict[str, Any]"
     assert Path(result.structured_content["assetPath"]).exists()
+
+
+def test_manifest_save_keeps_the_previous_file_if_replacement_fails(tmp_path, monkeypatch):
+    from asset import server
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    path = tmp_path / "manifests" / "g-safe.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"game_id": "g-safe", "assets": {"old": {}}}', encoding="utf-8")
+
+    def fail_replace(_source, _destination):
+        raise OSError("replacement interrupted")
+
+    monkeypatch.setattr(server.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replacement interrupted"):
+        server._save_manifest({"game_id": "g-safe", "assets": {"new": {}}})
+
+    assert json.loads(path.read_text(encoding="utf-8"))["assets"] == {"old": {}}
+    assert not list(path.parent.glob("*.tmp"))
 
 
 async def test_validation_failure_carries_error_code_1000():
@@ -293,11 +345,14 @@ async def test_variation_batch_uses_approved_style_references(monkeypatch):
 
     def _fake_variations(**kwargs):
         captured.append(kwargs)
+        width, height = kwargs["output_size"]
+        box = (width // 4, height // 4, width * 3 // 4, height * 3 // 4)
+        first = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        first.paste((10, 20, 30, 255), box)
+        second = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        second.paste((20, 30, 40, 255), box)
         return (
-            [
-                Image.new("RGBA", (64, 64), (10, 20, 30, 255)),
-                Image.new("RGBA", (64, 64), (20, 30, 40, 255)),
-            ],
+            [first, second],
             {"type": "generations", "generations": 2.0},
             f"job-{len(captured)}",
         )
@@ -341,6 +396,9 @@ async def test_variation_batch_uses_approved_style_references(monkeypatch):
                 "styleAssetIds": [second_anchor.structured_content["assetId"]],
             },
         )
+        selected_id = result.structured_content["assets"][0]["assetId"]
+        await client.call_tool("review_asset", {"assetId": selected_id, "approved": True})
+        selected = await client.call_tool("inspect_asset", {"assetId": selected_id})
 
     body = result.structured_content
     assert result.is_error is False
@@ -353,6 +411,10 @@ async def test_variation_batch_uses_approved_style_references(monkeypatch):
     assert captured[0]["style_images"][0].tobytes() == captured[1]["style_images"][0].tobytes()
     assert captured[0]["output_size"] == captured[0]["style_images"][0].size
     assert all(Path(asset["assetPath"]).exists() for asset in body["assets"])
+    assert selected.structured_content["semanticStatus"] == "approved"
+    assert selected.structured_content["readyForVariations"] is False
+    assert selected.structured_content["readyForImport"] is True
+    assert selected.structured_content["nextAction"] == "import_asset"
 
 
 async def test_variation_batch_rejects_unapproved_style_reference(monkeypatch):
@@ -450,10 +512,27 @@ async def test_inspect_asset_reports_technical_failure_and_next_action():
         )
 
     body = inspected.structured_content
-    assert body["inspection"]["status"] == "fail"
+    assert body["technicalStatus"] == "fail"
+    assert body["semanticStatus"] == "human_review_required"
+    assert body["humanReviewStatus"] == "pending"
+    assert body["readyForVariations"] is False
     assert "transparent_background_missing" in body["inspection"]["failures"]
     assert body["inspection"]["requiresSemanticReview"] is True
     assert body["nextAction"] == "regenerate_after_technical_fix"
+
+
+def test_technical_inspection_warns_when_an_isolated_subject_touches_the_bottom_edge():
+    from asset.quality import inspect
+
+    image = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+    for x in range(8, 24):
+        for y in range(8, 32):
+            image.putpixel((x, y), (255, 255, 255, 255))
+
+    inspection = inspect(image, "prop", (32, 32))
+
+    assert inspection["technicalStatus"] == "pass"
+    assert "subject_may_be_clipped" in inspection["warnings"]
 
 
 async def test_inspect_asset_restores_feedback_and_escalates_after_three_rejections():
@@ -492,7 +571,9 @@ async def test_inspect_asset_restores_feedback_and_escalates_after_three_rejecti
         )
 
     body = inspected.structured_content
-    assert body["inspection"]["status"] == "pass"
+    assert body["technicalStatus"] == "pass"
+    assert body["humanReviewStatus"] == "rejected"
+    assert body["readyForVariations"] is False
     assert body["feedback"]["preserve"] == ["clear silhouette"]
     assert body["rejectedPrototypeAttempts"] == 3
     assert body["escalationRequired"] is True
@@ -545,7 +626,7 @@ async def test_inspect_solid_tile_passes_horizontal_seam_check():
         )
 
     body = inspected.structured_content["inspection"]
-    assert body["status"] == "pass"
+    assert body["technicalStatus"] == "pass"
     assert body["metrics"]["horizontalSeamMeanRgbDelta"] == 0
 
 
@@ -678,6 +759,30 @@ def test_character_and_ui_report_no_material():
     assert material_for("the player character", "character") is None
     assert material_for("a wild slime", "monster") is None
     assert material_for("inventory panel", "ui_panel") is None
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "a brass mechanical lantern prop",
+        "a bronze statue prop",
+        "a copper pipe prop",
+    ],
+)
+def test_metal_props_keep_their_explicit_material_intent(prompt):
+    from asset.render import material_for
+    from asset.server import _pixellab_palette
+
+    assert material_for(prompt, "prop") == "metal"
+    assert _pixellab_palette(_style(), "prop", prompt) is None
+
+
+def test_unknown_prop_does_not_force_a_foliage_palette():
+    from asset.render import material_for
+    from asset.server import _pixellab_palette
+
+    assert material_for("a mechanical lantern prop", "prop") is None
+    assert _pixellab_palette(_style(), "prop", "a mechanical lantern prop") is None
 
 
 # --------------------------------------------------------------------------

@@ -84,7 +84,23 @@ _MATERIAL_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("snow", ("snow", "ice", "frozen", "눈", "얼음")),
     ("sand", ("sand", "desert", "beach", "dune", "모래", "사막")),
     ("stone", ("stone", "rock", "cliff", "granite", "cobble", "돌", "바위", "암석")),
-    ("metal", ("metal", "steel", "iron", "금속", "철")),
+    (
+        "metal",
+        (
+            "metal",
+            "steel",
+            "iron",
+            "brass",
+            "bronze",
+            "copper",
+            "gold",
+            "silver",
+            "aluminum",
+            "aluminium",
+            "금속",
+            "철",
+        ),
+    ),
     ("dirt", ("dirt", "mud", "soil", "earth", "흙", "진흙")),
     ("wood", ("wood", "log", "plank", "barrel", "chest", "나무판", "통나무", "상자")),
     ("foliage", ("tree", "bush", "shrub", "leaf", "leaves", "forest", "oak", "pine", "나무", "숲")),
@@ -139,7 +155,7 @@ def material_for(prompt: str, kind: AssetKind) -> str | None:
     for material, keywords in _MATERIAL_KEYWORDS:
         if any(keyword in lowered for keyword in keywords):
             return material
-    return "foliage" if kind == "prop" else "grass"
+    return None
 
 
 def rng_for(style: ArtStyle, feature_id: str, prompt: str) -> random.Random:

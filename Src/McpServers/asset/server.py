@@ -25,12 +25,15 @@ import hashlib
 import json
 import logging
 import os
+import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, get_args
 
 from PIL import Image
 
+from common.env import REPO_ROOT
 from common.errors import MCP_ERROR, VALIDATION_ERROR, tool_error
 from common.server import build, expects_dict_return, serve
 
@@ -41,8 +44,21 @@ logger = logging.getLogger(__name__)
 
 mcp = build("AssetGenMcpServer")
 
-ROOT = Path(os.getenv("ASSET_ROOT", "./var/assets")).resolve()
+DEFAULT_ASSET_ROOT = REPO_ROOT / "var" / "assets"
+
+
+def _configured_asset_root(value: str | None = None) -> Path:
+    """Resolve relative asset roots from the repository, never the MCP cwd."""
+
+    configured = Path(value or os.getenv("ASSET_ROOT", str(DEFAULT_ASSET_ROOT)))
+    if not configured.is_absolute():
+        configured = REPO_ROOT / configured
+    return configured.resolve()
+
+
+ROOT = _configured_asset_root()
 DEFAULT_ART_STYLE = "pixel art"
+_IDENTIFIER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?")
 
 PENDING = "pending"
 APPROVED = "approved"
@@ -95,7 +111,7 @@ def _now() -> str:
 
 
 def _manifest_path(game_id: str) -> Path:
-    return ROOT / "manifests" / f"{game_id}.json"
+    return _root_path("manifests", f"{game_id}.json")
 
 
 def _asset_path(game_id: str, feature_id: str, kind: str, prompt_digest: str) -> Path:
@@ -108,7 +124,18 @@ def _asset_path(game_id: str, feature_id: str, kind: str, prompt_digest: str) ->
     the second sprite silently overwrote the first on disk and in the manifest.
     """
 
-    return ROOT / "assets" / game_id / f"{feature_id}_{kind}_{prompt_digest}.png"
+    return _root_path("assets", game_id, f"{feature_id}_{kind}_{prompt_digest}.png")
+
+
+def _root_path(*parts: str) -> Path:
+    """Build a path that cannot escape the configured asset root."""
+
+    path = ROOT.joinpath(*parts).resolve()
+    try:
+        path.relative_to(ROOT)
+    except ValueError as exc:
+        raise tool_error(VALIDATION_ERROR, "asset path must stay within ASSET_ROOT") from exc
+    return path
 
 
 def _load_manifest(game_id: str) -> dict[str, Any]:
@@ -121,7 +148,22 @@ def _load_manifest(game_id: str) -> dict[str, Any]:
 def _save_manifest(manifest: dict[str, Any]) -> None:
     path = _manifest_path(manifest["game_id"])
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        text=True,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(manifest, stream, indent=2, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def _require(value: str, field: str) -> str:
@@ -130,6 +172,18 @@ def _require(value: str, field: str) -> str:
     if not value or not value.strip():
         raise tool_error(VALIDATION_ERROR, f"{field} must not be empty")
     return value.strip()
+
+
+def _require_identifier(value: str, field: str) -> str:
+    """Accept one safe path segment for identifiers used in asset filenames."""
+
+    normalized = _require(value, field)
+    if not _IDENTIFIER.fullmatch(normalized) or "__" in normalized:
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"{field} must use letters, digits, hyphens, or single underscores",
+        )
+    return normalized
 
 
 def _resolve_game_id(explicit: str | None) -> str:
@@ -148,8 +202,8 @@ def _resolve_game_id(explicit: str | None) -> str:
     """
 
     if explicit and explicit.strip():
-        return explicit.strip()
-    return os.getenv("ASSET_DEFAULT_GAME_ID", "default")
+        return _require_identifier(explicit, "gameId")
+    return _require_identifier(os.getenv("ASSET_DEFAULT_GAME_ID", "default"), "gameId")
 
 
 def _asset_kind(value: str | None) -> render.AssetKind | None:
@@ -212,6 +266,11 @@ def _pixellab_palette(
         return None
     if kind in ("tile", "prop"):
         material = render.material_for(prompt, kind)
+        # Metal terms commonly name a visible colour (brass, copper, gold),
+        # while the shared metal ramp is deliberately blue-grey. Do not let
+        # that generic ramp override the host-authored material intent.
+        if material in (None, "metal"):
+            return None
         ramp = style.material_ramp(material)
         return [
             ramp["shadow"],
@@ -323,7 +382,7 @@ def _generate(
     forced_kind: render.AssetKind | None = None,
     art_style: str | None = None,
 ) -> dict[str, Any]:
-    feature_id = _require(feature_id, "featureId")
+    feature_id = _require_identifier(feature_id, "featureId")
     prompt = _require(prompt, "prompt")
     resolved_game = _resolve_game_id(game_id)
 
@@ -389,7 +448,7 @@ def _generate_prototype(
 ) -> dict[str, Any]:
     """Generate the reviewable style prototype through PixelLab's official MCP."""
 
-    feature_id = _require(feature_id, "featureId")
+    feature_id = _require_identifier(feature_id, "featureId")
     prompt = _require(prompt, "prompt")
     resolved_game = _resolve_game_id(game_id)
     style = load_or_create(
@@ -566,7 +625,7 @@ def generate_2d_variations(
 ) -> dict[str, Any]:
     """Expand an approved MCP prototype using up to four approved style anchors."""
 
-    feature_id = _require(featureId, "featureId")
+    feature_id = _require_identifier(featureId, "featureId")
     prototype_id = _require(prototypeAssetId, "prototypeAssetId")
     if not 1 <= len(prompts) <= 25:
         raise tool_error(VALIDATION_ERROR, "prompts must contain between 1 and 25 items")
@@ -773,7 +832,7 @@ def generate_tileset(
     tileset cannot be painted.
     """
 
-    feature_id = _require(featureId, "featureId")
+    feature_id = _require_identifier(featureId, "featureId")
     lower = _require(lowerDescription, "lowerDescription")
     upper = _require(upperDescription, "upperDescription")
     resolved_game = _resolve_game_id(gameId)
@@ -886,7 +945,7 @@ def generate_map_object(
     before returning, so nothing here depends on that URL surviving.
     """
 
-    feature_id = _require(featureId, "featureId")
+    feature_id = _require_identifier(featureId, "featureId")
     description = _require(prompt, "prompt")
     resolved_game = _resolve_game_id(gameId)
 
@@ -947,7 +1006,7 @@ def establish_art_style(gameId: str, artStyle: str = DEFAULT_ART_STYLE) -> dict[
     so every later asset inherits one deliberate look.
     """
 
-    game_id = _require(gameId, "gameId")
+    game_id = _require_identifier(gameId, "gameId")
     style = load_or_create(ROOT, game_id, artStyle or DEFAULT_ART_STYLE)
     return {
         "gameId": style.game_id,
@@ -961,7 +1020,7 @@ def establish_art_style(gameId: str, artStyle: str = DEFAULT_ART_STYLE) -> dict[
 @mcp.tool(description="List assets awaiting human review for a game.")
 @expects_dict_return
 def list_pending_assets(gameId: str) -> dict[str, Any]:
-    game_id = _require(gameId, "gameId")
+    game_id = _require_identifier(gameId, "gameId")
     manifest = _load_manifest(game_id)
     pending = [a for a in manifest["assets"].values() if a["status"] == PENDING]
     return {"gameId": game_id, "pending": pending, "count": len(pending)}
@@ -972,7 +1031,7 @@ def list_pending_assets(gameId: str) -> dict[str, Any]:
 def list_assets(
     gameId: str, status: str | None = None, featureId: str | None = None
 ) -> dict[str, Any]:
-    game_id = _require(gameId, "gameId")
+    game_id = _require_identifier(gameId, "gameId")
     if status is not None and status not in (PENDING, APPROVED, REJECTED):
         raise tool_error(VALIDATION_ERROR, f"unsupported status: {status}")
     feature_id = featureId.strip() if featureId else None
@@ -1024,12 +1083,20 @@ def inspect_asset(assetId: str) -> dict[str, Any]:
         and (candidate.get("provenance") or {}).get("method") == "pixellab-mcp"
         for candidate in manifest["assets"].values()
     )
-    if inspection["status"] == "fail":
+    technical_status = inspection["technicalStatus"]
+    human_review_status = record["status"]
+    semantic_status = (
+        "human_review_required" if human_review_status == PENDING else human_review_status
+    )
+    is_prototype = provenance.get("method") == "pixellab-mcp"
+    if technical_status == "fail":
         next_action = "regenerate_after_technical_fix"
     elif record["status"] == REJECTED:
         next_action = "prepare_revision_from_feedback"
-    elif record["status"] == APPROVED:
+    elif record["status"] == APPROVED and is_prototype:
         next_action = "generate_style_locked_variations"
+    elif record["status"] == APPROVED:
+        next_action = "import_asset"
     else:
         next_action = "review_visual_intent"
 
@@ -1038,6 +1105,13 @@ def inspect_asset(assetId: str) -> dict[str, Any]:
         "assetPath": str(path),
         "kind": record["kind"],
         "status": record["status"],
+        "technicalStatus": technical_status,
+        "semanticStatus": semantic_status,
+        "humanReviewStatus": human_review_status,
+        "readyForVariations": (
+            technical_status == "pass" and human_review_status == APPROVED and is_prototype
+        ),
+        "readyForImport": technical_status == "pass" and human_review_status == APPROVED,
         "prompt": record["prompt"],
         "feedback": record.get("review_feedback"),
         "inspection": inspection,
@@ -1096,7 +1170,7 @@ def review_asset(
 @mcp.tool(description="Report the review state of every asset in a game.")
 @expects_dict_return
 def asset_review_summary(gameId: str) -> dict[str, Any]:
-    game_id = _require(gameId, "gameId")
+    game_id = _require_identifier(gameId, "gameId")
     assets = _load_manifest(game_id)["assets"].values()
     counts = {status: 0 for status in (PENDING, APPROVED, REJECTED)}
     for asset in assets:

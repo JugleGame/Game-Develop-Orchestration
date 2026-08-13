@@ -259,6 +259,28 @@ def test_official_mcp_prototype_arguments_keep_style_structured():
     assert arguments["forced_palette"] == ["#112233", "#445566"]
 
 
+def test_official_mcp_prototype_arguments_preserve_style_when_not_structured():
+    tool = SimpleNamespace(
+        name="create_image_pixflux",
+        input_schema={"properties": {"description": {}}, "required": ["description"]},
+    )
+
+    arguments = pixellab_client._prototype_arguments(
+        tool,
+        "a brass lantern",
+        32,
+        32,
+        7,
+        "industrial fantasy pixel art",
+        {},
+        [],
+    )
+
+    assert arguments["description"] == (
+        "a brass lantern; art style: industrial fantasy pixel art"
+    )
+
+
 def test_official_mcp_prefers_pixflux_for_single_image_prototypes():
     tools = [
         SimpleNamespace(name="create_character", input_schema={"properties": {}}),
@@ -324,7 +346,7 @@ def test_generate_with_style_uses_reference_and_returns_all_candidates(monkeypat
         prompt="a red treasure chest",
         style_images=[
             Image.new("RGBA", (64, 64), (1, 2, 3, 255)),
-            Image.new("RGBA", (64, 64), (4, 5, 6, 255)),
+            Image.new("RGBA", (128, 256), (4, 5, 6, 255)),
         ],
         output_size=(64, 64),
         style_description="dark fantasy pixel art",
@@ -335,8 +357,10 @@ def test_generate_with_style_uses_reference_and_returns_all_candidates(monkeypat
     assert captured["url"] == "https://api.pixellab.ai/v2/generate-with-style-v2"
     assert captured["payload"]["description"] == "a red treasure chest"
     assert captured["payload"]["style_images"][0]["width"] == 64
+    assert captured["payload"]["style_images"][1]["width"] == 32
+    assert captured["payload"]["style_images"][1]["height"] == 64
     assert len(captured["payload"]["style_images"]) == 2
-    assert captured["payload"]["image_size"] == {"width": 64, "height": 64}
+    assert "image_size" not in captured["payload"]
     assert len(images) == 2
     assert usage["generations"] == 2.0
     assert job_id == "job-1"

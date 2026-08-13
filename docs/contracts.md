@@ -76,8 +76,10 @@ Server: `AssetGenMcpServer`.
   from the free-form review note so the next host-authored revision can distinguish content fixes
   from shared style changes.
 - `inspect_asset` returns deterministic canvas, transparency, silhouette occupancy, clipping, and
-  horizontal tile-seam evidence. It also returns the next workflow action and escalates after three
-  rejected attempts. This evidence never substitutes for semantic review or human approval.
+  horizontal tile-seam evidence. Its `technicalStatus`, `semanticStatus`, and `humanReviewStatus`
+  remain separate. `readyForVariations` applies only to approved MCP prototypes, while
+  `readyForImport` marks any technically valid, human-approved asset. It also returns the next
+  workflow action and escalates after three rejected attempts.
 - `list_assets` lets a new host-agent session recover prior pending, approved, or rejected records
   by game and feature, including structured review feedback.
 - The normal sequence is intake, one MCP prototype, human review, a revised intake when rejected,

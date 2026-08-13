@@ -42,8 +42,8 @@ def inspect(image: Image.Image, kind: str, expected_size: tuple[int, int]) -> di
         elif coverage < 0.03:
             failures.append("subject_too_small")
         if bbox:
-            left, top, right, _bottom = bbox
-            if left == 0 or top == 0 or right == rgba.width:
+            left, top, right, bottom = bbox
+            if left == 0 or top == 0 or right == rgba.width or bottom == rgba.height:
                 warnings.append("subject_may_be_clipped")
     elif kind == "tile" and coverage < 0.99:
         failures.append("tile_has_transparent_gaps")
@@ -57,7 +57,7 @@ def inspect(image: Image.Image, kind: str, expected_size: tuple[int, int]) -> di
             failures.append("horizontal_tile_seam_mismatch")
 
     return {
-        "status": "fail" if failures else "pass",
+        "technicalStatus": "fail" if failures else "pass",
         "failures": failures,
         "warnings": warnings,
         "metrics": {

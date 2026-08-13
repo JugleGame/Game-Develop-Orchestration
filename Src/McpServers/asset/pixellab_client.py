@@ -134,10 +134,13 @@ def _prototype_arguments(
     schema = tool.input_schema or {}
     properties = schema.get("properties") or {}
     arguments: dict[str, Any] = {}
+    description = prompt
+    if "style_description" not in properties and style_description:
+        description = f"{prompt}; art style: {style_description}"
     if "description" in properties:
-        arguments["description"] = prompt
+        arguments["description"] = description
     elif "prompt" in properties:
-        arguments["prompt"] = prompt
+        arguments["prompt"] = description
     if "image_size" in properties:
         arguments["image_size"] = {"width": width, "height": height}
     if "width" in properties:
@@ -570,6 +573,15 @@ def generate_with_style(
     if output_size[0] != output_size[1] or not 16 <= output_size[0] <= 512:
         raise PixelLabUnavailable("generate-with-style-v2 output must be square and 16-512 pixels")
 
+    target = output_size[0]
+    normalized_style_images = []
+    for image in style_images:
+        scale = min(1.0, target / max(image.size))
+        size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+        normalized_style_images.append(
+            image if size == image.size else image.resize(size, Image.Resampling.NEAREST)
+        )
+
     payload = {
         "style_images": [
             {
@@ -577,9 +589,8 @@ def generate_with_style(
                 "width": image.width,
                 "height": image.height,
             }
-            for image in style_images
+            for image in normalized_style_images
         ],
-        "image_size": {"width": output_size[0], "height": output_size[1]},
         "description": prompt,
         "style_description": style_description[:500],
         "seed": seed,
