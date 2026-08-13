@@ -30,6 +30,13 @@ def _asset_spec(asset_type: str = "slime", method: str = "image_to_3d") -> dict:
             "style": "cute stylized 3D",
             "proportions": "compact and broad",
             "colors": ["leaf green", "cream"],
+            "form": {
+                "silhouette": "a compact readable outline",
+                "primaryVolumes": ["one rounded body"],
+                "partRelationships": ["eyes remain attached to the front of the body"],
+                "surfaceFeatures": ["preserve intentional recesses and protrusions"],
+                "bevelPolicy": ["bevel only silhouette-defining hard edges"],
+            },
             "materials": ["soft matte body"],
             "preserve": ["round silhouette"],
             "exclude": ["text", "weapons"],
@@ -42,7 +49,13 @@ def _asset_spec(asset_type: str = "slime", method: str = "image_to_3d") -> dict:
             "format": "glb",
             "scale": 1.0,
             "pivot": "ground center",
+            "pivotPolicy": "ground_center",
             "collider": "single capsule",
+        },
+        "texture": {
+            "required": True,
+            "description": "matte stylized surface with readable color separation",
+            "maps": ["base color"],
         },
         "animation": {
             "required": animated,
@@ -169,6 +182,30 @@ async def test_animation_fields_are_required_only_for_animated_assets():
         getattr(block, "text", "") for block in invalid.content
     )
     assert valid.is_error is False
+
+
+async def test_requires_concrete_form_texture_and_pivot_policy():
+    asset_spec = _asset_spec("prop", "text_to_3d")
+    del asset_spec["design"]["form"]
+    async with session() as client:
+        missing_form = await client.call_tool("compose_3d_asset_prompts", {"assetSpec": asset_spec})
+    assert missing_form.is_error is True
+
+    asset_spec = _asset_spec("prop", "text_to_3d")
+    asset_spec["output"]["pivotPolicy"] = "guess"
+    async with session() as client:
+        bad_pivot = await client.call_tool("compose_3d_asset_prompts", {"assetSpec": asset_spec})
+    assert bad_pivot.is_error is True
+
+
+async def test_prompt_preserves_shape_surface_texture_and_origin_requirements():
+    prompt = (await _compose(_asset_spec("prop", "text_to_3d")))["generationPrompt"]["prompt"]
+    assert "Primary volumes: one rounded body" in prompt
+    assert "Part relationships: eyes remain attached" in prompt
+    assert "Surface features: preserve intentional recesses and protrusions" in prompt
+    assert "Bevel only: bevel only silhouette-defining hard edges" in prompt
+    assert "Texture: matte stylized surface" in prompt
+    assert "pivot ground center (ground_center); preserve that origin after export" in prompt
 
 
 async def test_validation_rejects_a_prompt_that_drifted_from_the_specification():

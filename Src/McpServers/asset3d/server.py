@@ -97,6 +97,20 @@ def _validate_asset_spec(asset_spec: dict[str, Any]) -> dict[str, Any]:
     style = _require_text(design.get("style"), "assetSpec.design.style")
     proportions = _require_text(design.get("proportions"), "assetSpec.design.proportions")
     colors = _require_text_list(design.get("colors"), "assetSpec.design.colors")
+    form = _require_object(design.get("form"), "assetSpec.design.form")
+    silhouette = _require_text(form.get("silhouette"), "assetSpec.design.form.silhouette")
+    primary_volumes = _require_text_list(
+        form.get("primaryVolumes"), "assetSpec.design.form.primaryVolumes"
+    )
+    part_relationships = _require_text_list(
+        form.get("partRelationships"), "assetSpec.design.form.partRelationships"
+    )
+    surface_features = _require_text_list(
+        form.get("surfaceFeatures"), "assetSpec.design.form.surfaceFeatures"
+    )
+    bevel_policy = _require_text_list(
+        form.get("bevelPolicy"), "assetSpec.design.form.bevelPolicy"
+    )
     materials = _optional_text_list(design, "materials")
     preserve = _optional_text_list(design, "preserve")
     exclude = _optional_text_list(design, "exclude")
@@ -117,7 +131,22 @@ def _validate_asset_spec(asset_spec: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(scale, (int, float)) or isinstance(scale, bool) or scale <= 0:
         raise tool_error(VALIDATION_ERROR, "assetSpec.output.scale must be a positive number")
     pivot = _require_text(output.get("pivot"), "assetSpec.output.pivot")
+    pivot_policy = _require_text(output.get("pivotPolicy"), "assetSpec.output.pivotPolicy")
+    if pivot_policy not in {"ground_center", "center", "root", "custom"}:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "assetSpec.output.pivotPolicy must be one of ['center', 'custom', 'ground_center', 'root']",
+        )
     collider = _require_text(output.get("collider"), "assetSpec.output.collider")
+
+    texture = _require_object(asset_spec.get("texture"), "assetSpec.texture")
+    texture_required = texture.get("required")
+    if not isinstance(texture_required, bool):
+        raise tool_error(VALIDATION_ERROR, "assetSpec.texture.required must be a boolean")
+    texture_description = _require_text(texture.get("description"), "assetSpec.texture.description")
+    texture_maps = _require_text_list(
+        texture.get("maps"), "assetSpec.texture.maps", allow_empty=not texture_required
+    )
 
     animation = _require_object(asset_spec.get("animation"), "assetSpec.animation")
     animation_required = animation.get("required")
@@ -150,6 +179,11 @@ def _validate_asset_spec(asset_spec: dict[str, Any]) -> dict[str, Any]:
         "style": style,
         "proportions": proportions,
         "colors": colors,
+        "silhouette": silhouette,
+        "primaryVolumes": primary_volumes,
+        "partRelationships": part_relationships,
+        "surfaceFeatures": surface_features,
+        "bevelPolicy": bevel_policy,
         "materials": materials,
         "preserve": preserve,
         "exclude": exclude,
@@ -158,7 +192,11 @@ def _validate_asset_spec(asset_spec: dict[str, Any]) -> dict[str, Any]:
         "modelFormat": model_format,
         "scale": scale,
         "pivot": pivot,
+        "pivotPolicy": pivot_policy,
         "collider": collider,
+        "textureRequired": texture_required,
+        "textureDescription": texture_description,
+        "textureMaps": texture_maps,
         "animationRequired": animation_required,
         "rigType": rig_type,
         "clips": clips,
@@ -172,11 +210,20 @@ def _compose_prompts(asset_spec: dict[str, Any]) -> dict[str, Any]:
     clauses = [
         f"Create {spec['assetName']}, a {spec['assetType']} used for {spec['gameplayRole']}.",
         spec["description"],
+        f"Silhouette: {spec['silhouette']}.",
+        f"Primary volumes: {', '.join(spec['primaryVolumes'])}.",
+        f"Part relationships: {', '.join(spec['partRelationships'])}.",
+        f"Surface features: {', '.join(spec['surfaceFeatures'])}.",
+        f"Bevel only: {', '.join(spec['bevelPolicy'])}.",
         f"Use {spec['style']} style with {spec['proportions']} proportions.",
         f"Colors: {', '.join(spec['colors'])}.",
     ]
     if spec["materials"]:
         clauses.append(f"Materials: {', '.join(spec['materials'])}.")
+    if spec["textureRequired"]:
+        clauses.append(
+            f"Texture: {spec['textureDescription']}; maps {', '.join(spec['textureMaps'])}."
+        )
     if spec["assetType"] in {"character", "slime", "monster"} or spec["animationRequired"]:
         clauses.append("Use a neutral pose with unobstructed parts and animation-ready deformation.")
     clauses.append(
@@ -185,7 +232,7 @@ def _compose_prompts(asset_spec: dict[str, Any]) -> dict[str, Any]:
     if spec["separateMeshes"]:
         clauses.append(f"Separate meshes: {', '.join(spec['separateMeshes'])}.")
     clauses.append(
-        f"Use scale {spec['scale']}, pivot {spec['pivot']}, and collider plan {spec['collider']}."
+        f"Use scale {spec['scale']}, pivot {spec['pivot']} ({spec['pivotPolicy']}); preserve that origin after export, and use collider plan {spec['collider']}."
     )
     if spec["animationRequired"]:
         clauses.append(

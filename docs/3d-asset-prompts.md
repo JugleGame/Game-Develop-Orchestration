@@ -29,9 +29,10 @@ required only when `animation.required` is `true`. The optional lists `materials
 | Area | Fields |
 |---|---|
 | Identity | `assetId`, `assetName`, `assetType`, `gameplayRole` |
-| Design | `description`, `style`, `proportions`, `colors`, optional `materials`, `preserve`, `exclude` |
+| Design | `description`, `style`, `proportions`, `colors`, required `form`, optional `materials`, `preserve`, `exclude` |
 | Geometry | `maxTriangles`, `separateMeshes` |
-| Output | `format`, `scale`, `pivot`, `collider` |
+| Output | `format`, `scale`, `pivot`, `pivotPolicy`, `collider` |
+| Texture | `required`, `description`, `maps` |
 | Animation | `required`, conditional `rigType`, `clips` |
 | Generation | `method` |
 | Validation | `requirements` |
@@ -39,6 +40,16 @@ required only when `animation.required` is `true`. The optional lists `materials
 Supported `assetType` values are `character`, `slime`, `monster`, `prop`,
 `environment`, `building`, and `interactive`. Supported `method` values are
 `image_to_3d`, `text_to_3d`, `manual_blender`, `procedural`, and `existing_asset`.
+
+`design.form` prevents a recognizable silhouette from hiding an unusable object. It requires
+`silhouette`, `primaryVolumes`, `partRelationships`, `surfaceFeatures`, and `bevelPolicy`.
+Describe connected parts, intentional inset/extrude depth, and only the edges that justify bevel
+budget. Do not approximate an inset frame by attaching four unrelated bars.
+
+`output.pivotPolicy` is one of `ground_center`, `center`, `root`, or `custom`. Ordinary static
+props normally use `ground_center`: the lowest support point is on the ground plane and the
+horizontal center is the origin. Organic, animated, hanging, or gameplay-specific assets may use
+another explicit policy. Export and format conversion must preserve the selected origin.
 Supported output formats are `fbx`, `glb`, and `gltf`.
 
 Asset-type differences are expressed through specification values.
@@ -86,6 +97,13 @@ a prompt is therefore rejected with error code `1000`.
     "style": "cute stylized 3D",
     "proportions": "compact and broad",
     "colors": ["leaf green", "cream"],
+    "form": {
+      "silhouette": "compact rounded outline",
+      "primaryVolumes": ["one rounded body"],
+      "partRelationships": ["eyes attached to the front surface"],
+      "surfaceFeatures": ["preserve intentional recesses and protrusions"],
+      "bevelPolicy": ["bevel only silhouette-defining hard edges"]
+    },
     "materials": ["soft matte body"],
     "preserve": ["round silhouette"],
     "exclude": ["text", "weapons"]
@@ -98,7 +116,13 @@ a prompt is therefore rejected with error code `1000`.
     "format": "glb",
     "scale": 1.0,
     "pivot": "ground center",
+    "pivotPolicy": "ground_center",
     "collider": "single capsule"
+  },
+  "texture": {
+    "required": true,
+    "description": "matte stylized surface with readable color separation",
+    "maps": ["base color"]
   },
   "animation": {
     "required": true,
