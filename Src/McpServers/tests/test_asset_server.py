@@ -50,7 +50,8 @@ async def test_exposes_every_contract_tool():
     async with session() as client:
         names = {tool.name for tool in (await client.list_tools()).tools}
 
-    assert {"generate_2d_sprite", "generate_ui_asset", "generate_3d_placeholder"} <= names
+    assert {"generate_2d_sprite", "generate_ui_asset"} <= names
+    assert "generate_3d_placeholder" not in names
 
 
 async def test_contract_tools_use_camel_case_argument_names():
@@ -59,7 +60,7 @@ async def test_contract_tools_use_camel_case_argument_names():
     async with session() as client:
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
 
-    for name in ("generate_2d_sprite", "generate_ui_asset", "generate_3d_placeholder"):
+    for name in ("generate_2d_sprite", "generate_ui_asset"):
         properties = set(tools[name].input_schema["properties"])
         assert {"featureId", "prompt"} <= properties, name
 
