@@ -26,6 +26,7 @@ REQUIRED_IMPORTS = (
     "strategic.server",
     "unity.server",
     "asset.server",
+    "asset3d.server",
 )
 
 
@@ -148,6 +149,8 @@ def expected_mcp_config() -> dict[str, object]:
             ("research", "strategic.server"),
             ("unity", "unity.server"),
             ("asset", "asset.server"),
+            ("asset3d", "asset3d.server"),
+            ("asset3d", "asset3d.server"),
         )
     }
     return {"mcpServers": servers}

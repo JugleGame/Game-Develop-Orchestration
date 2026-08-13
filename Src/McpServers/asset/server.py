@@ -390,16 +390,6 @@ def generate_ui_asset(
     return _generate(featureId, prompt, gameId, forced_kind=kind, art_style=artStyle)
 
 
-@mcp.tool(description="Generate a placeholder stand-in for a 3D asset (rendered as a 2D sprite).")
-@expects_dict_return
-def generate_3d_placeholder(
-    featureId: str, prompt: str, gameId: str | None = None, artStyle: str | None = None
-) -> dict[str, Any]:
-    # The pipeline targets 2D games; a 3D request still needs *something*
-    # importable, so it gets a prop silhouette rather than an error.
-    return _generate(featureId, prompt, gameId, forced_kind="prop", art_style=artStyle)
-
-
 @mcp.tool(
     description=(
         "Generate a corner-Wang tileset (16 tiles: ground, wall, and every transition) "

@@ -1,4 +1,4 @@
-"""세 Agent-first MCP 서버의 정적 계약을 검증한다."""
+"""네 Agent-first MCP 서버의 정적 계약을 검증한다."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ SERVERS = {
     "research": ROOT / "strategic" / "server.py",
     "unity": ROOT / "unity" / "server.py",
     "asset": ROOT / "asset" / "server.py",
+    "asset3d": ROOT / "asset3d" / "server.py",
 }
 REQUIRED_TOOLS = {
     "research": {
@@ -35,8 +36,17 @@ REQUIRED_TOOLS = {
         "establish_art_style": {"gameId"},
         "review_asset": {"assetId", "approved"},
     },
+    "asset3d": {
+        "compose_3d_asset_prompts": {"assetSpec"},
+        "validate_3d_asset_prompts": {
+            "assetSpec",
+            "generationPrompt",
+            "referenceSearchPrompt",
+        },
+        "prepare_3d_asset_request": {"featureId", "assetSpec"},
+    },
 }
-FORBIDDEN_IMPORTS = {"anthropic", "fastapi", "langgraph", "git"}
+FORBIDDEN_IMPORTS = {"anthropic", "openai", "fastapi", "langgraph", "git"}
 
 
 def is_tool(node: ast.AsyncFunctionDef | ast.FunctionDef) -> bool:
@@ -105,7 +115,7 @@ def main() -> int:
         for failure in failures:
             print(f"- {failure}", file=sys.stderr)
         return 1
-    print("\nOK Agent-first 3서버 계약")
+    print("\nOK Agent-first 4서버 계약")
     return 0
 
 
