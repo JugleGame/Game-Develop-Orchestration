@@ -21,11 +21,9 @@ Pay particular attention to Objective, Scope, Out of Scope, Acceptance Criteria,
 3. One branch and PR normally address one Issue. Report any unrelated problem as a new Issue candidate.
 4. Do not change files outside the Issue Scope or within its Out of Scope section.
 5. Verify every Acceptance Criterion and run the required tests.
-6. Target `dev` and include exactly `Refs #<issue-number>` in the PR body, plus the changes, reason, test result, and how the Acceptance Criteria were met. Close the Issue manually after merge.
+6. Include exactly `Closes #<issue-number>` in the PR body, plus the changes, reason, test result, and how the Acceptance Criteria were met.
 7. The only no-Issue exception is a documentation typo. Use a `docs/<short-description>` branch and include
-   `No-Issue-Reason: Typo-only documentation change` in the PR body; it must also target `dev`.
-8. Only `dev` may target `main`. A `dev` to `main` integration PR uses
-   `Integration-Reason: dev-to-main integration` instead of an Issue reference.
+   `No-Issue-Reason: Typo-only documentation change` in the PR body.
 
 Automation validates these links, but human review and GitHub branch-protection settings are also required.
 Follow `docs/github-issue-workflow.md` for the repository configuration.
