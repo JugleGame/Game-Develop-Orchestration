@@ -1,6 +1,12 @@
-## Related Issue
+## Related Issue or Issues
 
-Closes #<issue-number>
+<!--
+Feature PR to dev: write exactly one matching reference, for example `Refs #123`.
+dev-to-main PR: write one or more closing references, for example `Closes #123`.
+GitHub closes every `Closes #123` Issue when this PR merges into main.
+-->
+
+Refs #<issue-number>
 
 ## Changes
 
