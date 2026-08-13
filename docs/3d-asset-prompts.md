@@ -56,6 +56,10 @@ another explicit policy. Export and format conversion must preserve the selected
 `explicit_smooth` or `mixed`. Exported meshes must carry explicit normals, keep all renderable
 faces outward, and split normals across intended hard edges so triangulation cannot create
 diagonal lighting gradients or expose flipped faces.
+`geometry.integrity` requires all four safeguards to be true: reject degenerate faces,
+duplicate faces, and coplanar overlaps, while preserving hard-edge vertex/normal splits across
+triangulation and format conversion. Parts may touch intentionally, but they must not intersect
+or leave thin sliver faces at joints.
 Supported output formats are `fbx`, `glb`, and `gltf`.
 
 Asset-type differences are expressed through specification values.
@@ -121,6 +125,12 @@ a prompt is therefore rejected with error code `1000`.
       "normalPolicy": "mixed",
       "faceOrientation": "outward",
       "smoothingRules": ["split normals across silhouette-defining hard edges"]
+    },
+    "integrity": {
+      "forbidDegenerateFaces": true,
+      "forbidDuplicateFaces": true,
+      "forbidCoplanarOverlaps": true,
+      "preserveHardEdgeSplits": true
     }
   },
   "output": {

@@ -141,6 +141,20 @@ def _validate_asset_spec(asset_spec: dict[str, Any]) -> dict[str, Any]:
     smoothing_rules = _require_text_list(
         shading.get("smoothingRules"), "assetSpec.geometry.shading.smoothingRules"
     )
+    integrity = _require_object(geometry.get("integrity"), "assetSpec.geometry.integrity")
+    integrity_flags = {}
+    for field in (
+        "forbidDegenerateFaces",
+        "forbidDuplicateFaces",
+        "forbidCoplanarOverlaps",
+        "preserveHardEdgeSplits",
+    ):
+        value = integrity.get(field)
+        if value is not True:
+            raise tool_error(
+                VALIDATION_ERROR, f"assetSpec.geometry.integrity.{field} must be true"
+            )
+        integrity_flags[field] = value
 
     output = _require_object(asset_spec.get("output"), "assetSpec.output")
     model_format = _require_text(output.get("format"), "assetSpec.output.format").lower()
@@ -211,6 +225,7 @@ def _validate_asset_spec(asset_spec: dict[str, Any]) -> dict[str, Any]:
         "normalPolicy": normal_policy,
         "faceOrientation": face_orientation,
         "smoothingRules": smoothing_rules,
+        "integrity": integrity_flags,
         "modelFormat": model_format,
         "scale": scale,
         "pivot": pivot,
@@ -253,6 +268,10 @@ def _compose_prompts(asset_spec: dict[str, Any]) -> dict[str, Any]:
     )
     clauses.append(
         f"Normals {spec['normalPolicy']}; faces {spec['faceOrientation']}; smoothing {', '.join(spec['smoothingRules'])}."
+    )
+    clauses.append(
+        "Topology integrity: no degenerate or duplicate faces, no coplanar overlaps, "
+        "and preserve hard-edge vertex/normal splits through triangulation and export."
     )
     if spec["separateMeshes"]:
         clauses.append(f"Separate meshes: {', '.join(spec['separateMeshes'])}.")

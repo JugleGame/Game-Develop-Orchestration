@@ -49,6 +49,12 @@ def _asset_spec(asset_type: str = "slime", method: str = "image_to_3d") -> dict:
                 "faceOrientation": "outward",
                 "smoothingRules": ["split normals across silhouette-defining hard edges"],
             },
+            "integrity": {
+                "forbidDegenerateFaces": True,
+                "forbidDuplicateFaces": True,
+                "forbidCoplanarOverlaps": True,
+                "preserveHardEdgeSplits": True,
+            },
         },
         "output": {
             "format": "glb",
@@ -137,6 +143,9 @@ async def test_generation_prompt_follows_the_documented_order_and_content():
     ]
     positions = [prompt.index(fragment) for fragment in ordered]
     assert positions == sorted(positions)
+    assert "no degenerate or duplicate faces" in prompt
+    assert "no coplanar overlaps" in prompt
+    assert "preserve hard-edge vertex/normal splits" in prompt
 
 
 async def test_image_to_3d_composes_consistent_front_side_and_back_views():
