@@ -1,6 +1,7 @@
 ## Related Issue
 
-Closes #<issue-number>
+<!-- Issue branches target dev. GitHub ignores closing keywords on non-default branches. -->
+Refs #<issue-number>
 
 ## Changes
 
@@ -22,4 +23,10 @@ Closes #<issue-number>
 
 <!-- Use only for a no-Issue documentation typo change.
 No-Issue-Reason: <documentation typo reason>
+-->
+
+## Integration-Reason
+
+<!-- Use only for a dev -> main integration PR.
+Integration-Reason: dev-to-main integration
 -->
