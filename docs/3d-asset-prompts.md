@@ -1,78 +1,150 @@
-# 3D 에셋 요청 및 프롬프트 계약
+# 3D 에셋 사양 및 프롬프트 계약
 
-## 현재 결정
+## 책임과 흐름
 
-| 현재 상태 | 문제 | 이 변경 |
-|---|---|---|
-| `asset.server`는 PixelLab 2D 전용 | 3D 요청이 2D 대체 이미지처럼 보일 수 있음 | 별도 `asset3d.server`가 3D 요청만 검증·보존 |
-| 자유 텍스트 프롬프트 | 설계 의도와 도구 지시가 섞이고 이력이 사라짐 | 사양, 생성 프롬프트, 레퍼런스 검색 프롬프트를 한 요청 패키지에 저장 |
-| 승인된 3D 공급자 없음 | 생성 결과를 신뢰할 수 없음 | `provider_unconfigured`을 명시하고 모델 경로나 2D 대체물을 반환하지 않음 |
-
-이 문서는 Issue #2 범위의 계약이다. Unity 임포트, 프리팹, 리깅 실행, 실제 3D 공급자 선택은 이 계약 밖이다.
-
-## 흐름
+호스트 에이전트는 게임 의도가 담긴 `assetSpec`을 작성한다. `Asset3DGenMcpServer`는
+모델 판단 없이 사양을 결정적 템플릿에 대입해 공급자 중립 프롬프트를 조립·검증하고
+요청 패키지를 보존한다. 외부 3D 공급자와 Unity 연동은 이 계약의 범위 밖이다.
 
 ```mermaid
 flowchart TD
-    R["게임 요구"] --> S["assetSpec: 설계 원본"]
-    S --> A["호스트 프롬프트 어댑터"]
-    A --> G["generationPrompt: 도구 지시"]
-    A --> Q["referenceSearchPrompt: 레퍼런스 요구"]
-    S --> V["Asset3DGenMcpServer 검증"]
-    G --> V
-    Q --> V
-    V --> P["var/assets/3d/requests: 검증된 요청 패키지"]
-    P -->|"공급자 승인 후"| M["외부 3D 생성 또는 수동 모델링"]
-    M -->|"후속 Issue"| U["Unity 검증·임포트"]
+    R["게임 요구"] --> S["호스트가 assetSpec 작성"]
+    S --> C["compose_3d_asset_prompts"]
+    C --> G["generationPrompt"]
+    C --> Q["referenceSearchPrompt와 뷰별 프롬프트"]
+    S --> P["prepare_3d_asset_request"]
+    G --> P
+    Q --> P
+    P --> H["var/assets/3d/requests 요청 패키지"]
+    H -->|"공급자 승인 후 별도 작업"| E["외부 3D 생성"]
 ```
 
-`assetSpec`이 원본이다. `generationPrompt`와 `referenceSearchPrompt`는 그 사양을 읽은 호스트가 특정 도구 또는 조사 작업에 맞춰 만든 파생물이다. 세 파일을 대화 내용 대신 요청 패키지에 함께 저장하므로 다른 에이전트도 그대로 재개할 수 있다.
+## 사양
 
-## 입력 형식
+모든 에셋은 다음 필드를 사용한다. `animation.rigType`과 `animation.clips`만
+`animation.required`가 `true`일 때 필수다. 선택 목록인 `materials`, `preserve`,
+`exclude`는 생략할 수 있다.
 
-`assetId`, `featureId`, `gameId`는 소문자 영문·숫자·`-`·`_`만 사용한다. 지원 `assetType`은 `character`, `slime`, `prop`, `environment`, `building`, `interactive`이고, 출력 형식은 `fbx`, `glb`, `gltf`이다.
+| 영역 | 필드 |
+|---|---|
+| 식별 | `assetId`, `assetName`, `assetType`, `gameplayRole` |
+| 디자인 | `description`, `style`, `proportions`, `colors`, 선택적 `materials`, `preserve`, `exclude` |
+| 지오메트리 | `maxTriangles`, `separateMeshes` |
+| 출력 | `format`, `scale`, `pivot`, `collider` |
+| 애니메이션 | `required`, 조건부 `rigType`, `clips` |
+| 생성 | `method` |
+| 검증 | `requirements` |
+
+지원 `assetType`은 `character`, `slime`, `monster`, `prop`, `environment`,
+`building`, `interactive`이다. 지원 `method`는 `image_to_3d`, `text_to_3d`,
+`manual_blender`, `procedural`, `existing_asset`이며 출력은 `fbx`, `glb`, `gltf`이다.
+
+종류별 차이는 사양 값으로 표현한다.
+
+| 종류 | 주요 사양 |
+|---|---|
+| 캐릭터 | 애니메이션, 리그, 클립, 중립 자세와 3면 레퍼런스 |
+| 슬라임·몬스터 | 변형 가능한 중립 자세, 필요한 리그와 클립 |
+| 소품·환경·건물 | 정적이면 `animation.required: false`; 레퍼런스는 생성 방식에 따라 선택 |
+| 상호작용 오브젝트 | 움직이는 부분이 있으면 `separateMeshes`와 애니메이션 조건으로 표현 |
+
+## 결정적 프롬프트 조립
+
+`generationPrompt.prompt`는 다음 순서로 조립된다.
+
+1. 에셋 이름·종류·게임플레이 역할
+2. 설명과 실루엣
+3. 스타일과 비율
+4. 색상과 재질
+5. 필요한 경우 중립 자세와 변형 조건
+6. 삼각형 수와 출력 형식
+7. 분리 메시, 스케일, 피벗, 콜라이더
+8. 필요한 경우 리그와 애니메이션 클립
+9. 보존 및 제외 조건
+
+`image_to_3d` 또는 `character`는 정면·측면·후면 레퍼런스를 요구한다. 각 뷰의
+프롬프트는 동일한 설명·스타일·비율·색상을 공유하며 중립 자세, 가림 없는 구성,
+단순 배경, 일관된 조명, 최소 원근 왜곡을 포함한다. 그 외 방식은 불필요한
+레퍼런스를 강제하지 않는다.
+
+`validate_3d_asset_prompts`는 전달된 프롬프트를 같은 사양에서 다시 조립한 결과와
+비교한다. 따라서 사양이 바뀐 뒤 예전 프롬프트를 재사용하거나 프롬프트만 임의로
+수정하면 오류 코드 `1000`으로 거부된다.
+
+## Slime 전체 예시
 
 ```json
 {
-  "assetSpec": {
-    "assetId": "slime-green",
-    "assetType": "slime",
-    "design": {
-      "description": "둥근 초록 슬라임. 귀엽지만 약간 적대적이고, 스쿼시·스트레치가 읽히는 실루엣.",
-      "style": "Slime Stigma Ranch의 귀여운 스타일라이즈드 3D"
-    },
-    "output": { "format": "glb", "maxTriangles": 2500 }
+  "assetId": "slime-green",
+  "assetName": "Green Slime",
+  "assetType": "slime",
+  "gameplayRole": "a readable ranch encounter",
+  "design": {
+    "description": "A rounded slime with a clear silhouette",
+    "style": "cute stylized 3D",
+    "proportions": "compact and broad",
+    "colors": ["leaf green", "cream"],
+    "materials": ["soft matte body"],
+    "preserve": ["round silhouette"],
+    "exclude": ["text", "weapons"]
   },
-  "generationPrompt": {
-    "assetId": "slime-green",
-    "method": "image_to_3d",
-    "prompt": "Round green slime, neutral pose, clean silhouette, white background, no props."
+  "geometry": {
+    "maxTriangles": 2500,
+    "separateMeshes": []
   },
-  "referenceSearchPrompt": {
-    "assetId": "slime-green",
-    "queries": ["cute stylized green slime turnaround", "simple slime squash stretch silhouette"],
-    "requiredViews": ["front", "side", "back", "three-quarter"]
+  "output": {
+    "format": "glb",
+    "scale": 1.0,
+    "pivot": "ground center",
+    "collider": "single capsule"
+  },
+  "animation": {
+    "required": true,
+    "rigType": "simple deform rig",
+    "clips": ["idle", "move"]
+  },
+  "generation": {
+    "method": "image_to_3d"
+  },
+  "validation": {
+    "requirements": [
+      "silhouette matches the specification",
+      "triangle budget passes"
+    ]
   }
 }
 ```
 
-`assetSpec.design`에는 게임이 필요한 모양과 스타일만 쓴다. 공급자별 문법, 카메라 문구, 네거티브 프롬프트는 `generationPrompt`에 둔다. `generationPrompt.method`는 `image_to_3d`, `text_to_3d`, `manual_blender`, `procedural`, `existing_asset` 중 하나다. 이미지 기반 방식은 레퍼런스에서 정면·측면·후면을 먼저 확보하고, 중립 자세·단순 배경·일관된 조명을 요구한다.
+이 사양으로 `compose_3d_asset_prompts`를 호출하면 다음 산출물이 생긴다.
 
-## MCP 사용과 산출물
+- `generationPrompt`: 사양의 모든 생성 조건과 `sourceSpecSha256`
+- `referenceSearchPrompt.queries`: 스타일 턴어라운드와 비율·재질 검색어
+- `referenceSearchPrompt.requiredViews`: `front`, `side`, `back`
+- `referenceSearchPrompt.viewPrompts`: 세 뷰 각각의 일관된 이미지 생성 지시
 
-호스트는 사양과 두 파생 프롬프트를 작성한 뒤 다음 도구를 호출한다.
+프롬프트를 직접 복사해 관리하지 않는다. 사양을 수정한 뒤 다시 조립하면 새
+SHA-256이 들어간 프롬프트와 요청 패키지가 만들어진다.
+
+## MCP 사용
 
 ```text
-asset3d.server / validate_3d_asset_prompts
-asset3d.server / prepare_3d_asset_request
+1. compose_3d_asset_prompts(assetSpec)
+2. 필요하면 validate_3d_asset_prompts(assetSpec, generationPrompt, referenceSearchPrompt)
+3. prepare_3d_asset_request(featureId, assetSpec, gameId)
 ```
 
-로컬에서 직접 실행할 때는 `.venv\\Scripts\\python.exe -m asset3d.server`를 사용한다.
+`prepare_3d_asset_request`는 내부에서 다시 조립·검증한 뒤 다음 위치에 저장한다.
 
-`prepare_3d_asset_request`는 `var/assets/3d/requests/<gameId>/<assetId>__<사양해시>.json`을 만들고 사양·두 프롬프트·SHA-256 출처·상태를 보존한다. 상태는 현재 반드시 `provider_unconfigured`이다. 따라서 `assetPath`는 반환되지 않으며, 2D PixelLab 결과를 최종 3D 모델로 오인할 수 없다.
+```text
+var/assets/3d/requests/<gameId>/<assetId>__<spec-hash>.json
+```
 
-요청을 수정하면 새 사양 해시로 별도 패키지가 생긴다. 검토자는 이전 패키지를 비교하고, 다음 에이전트는 선택한 패키지를 공급자 작업의 입력으로 사용한다. 슬라임의 색상·희귀도·스티그마 차이는 후속 Unity/게임플레이 작업에서 기본 메시와 공유 머티리얼·데이터 변형으로 우선 표현한다. 별도 모델은 실루엣이나 리그가 실제로 달라질 때만 요청한다.
+패키지는 원본 사양, 두 파생 프롬프트, 각 SHA-256, 게임·기능 ID와 생성 시각을
+보존한다. 승인된 공급자가 없으므로 상태는 `provider_unconfigured`이며 `assetPath`나
+2D 대체물을 반환하지 않는다.
 
-## 경계와 다음 단계
+로컬 직접 실행:
 
-이 서버는 모델 호출을 하지 않는다. 승인된 공급자가 생기면 이 서버 안에만 공급자 접근 코드를 추가하고, 공급자 오류는 명시적으로 반환해야 한다. 그 다음에만 생성된 `glb`/`fbx`의 메시·텍스처·리그 검증과 Unity 임포트 계약을 별도 Issue로 추가한다.
+```powershell
+.venv\Scripts\python.exe -m asset3d.server
+```
