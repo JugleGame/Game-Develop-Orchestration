@@ -53,7 +53,37 @@ Server: `UnityMcpServer`.
 
 Server: `AssetGenMcpServer`.
 
-- Generation takes a game ID, feature ID, asset kind, and host-authored prompt.
+- `prepare_asset_prompt` returns kind-specific intake questions before any paid generation. It
+  requires the subject, intended use and readable scale, composition, must-have visual structure,
+  and shared art style. Revision briefs additionally require what to preserve and a positively
+  stated replacement for what should change.
+- Generation takes a game ID, feature ID, host-authored prompt, and an optional explicit
+  `assetKind`. Explicit kinds take precedence over keyword inference and should be used for
+  ambiguous prompts.
+- `generate_2d_sprite` and `generate_ui_asset` create the initial reviewable prototype through
+  PixelLab's official remote MCP server.
+- `generate_2d_variations` accepts only approved MCP prototypes as style anchors and uses
+  PixelLab's `generate-with-style-v2` REST endpoint for same-direction batch variations. The
+  primary `prototypeAssetId` plus optional `styleAssetIds` form a deduplicated bank of one to four
+  references. The primary prototype fixes the output canvas size for every variation. This endpoint
+  accepts square primary prototypes only; non-square character batches must use a provider-specific
+  character workflow rather than silent padding or distortion.
+- Prompt composition may normalize and remove duplicated structured directives, but it must
+  preserve the host-authored subject intent and report original/composed character counts. The
+  provider prompt orders subject and required structure before exclusions, and keeps the shared
+  art style in PixelLab's structured controls instead of duplicating it in prose.
+- `review_asset` stores optional `preserve`, `change`, and `artStyleFeedback` fields separately
+  from the free-form review note so the next host-authored revision can distinguish content fixes
+  from shared style changes.
+- `inspect_asset` returns deterministic canvas, transparency, silhouette occupancy, clipping, and
+  horizontal tile-seam evidence. Its `technicalStatus`, `semanticStatus`, and `humanReviewStatus`
+  remain separate. `readyForVariations` applies only to approved MCP prototypes, while
+  `readyForImport` marks any technically valid, human-approved asset. It also returns the next
+  workflow action and escalates after three rejected attempts.
+- `list_assets` lets a new host-agent session recover prior pending, approved, or rejected records
+  by game and feature, including structured review feedback.
+- The normal sequence is intake, one MCP prototype, human review, a revised intake when rejected,
+  approval, and only then REST API variations.
 - Keep all output under `ASSET_ROOT`.
 - Style and manifests are runtime state, never committed source.
 - Surface configured-provider failures; never hide them with fake placeholders.

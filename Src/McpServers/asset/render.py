@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+import re
 from typing import Literal
 
 from .style import ArtStyle
@@ -83,7 +84,23 @@ _MATERIAL_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("snow", ("snow", "ice", "frozen", "눈", "얼음")),
     ("sand", ("sand", "desert", "beach", "dune", "모래", "사막")),
     ("stone", ("stone", "rock", "cliff", "granite", "cobble", "돌", "바위", "암석")),
-    ("metal", ("metal", "steel", "iron", "금속", "철")),
+    (
+        "metal",
+        (
+            "metal",
+            "steel",
+            "iron",
+            "brass",
+            "bronze",
+            "copper",
+            "gold",
+            "silver",
+            "aluminum",
+            "aluminium",
+            "금속",
+            "철",
+        ),
+    ),
     ("dirt", ("dirt", "mud", "soil", "earth", "흙", "진흙")),
     ("wood", ("wood", "log", "plank", "barrel", "chest", "나무판", "통나무", "상자")),
     ("foliage", ("tree", "bush", "shrub", "leaf", "leaves", "forest", "oak", "pine", "나무", "숲")),
@@ -107,13 +124,17 @@ def classify(prompt: str) -> AssetKind:
 
 
 def _matches(keyword: str, lowered: str, words: list[str]) -> bool:
-    """Substring match, except a one-syllable Korean keyword must be its own word.
+    """Match English keywords as words and preserve Korean phrase matching.
 
-    "적" is a substring of ordinary words a *character* prompt uses ("도적",
-    "목적", "정적"), so substring-matching it sent humanoids down the monster
-    branch and onto its square canvas.
+    Short English keywords such as ``cta`` occur inside unrelated words such
+    as ``rectangular``. Treating them as substrings can send terrain prompts
+    down the UI branch. Korean phrases still use substring matching, except
+    the one-syllable ``적`` keyword, which must remain a standalone word so
+    ordinary words such as ``도적`` do not become monsters.
     """
 
+    if keyword.isascii():
+        return re.search(rf"(?<!\w){re.escape(keyword)}(?!\w)", lowered) is not None
     if len(keyword) == 1:
         return keyword in words
     return keyword in lowered
@@ -134,7 +155,7 @@ def material_for(prompt: str, kind: AssetKind) -> str | None:
     for material, keywords in _MATERIAL_KEYWORDS:
         if any(keyword in lowered for keyword in keywords):
             return material
-    return "foliage" if kind == "prop" else "grass"
+    return None
 
 
 def rng_for(style: ArtStyle, feature_id: str, prompt: str) -> random.Random:
