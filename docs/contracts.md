@@ -66,8 +66,10 @@ Server: `Asset3DGenMcpServer` (`asset3d.server`).
 - `compose_3d_asset_prompts` deterministically derives provider-neutral generation, search, and per-view reference prompts from a host-authored asset specification.
 - `validate_3d_asset_prompts` rejects prompts that differ from the current specification's deterministic derivation.
 - `prepare_3d_asset_request` composes and stores the validated package beneath `ASSET_ROOT/3d/requests`; it records SHA-256 provenance for the specification and both prompt artifacts.
-- No 3D provider is configured in this repository. The server returns `provider_unconfigured`, never a model path or a 2D placeholder.
-- A future provider client may perform only external-provider access in this server. It must not call a model to author prompts or hide provider failures.
+- Meshy is the single configured provider boundary. `submit_3d_asset_generation` accepts only `text_to_3d` and `image_to_3d` specifications; text generation is explicitly `preview` then `refine`, while image generation requires a host-supplied HTTPS reference image.
+- `get_3d_asset_generation` returns a Meshy task state and downloads only a completed GLB or FBX beneath `ASSET_ROOT/3d/models`. GLTF is rejected because the selected provider does not return it directly.
+- `MESHY_API_KEY` is read only from the environment. A missing key, insufficient credits, or provider failure is an explicit MCP error; the server never falls back to a 2D placeholder.
+- Meshy is an external-provider boundary only. It must not call a model to author prompts or hide provider failures.
 - Prompt fields and the Slime example are defined in [3D asset prompt contract](3d-asset-prompts.md).
 
 ## Role-boundary lint

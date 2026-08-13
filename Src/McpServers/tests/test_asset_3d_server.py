@@ -1,6 +1,7 @@
 """Contract tests for the isolated, provider-neutral 3D asset boundary."""
 
 import json
+import struct
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -8,7 +9,13 @@ from pathlib import Path
 import pytest
 from mcp import Client, ClientSession
 
-from asset3d import server
+from asset3d import meshy_client, server
+
+
+def _glb() -> bytes:
+    document = json.dumps({"meshes": [{}], "textures": [{}]}).encode()
+    document += b" " * (-len(document) % 4)
+    return struct.pack("<IIIII", 0x46546C67, 2, 20 + len(document), len(document), 0x4E4F534A) + document
 
 
 def _asset_spec(asset_type: str = "slime", method: str = "image_to_3d") -> dict:
@@ -70,10 +77,17 @@ async def test_exposes_all_3d_tools_with_camel_case_inputs():
         "compose_3d_asset_prompts",
         "validate_3d_asset_prompts",
         "prepare_3d_asset_request",
+        "submit_3d_asset_generation",
+        "refine_3d_asset_generation",
+        "get_3d_asset_generation",
     } <= set(tools)
     assert {"featureId", "assetSpec"} <= set(
         tools["prepare_3d_asset_request"].input_schema["properties"]
     )
+    assert {"featureId", "assetSpec"} <= set(
+        tools["submit_3d_asset_generation"].input_schema["properties"]
+    )
+    assert {"taskId"} <= set(tools["get_3d_asset_generation"].input_schema["properties"])
 
 
 @pytest.mark.parametrize(
@@ -201,3 +215,70 @@ async def test_request_composes_and_preserves_prompts_without_a_placeholder(tmp_
         "sourceSpecSha256"
     ]
     assert len(package["provenance"]["sourceSpecSha256"]) == 64
+
+
+async def test_submit_requires_a_configured_meshy_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.delenv("MESHY_API_KEY", raising=False)
+
+    async with session() as client:
+        result = await client.call_tool(
+            "submit_3d_asset_generation",
+            {
+                "featureId": "slime-art",
+                "gameId": "slime-ranch",
+                "assetSpec": _asset_spec("prop", "text_to_3d"),
+            },
+        )
+
+    assert result.is_error is True
+    assert '"errorCode": 3000' in "".join(getattr(block, "text", "") for block in result.content)
+
+
+async def test_submit_and_download_meshy_text_generation(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("MESHY_API_KEY", "test-key")
+    monkeypatch.setattr(meshy_client, "create_text_preview", lambda *_: "task-preview")
+    monkeypatch.setattr(
+        meshy_client,
+        "get_task",
+        lambda *_: {
+            "status": "SUCCEEDED",
+            "progress": 100,
+            "model_urls": {"glb": "https://assets.meshy.ai/model.glb"},
+        },
+    )
+    monkeypatch.setattr(meshy_client, "download_model", lambda _: _glb())
+    asset_spec = _asset_spec("prop", "text_to_3d")
+
+    async with session() as client:
+        submitted = await client.call_tool(
+            "submit_3d_asset_generation",
+            {"featureId": "slime-art", "gameId": "slime-ranch", "assetSpec": asset_spec},
+        )
+        downloaded = await client.call_tool(
+            "get_3d_asset_generation", {"taskId": submitted.structured_content["taskId"]}
+        )
+
+    assert submitted.structured_content["phase"] == "preview"
+    assert downloaded.structured_content["status"] == "SUCCEEDED"
+    assert Path(downloaded.structured_content["assetPath"]).read_bytes() == _glb()
+    assert downloaded.structured_content["inspection"] == {"meshes": 1, "textures": 1, "rigs": 0}
+
+
+async def test_image_generation_requires_an_https_reference_image(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("MESHY_API_KEY", "test-key")
+
+    async with session() as client:
+        result = await client.call_tool(
+            "submit_3d_asset_generation",
+            {
+                "featureId": "slime-art",
+                "assetSpec": _asset_spec("prop", "image_to_3d"),
+                "referenceImageUrl": "http://example.com/reference.png",
+            },
+        )
+
+    assert result.is_error is True
+    assert '"errorCode": 1000' in "".join(getattr(block, "text", "") for block in result.content)

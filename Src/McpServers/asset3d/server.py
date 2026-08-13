@@ -6,12 +6,16 @@ import hashlib
 import json
 import os
 import re
+import struct
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
-from common.errors import VALIDATION_ERROR, tool_error
+from common.errors import MCP_ERROR, VALIDATION_ERROR, tool_error
 from common.server import build, expects_dict_return, serve
+
+from . import meshy_client
 
 
 mcp = build("Asset3DGenMcpServer")
@@ -26,6 +30,7 @@ GENERATION_METHODS = frozenset(
 MODEL_FORMATS = frozenset({"fbx", "glb", "gltf"})
 REFERENCE_VIEWS = ("front", "side", "back")
 _ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+MESHY_FORMATS = frozenset({"glb", "fbx"})
 
 
 def _now() -> str:
@@ -38,6 +43,11 @@ def _canonical(value: Any) -> str:
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode()).hexdigest()
+
+
+def _write_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _require_text(value: Any, field: str) -> str:
@@ -250,6 +260,113 @@ def _validate(
     }
 
 
+def _request_package(
+    feature_id: str, game_id: str, asset_spec: dict[str, Any]
+) -> tuple[Path, dict[str, Any], dict[str, str]]:
+    prompts = _compose_prompts(asset_spec)
+    provenance = _validate(
+        asset_spec, prompts["generationPrompt"], prompts["referenceSearchPrompt"]
+    )
+    request_id = f"{provenance['assetId']}__{provenance['sourceSpecSha256'][:12]}"
+    request_path = ROOT / "3d" / "requests" / game_id / f"{request_id}.json"
+    return request_path, {
+        "requestId": request_id,
+        "gameId": game_id,
+        "featureId": feature_id,
+        "createdAt": _now(),
+        "assetSpec": asset_spec,
+        **prompts,
+        "provenance": provenance,
+    }, provenance
+
+
+def _meshy_format(provenance: dict[str, str]) -> str:
+    model_format = provenance["modelFormat"]
+    if model_format not in MESHY_FORMATS:
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"Meshy supports only {sorted(MESHY_FORMATS)}; requested {model_format}",
+        )
+    return model_format
+
+
+def _meshy_triangle_limit(asset_spec: dict[str, Any], method: str) -> int:
+    max_triangles = _validate_asset_spec(asset_spec)["maxTriangles"]
+    maximum = 15_000 if method == "image_to_3d" else 300_000
+    if not 100 <= max_triangles <= maximum:
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"Meshy {method} requires maxTriangles between 100 and {maximum}",
+        )
+    return max_triangles
+
+
+def _require_https_url(value: str, field: str) -> str:
+    url = _require_text(value, field)
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise tool_error(VALIDATION_ERROR, f"{field} must be an https URL")
+    return url
+
+
+def _require_meshy_model_url(value: Any) -> str:
+    if not isinstance(value, str):
+        raise tool_error(MCP_ERROR, "Meshy returned an invalid model URL", provider="meshy")
+    parsed = urlsplit(value)
+    if parsed.scheme != "https" or parsed.hostname != "assets.meshy.ai":
+        raise tool_error(MCP_ERROR, "Meshy returned an unexpected model URL", provider="meshy")
+    return value
+
+
+def _inspect_model(model: bytes, model_format: str, animation_required: bool) -> dict[str, int]:
+    if model_format == "glb":
+        if len(model) < 20:
+            raise tool_error(MCP_ERROR, "Meshy returned a truncated GLB model", provider="meshy")
+        magic, version, declared_size = struct.unpack_from("<III", model)
+        chunk_size, chunk_type = struct.unpack_from("<II", model, 12)
+        if magic != 0x46546C67 or version != 2 or declared_size != len(model) or chunk_type != 0x4E4F534A:
+            raise tool_error(MCP_ERROR, "Meshy returned an invalid GLB model", provider="meshy")
+        try:
+            document = json.loads(model[20 : 20 + chunk_size].decode("utf-8").rstrip(" \t\r\n\0"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise tool_error(MCP_ERROR, "Meshy returned an unreadable GLB document", provider="meshy") from exc
+        meshes = len(document.get("meshes") or [])
+        textures = len(document.get("textures") or [])
+        rigs = len(document.get("skins") or [])
+    else:
+        if not (model.startswith(b"Kaydara FBX Binary") or model.startswith(b"; FBX")):
+            raise tool_error(MCP_ERROR, "Meshy returned an invalid FBX model", provider="meshy")
+        meshes = model.count(b"Geometry::")
+        textures = model.count(b"Texture::")
+        rigs = model.count(b"Deformer::")
+    if not meshes or not textures or (animation_required and not rigs):
+        raise tool_error(
+            MCP_ERROR,
+            "Meshy model failed mesh, texture, or required rig validation",
+            provider="meshy",
+        )
+    return {"meshes": meshes, "textures": textures, "rigs": rigs}
+
+
+def _task_path(task_id: str) -> Path:
+    return ROOT / "3d" / "tasks" / f"{task_id}.json"
+
+
+def _read_task(task_id: str) -> dict[str, Any]:
+    path = _task_path(task_id)
+    try:
+        task = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise tool_error(VALIDATION_ERROR, f"3D task not found: {task_id}") from exc
+    if task.get("provider") != "meshy":
+        raise tool_error(VALIDATION_ERROR, f"unsupported 3D provider task: {task_id}")
+    return task
+
+
+def _meshy_error(exc: meshy_client.MeshyUnavailable) -> None:
+    raise tool_error(MCP_ERROR, str(exc), provider="meshy") from exc
+
+
 @mcp.tool(description="Compose provider-neutral generation and reference prompts from an asset spec.")
 @expects_dict_return
 def compose_3d_asset_prompts(assetSpec: dict[str, Any]) -> dict[str, Any]:
@@ -278,30 +395,19 @@ def prepare_3d_asset_request(
 ) -> dict[str, Any]:
     feature_id = _require_id(featureId, "featureId")
     game_id = _require_id(gameId or os.getenv("ASSET_DEFAULT_GAME_ID", "default"), "gameId")
-    prompts = _compose_prompts(assetSpec)
-    provenance = _validate(
-        assetSpec, prompts["generationPrompt"], prompts["referenceSearchPrompt"]
-    )
-    request_id = f"{provenance['assetId']}__{provenance['sourceSpecSha256'][:12]}"
-    request_path = ROOT / "3d" / "requests" / game_id / f"{request_id}.json"
-    package = {
-        "requestId": request_id,
-        "gameId": game_id,
-        "featureId": feature_id,
+    request_path, package, provenance = _request_package(feature_id, game_id, assetSpec)
+    package.update(
+        {
         "status": "provider_unconfigured",
-        "createdAt": _now(),
-        "assetSpec": assetSpec,
-        **prompts,
-        "provenance": provenance,
         "provider": {
             "configured": False,
             "message": "No 3D provider is configured; use this package for approved external generation.",
         },
-    }
-    request_path.parent.mkdir(parents=True, exist_ok=True)
-    request_path.write_text(json.dumps(package, indent=2, ensure_ascii=False), encoding="utf-8")
+        }
+    )
+    _write_json(request_path, package)
     return {
-        "requestId": request_id,
+        "requestId": package["requestId"],
         "requestPath": str(request_path),
         "assetId": provenance["assetId"],
         "assetType": provenance["assetType"],
@@ -309,6 +415,129 @@ def prepare_3d_asset_request(
         "status": package["status"],
         "providerConfigured": False,
     }
+
+
+@mcp.tool(description="Submit a validated 3D asset specification to the configured Meshy provider.")
+@expects_dict_return
+def submit_3d_asset_generation(
+    featureId: str,
+    assetSpec: dict[str, Any],
+    referenceImageUrl: str = "",
+    gameId: str | None = None,
+) -> dict[str, Any]:
+    feature_id = _require_id(featureId, "featureId")
+    game_id = _require_id(gameId or os.getenv("ASSET_DEFAULT_GAME_ID", "default"), "gameId")
+    request_path, package, provenance = _request_package(feature_id, game_id, assetSpec)
+    method = package["generationPrompt"]["method"]
+    if method not in {"text_to_3d", "image_to_3d"}:
+        raise tool_error(VALIDATION_ERROR, f"Meshy does not submit generation.method={method}")
+    model_format = _meshy_format(provenance)
+    max_triangles = _meshy_triangle_limit(assetSpec, method)
+    try:
+        if method == "image_to_3d":
+            task_id = meshy_client.create_image_task(
+                _require_https_url(referenceImageUrl, "referenceImageUrl"),
+                model_format,
+                max_triangles,
+            )
+            phase = "generation"
+        else:
+            task_id = meshy_client.create_text_preview(
+                package["generationPrompt"]["prompt"], model_format, max_triangles
+            )
+            phase = "preview"
+    except meshy_client.MeshyUnavailable as exc:
+        _meshy_error(exc)
+
+    task = {
+        "provider": "meshy",
+        "taskId": task_id,
+        "phase": phase,
+        "method": method,
+        "modelFormat": model_format,
+        "gameId": game_id,
+        "featureId": feature_id,
+        "requestPath": str(request_path),
+        "animationRequired": _validate_asset_spec(assetSpec)["animationRequired"],
+        "createdAt": _now(),
+    }
+    package.update(
+        {
+            "status": "submitted",
+            "provider": {"name": "meshy", "taskId": task_id, "phase": phase},
+        }
+    )
+    _write_json(request_path, package)
+    _write_json(_task_path(task_id), task)
+    return {
+        "requestId": package["requestId"],
+        "requestPath": str(request_path),
+        "taskId": task_id,
+        "phase": phase,
+        "provider": "meshy",
+        "providerConfigured": True,
+        "status": "submitted",
+    }
+
+
+@mcp.tool(description="Refine a completed Meshy text-to-3D preview into a textured model.")
+@expects_dict_return
+def refine_3d_asset_generation(taskId: str) -> dict[str, Any]:
+    task_id = _require_id(taskId, "taskId")
+    task = _read_task(task_id)
+    if task["method"] != "text_to_3d" or task["phase"] != "preview":
+        raise tool_error(VALIDATION_ERROR, "only a Meshy text-to-3D preview can be refined")
+    try:
+        current = meshy_client.get_task("text_to_3d", task_id)
+    except meshy_client.MeshyUnavailable as exc:
+        _meshy_error(exc)
+    if current.get("status") != "SUCCEEDED":
+        return {"taskId": task_id, "phase": "preview", "status": current.get("status", "UNKNOWN")}
+    try:
+        refine_task_id = meshy_client.create_text_refine(task_id, task["modelFormat"])
+    except meshy_client.MeshyUnavailable as exc:
+        _meshy_error(exc)
+    refined = {**task, "taskId": refine_task_id, "phase": "refine", "createdAt": _now()}
+    _write_json(_task_path(refine_task_id), refined)
+    return {"taskId": refine_task_id, "phase": "refine", "provider": "meshy", "status": "submitted"}
+
+
+@mcp.tool(description="Get a Meshy 3D generation status and download its completed model.")
+@expects_dict_return
+def get_3d_asset_generation(taskId: str) -> dict[str, Any]:
+    task_id = _require_id(taskId, "taskId")
+    task = _read_task(task_id)
+    try:
+        current = meshy_client.get_task(task["method"], task_id)
+    except meshy_client.MeshyUnavailable as exc:
+        _meshy_error(exc)
+    status = current.get("status", "UNKNOWN")
+    result = {
+        "taskId": task_id,
+        "phase": task["phase"],
+        "provider": "meshy",
+        "status": status,
+        "progress": current.get("progress"),
+    }
+    if status != "SUCCEEDED":
+        result["providerError"] = (current.get("task_error") or {}).get("message", "")
+        return result
+    model_url = _require_meshy_model_url((current.get("model_urls") or {}).get(task["modelFormat"]))
+    output_path = ROOT / "3d" / "models" / task["gameId"] / f"{task_id}.{task['modelFormat']}"
+    try:
+        output = meshy_client.download_model(model_url)
+    except meshy_client.MeshyUnavailable as exc:
+        _meshy_error(exc)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(output)
+    result.update(
+        {
+            "assetPath": str(output_path),
+            "modelFormat": task["modelFormat"],
+            "inspection": _inspect_model(output, task["modelFormat"], task["animationRequired"]),
+        }
+    )
+    return result
 
 
 if __name__ == "__main__":

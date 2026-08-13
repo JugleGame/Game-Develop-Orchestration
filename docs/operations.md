@@ -6,6 +6,7 @@
 - Unity 6 Editor and Unity MCP relay
 - `RESEARCH_DSN` for Research
 - `PIXELLAB_API_KEY` for Asset generation
+- `MESHY_API_KEY` for 3D Asset generation
 
 Node, Docker, a job database, and Redis are not required.
 
@@ -33,12 +34,29 @@ new dependency graph or downloading isolated build dependencies.
 | `UNITY_BUILD_TARGET` | Validated Unity build target | `WebGL` |
 | `UNITY_BUILD_OUTPUT` | Optional project-relative path under `Builds/` | target default |
 | `PIXELLAB_API_KEY` | Asset generation | none |
+| `MESHY_API_KEY` | Meshy 3D Asset generation | none |
 | `ASSET_ROOT` | Asset output | `./var/assets` |
 | `HANDOFF_ROOT` | Planning files for execution AI | `./var/handoffs` |
 | `UNITY_SCRIPT_ROOT` | C# root | `Assets/Scripts` |
 | `LOG_LEVEL` | Logging | `INFO` |
 
 Do not use `ANTHROPIC_API_KEY`, `*_MCP_URL`, `GIT_ROOT`, or Postgres/Redis job settings.
+
+### Meshy 3D provider
+
+The 3D Asset MCP uses [Meshy's REST API](https://docs.meshy.ai/en/api) for text-to-3D and
+image-to-3D tasks. Meshy was selected because it supports the repository's direct Unity
+interchange formats (GLB and FBX), API-key authentication, task polling, and explicit
+credit errors. Text tasks require a Meshy preview followed by refine; image tasks require
+an HTTPS reference image owned or licensed by the caller.
+
+An approved operator must create the Meshy account, purchase API credits if required, and
+store the one-time-visible key only in the local `.env` or an approved secret store as
+`MESHY_API_KEY`. Never commit, log, or paste the key into an MCP prompt. Meshy documents
+that paid customers own generated assets; free-plan output uses CC BY 4.0 attribution.
+Review its current [API pricing](https://docs.meshy.ai/en/api/pricing) and
+[commercial-use terms](https://help.meshy.ai/en/articles/9992001-can-i-use-my-generated-assets-for-commercial-projects)
+before buying credits or publishing generated assets.
 
 ## Direct execution
 
