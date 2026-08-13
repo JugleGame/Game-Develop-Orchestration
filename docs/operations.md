@@ -46,6 +46,7 @@ Do not use `ANTHROPIC_API_KEY`, `*_MCP_URL`, `GIT_ROOT`, or Postgres/Redis job s
 .venv\Scripts\python.exe -m strategic.server
 .venv\Scripts\python.exe -m unity.server
 .venv\Scripts\python.exe -m asset.server
+.venv\Scripts\python.exe -m asset3d.server
 ```
 
 `strategic.server` remains as a compatibility module path; its registered name and role are

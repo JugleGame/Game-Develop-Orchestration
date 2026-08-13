@@ -10,12 +10,14 @@ flowchart TB
     U["User"] --> H["Planning / execution host agent"]
     H --> R["Research MCP: evidence, draft/spec storage, dependency lint"]
     H --> N["Unity MCP: apply, assemble, build, PlayMode, validation"]
-    H --> A["Asset MCP: asset requests and review metadata"]
+    H --> A["Asset MCP: 2D asset requests and review metadata"]
+    H --> A3["3D Asset MCP: prompt validation and request packages"]
     R --> DB["Research DB"]
     R -->|"published only"| HO["var/handoffs: hashed versioned files"] --> H
     N --> UE["Unity Editor"]
     A --> PX["Configured asset providers"]
     A --> V["var/assets"]
+    A3 --> R3["var/assets/3d/requests"]
     N --> E["Validation evidence"] --> H
     H -->|"after user approval"| G["Native Git"]
 ```
@@ -45,6 +47,11 @@ flowchart TB
 - Call configured asset providers and return usage metadata.
 - Validate file metadata, measure deterministic raster defects, and record human review metadata.
 - Store output under `var/assets` and record human review metadata.
+
+### 3D Asset MCP
+
+- Deterministically compose and validate provider-neutral 3D prompts from host-authored specifications.
+- Store request packages under `var/assets/3d/requests`; no 3D provider or model generation is configured.
 
 ## Deliberately absent
 
