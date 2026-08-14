@@ -18,8 +18,9 @@ Create pipeline Issue #123
 
 1. Normal pipeline maintenance starts from one open Issue.
 2. Write the Issue title and explanatory prose in Korean so the team shares
-   one working language. Keep code identifiers, file paths, commands, and
-   required GitHub keywords in their exact form.
+   one working language. Keep the bracketed Issue contract type in its exact
+   English form, for example `[pipeline]`; do not translate it. Also preserve
+   code identifiers, file paths, commands, and required GitHub keywords.
 3. Read the full Issue. Focus on what may change (Scope), what must not change
    (Out of Scope), and the observable finish list (Acceptance Criteria).
 4. Use `<number>-<type>-<short-description>` for branches, for example
