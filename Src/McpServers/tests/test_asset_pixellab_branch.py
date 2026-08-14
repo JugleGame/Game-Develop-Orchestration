@@ -9,7 +9,7 @@ import random
 import pytest
 from PIL import Image
 
-from asset import pixellab_client, server
+from asset import pixellab_client, prompting, server
 from asset.server import _generate_image, _pixellab_palette, _pixellab_style_params, _size_for
 from asset.style import derive
 
@@ -22,6 +22,67 @@ def style():
 @pytest.fixture
 def rng():
     return random.Random(1234)
+
+
+@pytest.mark.parametrize(
+    ("kind", "prompt", "framing"),
+    [
+        (
+            "character",
+            "2D pixel art, transparent background, side view, medium detail, "
+            "medium shading, 64x64, player character",
+            "full body centered",
+        ),
+        (
+            "monster",
+            "pixel art, no background, side view, medium detail, medium shading, "
+            "64x64, slime monster",
+            "single centered creature",
+        ),
+        (
+            "tile",
+            "pixel art, high top-down view, flat shading, medium detail, 32x32, grass tile",
+            "edge-to-edge tile",
+        ),
+        (
+            "prop",
+            "pixel art, transparent background, side view, flat shading, medium detail, "
+            "32x32, treasure chest prop",
+            "single centered isolated object",
+        ),
+        (
+            "ui_panel",
+            "2D pixel art, transparent background, flat shading, medium detail, "
+            "128x64, inventory panel",
+            "text-free panel",
+        ),
+        (
+            "icon",
+            "2D pixel art, transparent background, flat shading, medium detail, "
+            "32x32, quest marker icon",
+            "single centered item",
+        ),
+    ],
+)
+def test_prompt_composition_removes_structured_duplication(kind, prompt, framing):
+    plan = prompting.compose(prompt, kind)
+
+    assert framing in plan.prompt
+    assert plan.composed_characters <= plan.original_characters
+    assert plan.removed_structured_clauses
+
+
+def test_prompt_composition_does_not_repeat_a_complete_prepared_brief():
+    prompt = (
+        "a brass lantern. Composition: centered with a broad base and narrow top handle. "
+        "Required visual structure: one connected silhouette; three support feet. "
+        "Readability target: a 32 px pickup. Exclude: text."
+    )
+
+    plan = prompting.compose(prompt, "prop")
+
+    assert "single centered isolated object" not in plan.prompt
+    assert plan.composed_characters <= plan.original_characters
 
 
 # --------------------------------------------------------------------------
@@ -214,7 +275,11 @@ async def test_generate_2d_sprite_reports_the_images_it_consumed(monkeypatch, tm
             "generations": 1.0,
         }
 
-    monkeypatch.setattr(pixellab_client, "generate_image", _fake_generate)
+    def _fake_prototype(**kwargs):
+        image, usage = _fake_generate(**kwargs)
+        return image, usage, "create_image"
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
 
     from mcp import Client
 
@@ -225,7 +290,7 @@ async def test_generate_2d_sprite_reports_the_images_it_consumed(monkeypatch, tm
         )
 
     assert result.is_error is False
-    assert result.structured_content["generatedBy"] == "pixellab"
+    assert result.structured_content["generatedBy"] == "pixellab-mcp"
     assert result.structured_content["imagesGenerated"] == 1
     assert "costUsd" not in result.structured_content
 

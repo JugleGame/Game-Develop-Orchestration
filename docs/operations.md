@@ -33,7 +33,7 @@ new dependency graph or downloading isolated build dependencies.
 | `UNITY_BUILD_TARGET` | Validated Unity build target | `WebGL` |
 | `UNITY_BUILD_OUTPUT` | Optional project-relative path under `Builds/` | target default |
 | `PIXELLAB_API_KEY` | Asset generation | none |
-| `ASSET_ROOT` | Asset output | `./var/assets` |
+| `ASSET_ROOT` | Asset output; relative paths resolve from the repository root | `./var/assets` |
 | `HANDOFF_ROOT` | Planning files for execution AI | `./var/handoffs` |
 | `UNITY_SCRIPT_ROOT` | C# root | `Assets/Scripts` |
 | `LOG_LEVEL` | Logging | `INFO` |
@@ -46,6 +46,7 @@ Do not use `ANTHROPIC_API_KEY`, `*_MCP_URL`, `GIT_ROOT`, or Postgres/Redis job s
 .venv\Scripts\python.exe -m strategic.server
 .venv\Scripts\python.exe -m unity.server
 .venv\Scripts\python.exe -m asset.server
+.venv\Scripts\python.exe -m asset3d.server
 ```
 
 `strategic.server` remains as a compatibility module path; its registered name and role are
