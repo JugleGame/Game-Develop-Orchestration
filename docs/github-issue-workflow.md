@@ -17,19 +17,40 @@ Create pipeline Issue #123
 ## Everyday rules
 
 1. Normal pipeline maintenance starts from one open Issue.
-2. Read the full Issue. Focus on what may change (Scope), what must not change
+2. Write Issue and PR titles and explanatory prose in Korean so reviewers
+   share one working language. Keep the bracketed Issue contract type in its exact
+   English form, for example `[pipeline]`; do not translate it. Also preserve
+   code identifiers, file paths, commands, and required GitHub keywords.
+3. Read the full Issue. Focus on what may change (Scope), what must not change
    (Out of Scope), and the observable finish list (Acceptance Criteria).
-3. Use `<number>-<type>-<short-description>` for branches, for example
+4. Use `<number>-<type>-<short-description>` for branches, for example
    `123-fix-issue-contract-check`. The allowed types are `feat`, `fix`,
    `refactor`, `test`, `docs`, and `chore`.
-4. A feature PR must target `dev`, use the Issue branch name, and contain
+5. A feature PR must target `dev`, use the Issue branch name, and contain
    exactly one matching `Refs #123` reference. It does not close the Issue.
-5. Only `dev` may target `main`. Its integration PR must contain one or more
+6. Only `dev` may target `main`. Its integration PR must contain one or more
    `Closes #123` references for the open work Issues included in the release.
    GitHub automatically closes those Issues when that PR merges into `main`.
-6. Keep one Issue's work in one feature PR. Create a new Issue for a different
+7. Keep one Issue's work in one feature PR. Create a new Issue for a different
    problem.
-7. Merge only after the automated tests and contract check are green.
+8. Merge only after the automated tests and contract check are green.
+
+## How to size an Issue
+
+Use **one independently verifiable outcome** as the boundary of an Issue:
+
+- Keep the implementation steps, tests, documentation, and configuration
+  changes required to deliver that outcome in the same Issue, even when they
+  happen in sequence.
+- Create a new Issue when discovered work has a separate functional
+  responsibility, external dependency, failure or completion state, or reason
+  to roll it back independently.
+- Adjust Scope only for work required to complete the existing Objective. Add
+  a new Objective as a new Issue instead. Update the Issue before proceeding
+  when a required Scope adjustment is discovered during implementation.
+
+In short: group the procedure, split the responsibility. File count, line
+count, and implementation order do not define the boundary.
 
 ## Small exception
 
