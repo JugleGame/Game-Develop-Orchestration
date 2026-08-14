@@ -1,7 +1,8 @@
 name: 파이프라인 유지보수
 description: MCP 서버, 자동화, 검증, 문서 및 개발 환경 변경을 위한 작업 계약입니다.
 title: "[pipeline] "
-labels: []
+labels: [pipeline]
+type: Task
 body:
   - type: markdown
     attributes:

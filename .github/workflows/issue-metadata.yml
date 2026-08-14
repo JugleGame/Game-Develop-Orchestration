@@ -1,0 +1,22 @@
+name: Issue metadata defaults
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  apply:
+    name: Apply Issue metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { applyDefaults } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/issue-metadata.js`);
+            await applyDefaults({ context, github });
