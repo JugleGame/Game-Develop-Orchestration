@@ -231,18 +231,44 @@ def _wrap(body: str) -> str:
 # ---------------------------------------------------------------------------
 # create_prefab
 # ---------------------------------------------------------------------------
-def prefab_command(prefab_name: str, prefab_path: str, components: list[str], sprite: str) -> str:
+def prefab_command(
+    prefab_name: str,
+    prefab_path: str,
+    components: list[str],
+    sprite: str,
+    model: str = "",
+) -> str:
     """오브젝트를 만들고 컴포넌트를 붙여 ``.prefab`` 으로 저장하는 C#."""
 
     body = f"""        string prefabPath = {_literal(prefab_path)};
         string spritePath = {_literal(sprite)};
+        string modelPath = {_literal(model)};
         string[] wanted = new string[] {{ {_string_array(components)} }};
 
         var attached = new System.Collections.Generic.List<string>();
         var missing = new System.Collections.Generic.List<string>();
 
         EnsureFolder(prefabPath);
-        var root = new global::UnityEngine.GameObject({_literal(prefab_name)});
+        global::UnityEngine.GameObject root = null;
+        if (modelPath.Length > 0)
+        {{
+            var modelAsset = global::UnityEditor.AssetDatabase
+                .LoadAssetAtPath<global::UnityEngine.GameObject>(modelPath);
+            if (modelAsset != null)
+            {{
+                root = (global::UnityEngine.GameObject)
+                    global::UnityEditor.PrefabUtility.InstantiatePrefab(modelAsset);
+            }}
+            else
+            {{
+                missing.Add(modelPath);
+            }}
+        }}
+        if (root == null)
+        {{
+            root = new global::UnityEngine.GameObject({_literal(prefab_name)});
+        }}
+        root.name = {_literal(prefab_name)};
 
         foreach (var name in wanted)
         {{
@@ -282,7 +308,8 @@ def prefab_command(prefab_name: str, prefab_path: str, components: list[str], sp
         global::UnityEngine.Object.DestroyImmediate(root);
         global::UnityEditor.AssetDatabase.SaveAssets();
 
-        string payload = "{{\\"success\\":" + (saved != null ? "true" : "false")
+        bool success = saved != null && (modelPath.Length == 0 || !missing.Contains(modelPath));
+        string payload = "{{\\"success\\":" + (success ? "true" : "false")
             + ",\\"prefab\\":\\"" + prefabPath + "\\""
             + ",\\"attached\\":" + JsonArray(attached)
             + ",\\"missing\\":" + JsonArray(missing)

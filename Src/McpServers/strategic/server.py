@@ -101,6 +101,18 @@ def _publication_state(blueprint: dict[str, Any]) -> str:
     return state
 
 
+def _visual_dimension(blueprint: dict[str, Any]) -> str:
+    """Normalize the host-authored rendering dimension used to route asset work."""
+
+    value = str(blueprint.get("visualDimension") or "unspecified").strip().lower()
+    if value not in {"2d", "3d", "hybrid", "unspecified"}:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "blueprint.visualDimension must be 2D, 3D, hybrid, or unspecified",
+        )
+    return value
+
+
 def _blueprint_document(blueprint: dict[str, Any], specs: list[SpecDocument]) -> dict[str, Any]:
     """Store game-level data plus a spec ID list, never duplicate spec bodies."""
 
@@ -152,6 +164,7 @@ async def publish_game_design(
         raise tool_error(VALIDATION_ERROR, "blueprint.specs는 비어 있지 않은 배열이어야 합니다")
 
     publication_state = _publication_state(blueprint)
+    visual_dimension = _visual_dimension(blueprint)
     context = _ctx(ctx)
     known_ids = set(await context.research.card_index())
     try:
@@ -231,6 +244,7 @@ async def publish_game_design(
     design = {
         "game_id": game_id,
         "genre": blueprint["genre"],
+        "visual_dimension": visual_dimension,
         "core_mechanics": blueprint["coreMechanics"],
         "art_style": blueprint["artStyle"],
         "target_platform": "Web",
@@ -337,6 +351,15 @@ def _to_feature_prompt(spec: SpecDocument) -> dict[str, Any]:
         )
     lines.append(f"\n## Source cards\n{', '.join(spec.refs)}")
 
+    asset_specs = list(hints.get("assetSpecs") or [])
+    assets_needed = list(hints.get("assetsNeeded") or [])
+    if not assets_needed:
+        assets_needed = [
+            str(asset_spec.get("assetName") or asset_spec.get("assetId"))
+            for asset_spec in asset_specs
+            if asset_spec.get("assetName") or asset_spec.get("assetId")
+        ]
+
     return {
         "feature_id": spec.spec_id,
         "title": spec.title,
@@ -353,7 +376,8 @@ def _to_feature_prompt(spec: SpecDocument) -> dict[str, Any]:
         # 위 "필요 에셋" 줄과 같은 값을 구조체로도 낸다. 문장으로만 주면 AssetGen 이
         # 긴 description 전체를 프롬프트로 삼게 되고, 어떤 자산을 만들지가
         # 키워드 등장 순서로 정해지므로 구조화된 값도 함께 보낸다.
-        "assets_needed": list(hints.get("assetsNeeded") or []),
+        "assets_needed": assets_needed,
+        "asset_specs": asset_specs,
     }
 
 

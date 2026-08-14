@@ -32,7 +32,7 @@ required only when `animation.required` is `true`. The optional lists `materials
 | Design | `description`, `style`, `proportions`, `colors`, required `form`, optional `materials`, `preserve`, `exclude` |
 | Geometry | `maxTriangles`, `separateMeshes`, required `shading` |
 | Output | `format`, `scale`, `pivot`, `pivotPolicy`, `collider` |
-| Texture | `required`, `description`, `maps` |
+| Texture | `required`, `description`, `maps`, optional `surfaceDetails`, optional `material` |
 | Animation | `required`, conditional `rigType`, `clips` |
 | Generation | `method` |
 | Validation | `requirements` |
@@ -61,6 +61,19 @@ duplicate faces, and coplanar overlaps, while preserving hard-edge vertex/normal
 triangulation and format conversion. Parts may touch intentionally, but they must not intersect
 or leave thin sliver faces at joints.
 Supported output formats are `fbx`, `glb`, and `gltf`.
+
+Treat `geometry.maxTriangles` as a final runtime ceiling, not a detail target. Planning should
+normally budget 100-500 triangles for distant background props, 500-1,500 for ordinary props,
+and more only for close-up or silhouette-complex assets. Reference prompts model only silhouette
+and primary volumes; repeated or tiny details that do not change the silhouette must be shown as
+flat color or normal-map information so Image-to-3D does not spend geometry on them.
+
+`texture.material` contains `baseColor` (`#RRGGBB`), `metallic`, and `roughness`
+(both from 0 to 1). When it is present and `texture.surfaceDetails` is empty, the
+server selects `material_only`, applies the material in Blender, and skips Meshy
+Retexture. Required decals, patterns, wear, or other unique appearance belong in
+`surfaceDetails` and select `generated_texture`. Omitting `material` preserves the
+existing generated-texture behavior.
 
 Asset-type differences are expressed through specification values.
 

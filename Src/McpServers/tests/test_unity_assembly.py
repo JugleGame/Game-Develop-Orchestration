@@ -215,6 +215,19 @@ def test_prefab_command_wires_the_sprite_when_one_is_planned():
     assert "Assets/Generated/e.png" in with_sprite
 
 
+def test_prefab_command_instantiates_an_imported_3d_model():
+    with_model = assembly.prefab_command(
+        "Laptop",
+        "Assets/Prefabs/Laptop.prefab",
+        [],
+        "",
+        "Assets/Generated/laptop.fbx",
+    )
+
+    assert "InstantiatePrefab" in with_model
+    assert "Assets/Generated/laptop.fbx" in with_model
+
+
 # ---------------------------------------------------------------------------
 # Agent-first MCP 도구 경계
 # ---------------------------------------------------------------------------
@@ -224,7 +237,9 @@ def test_assembly_tools_are_exposed_with_camel_case_arguments():
     tools = {tool.name: tool for tool in unity_server.mcp._tool_manager.list_tools()}
 
     assert {"create_prefab", "compose_scene", "bind_reference"} <= set(tools)
-    assert {"gameId", "prefabName"} <= set(tools["create_prefab"].parameters["properties"])
+    assert {"gameId", "prefabName", "model"} <= set(
+        tools["create_prefab"].parameters["properties"]
+    )
     assert {"gameId", "sceneName"} <= set(tools["compose_scene"].parameters["properties"])
     assert {"gameId", "target", "field", "value"} <= set(
         tools["bind_reference"].parameters["properties"]

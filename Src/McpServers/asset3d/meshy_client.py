@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import os
 from typing import Any
 
@@ -60,6 +61,8 @@ def create_text_preview(prompt: str, model_format: str, max_triangles: int) -> s
         {
             "mode": "preview",
             "prompt": prompt,
+            "model_type": "standard",
+            "ai_model": "meshy-6",
             "should_remesh": True,
             "topology": "triangle",
             "target_polycount": max_triangles,
@@ -68,13 +71,19 @@ def create_text_preview(prompt: str, model_format: str, max_triangles: int) -> s
     )
 
 
-def create_text_refine(preview_task_id: str, model_format: str) -> str:
+def create_text_refine(
+    preview_task_id: str, model_format: str, texture_prompt: str
+) -> str:
     return _create(
         "/openapi/v2/text-to-3d",
         {
             "mode": "refine",
             "preview_task_id": preview_task_id,
+            "ai_model": "meshy-6",
             "enable_pbr": True,
+            "texture_prompt": texture_prompt,
+            "texture_resolution": "2k",
+            "remove_lighting": True,
             "target_formats": [model_format],
         },
     )
@@ -87,15 +96,33 @@ def create_image_task(image_url: str, model_format: str, max_triangles: int) -> 
             "image_url": image_url,
             "model_type": "smart-topology",
             "ai_model": "meshy-t2",
-            "should_texture": True,
+            "should_texture": False,
             "target_polycount": max_triangles,
             "target_formats": [model_format],
         },
     )
 
 
+def create_retexture_task(model: bytes, model_format: str, texture_prompt: str) -> str:
+    model_url = "data:application/octet-stream;base64," + base64.b64encode(model).decode()
+    return _create(
+        "/openapi/v1/retexture",
+        {
+            "model_url": model_url,
+            "text_style_prompt": texture_prompt,
+            "ai_model": "meshy-6",
+            "enable_original_uv": False,
+            "enable_pbr": True,
+            "target_formats": [model_format],
+        },
+    )
+
+
 def get_task(method: str, task_id: str) -> dict[str, Any]:
-    path = "/openapi/v1/image-to-3d" if method == "image_to_3d" else "/openapi/v2/text-to-3d"
+    path = {
+        "image_to_3d": "/openapi/v1/image-to-3d",
+        "retexture": "/openapi/v1/retexture",
+    }.get(method, "/openapi/v2/text-to-3d")
     return _request("GET", f"{path}/{task_id}")
 
 

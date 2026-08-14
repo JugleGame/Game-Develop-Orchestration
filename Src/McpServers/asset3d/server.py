@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
 import re
+import shutil
 import struct
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,7 +33,10 @@ GENERATION_METHODS = frozenset(
 MODEL_FORMATS = frozenset({"fbx", "glb", "gltf"})
 REFERENCE_VIEWS = ("front", "side", "back")
 _ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+_HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 MESHY_FORMATS = frozenset({"glb", "fbx"})
+MESHY_PROMPT_LIMIT = 600
+BLENDER_SCRIPT = Path(__file__).with_name("blender_cleanup.py")
 
 
 def _now() -> str:
@@ -178,8 +184,39 @@ def _validate_asset_spec(asset_spec: dict[str, Any]) -> dict[str, Any]:
         raise tool_error(VALIDATION_ERROR, "assetSpec.texture.required must be a boolean")
     texture_description = _require_text(texture.get("description"), "assetSpec.texture.description")
     texture_maps = _require_text_list(
-        texture.get("maps"), "assetSpec.texture.maps", allow_empty=not texture_required
+        texture.get("maps"), "assetSpec.texture.maps", allow_empty=True
     )
+    surface_details = _require_text_list(
+        texture.get("surfaceDetails", []),
+        "assetSpec.texture.surfaceDetails",
+        allow_empty=True,
+    )
+    material = texture.get("material")
+    material_values = None
+    if material is not None:
+        material = _require_object(material, "assetSpec.texture.material")
+        base_color = _require_text(
+            material.get("baseColor"), "assetSpec.texture.material.baseColor"
+        )
+        if not _HEX_COLOR.fullmatch(base_color):
+            raise tool_error(
+                VALIDATION_ERROR,
+                "assetSpec.texture.material.baseColor must be #RRGGBB",
+            )
+        material_values = {"baseColor": base_color}
+        for field in ("metallic", "roughness"):
+            value = material.get(field)
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 1:
+                raise tool_error(
+                    VALIDATION_ERROR,
+                    f"assetSpec.texture.material.{field} must be between 0 and 1",
+                )
+            material_values[field] = float(value)
+    if texture_required and not texture_maps and material_values is None:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "assetSpec.texture.maps must be non-empty unless texture.material is provided",
+        )
 
     animation = _require_object(asset_spec.get("animation"), "assetSpec.animation")
     animation_required = animation.get("required")
@@ -234,6 +271,8 @@ def _validate_asset_spec(asset_spec: dict[str, Any]) -> dict[str, Any]:
         "textureRequired": texture_required,
         "textureDescription": texture_description,
         "textureMaps": texture_maps,
+        "textureSurfaceDetails": surface_details,
+        "textureMaterial": material_values,
         "animationRequired": animation_required,
         "rigType": rig_type,
         "clips": clips,
@@ -258,9 +297,12 @@ def _compose_prompts(asset_spec: dict[str, Any]) -> dict[str, Any]:
     if spec["materials"]:
         clauses.append(f"Materials: {', '.join(spec['materials'])}.")
     if spec["textureRequired"]:
-        clauses.append(
-            f"Texture: {spec['textureDescription']}; maps {', '.join(spec['textureMaps'])}."
-        )
+        texture_clause = f"Texture: {spec['textureDescription']}"
+        if spec["textureMaps"]:
+            texture_clause += f"; maps {', '.join(spec['textureMaps'])}"
+        if spec["textureMaterial"]:
+            texture_clause += f"; material {spec['textureMaterial']}"
+        clauses.append(texture_clause + ".")
     if spec["assetType"] in {"character", "slime", "monster"} or spec["animationRequired"]:
         clauses.append("Use a neutral pose with unobstructed parts and animation-ready deformation.")
     clauses.append(
@@ -292,9 +334,13 @@ def _compose_prompts(asset_spec: dict[str, Any]) -> dict[str, Any]:
     views = list(REFERENCE_VIEWS) if references_required else []
     reference_base = (
         f"{spec['assetName']}, {spec['description']} {spec['style']} style, "
-        f"{spec['proportions']} proportions, colors {', '.join(spec['colors'])}"
+        f"{spec['proportions']} proportions, colors {', '.join(spec['colors'])}. "
+        f"Design for at most {spec['maxTriangles']} triangles: model only the silhouette and "
+        "primary volumes; represent repeated or tiny non-silhouette details as flat color or "
+        "normal-map information instead of raised geometry"
     )
     return {
+        "textureStrategy": _texture_strategy(spec),
         "generationPrompt": {
             "assetId": spec["assetId"],
             "method": spec["method"],
@@ -392,12 +438,116 @@ def _meshy_triangle_limit(asset_spec: dict[str, Any], method: str) -> int:
     return max_triangles
 
 
-def _require_https_url(value: str, field: str) -> str:
+def _meshy_texture_prompt(spec: dict[str, Any]) -> str:
+    texture = "; ".join(
+        [
+            spec["textureDescription"],
+            f"colors: {', '.join(spec['colors'])}",
+            f"materials: {', '.join(spec['materials'])}",
+        ]
+    )
+    if len(texture) > MESHY_PROMPT_LIMIT:
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"Meshy texture prompt exceeds {MESHY_PROMPT_LIMIT} characters ({len(texture)})",
+        )
+    return texture
+
+
+def _meshy_prompts(asset_spec: dict[str, Any]) -> tuple[str, str]:
+    spec = _validate_asset_spec(asset_spec)
+    required = [
+        f"{spec['assetName']}, {spec['assetType']}",
+        f"preserve: {', '.join(spec['preserve'])}",
+        f"silhouette: {spec['silhouette']}",
+        f"volumes: {', '.join(spec['primaryVolumes'])}",
+        f"parts: {', '.join(spec['partRelationships'])}",
+        f"exclude: {', '.join(spec['exclude'])}",
+    ]
+    geometry = "; ".join(required)
+    if len(geometry) > MESHY_PROMPT_LIMIT:
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"Meshy geometry prompt exceeds {MESHY_PROMPT_LIMIT} characters ({len(geometry)})",
+        )
+    for detail in (
+        f"features: {', '.join(spec['surfaceFeatures'])}",
+        f"bevels: {', '.join(spec['bevelPolicy'])}",
+        f"style: {spec['style']}, {spec['proportions']}",
+    ):
+        candidate = f"{geometry}; {detail}"
+        if len(candidate) <= MESHY_PROMPT_LIMIT:
+            geometry = candidate
+    return geometry, _meshy_texture_prompt(spec)
+
+
+def _require_reference_image(value: str, field: str) -> str:
     url = _require_text(value, field)
     parsed = urlsplit(url)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise tool_error(VALIDATION_ERROR, f"{field} must be an https URL")
+    if parsed.scheme == "https" and parsed.netloc:
+        return url
+    prefix, separator, encoded = url.partition(",")
+    if prefix not in {"data:image/png;base64", "data:image/jpeg;base64"} or not separator:
+        raise tool_error(VALIDATION_ERROR, f"{field} must be an https URL or PNG/JPEG data URI")
+    try:
+        base64.b64decode(encoded, validate=True)
+    except ValueError as exc:
+        raise tool_error(VALIDATION_ERROR, f"{field} contains invalid base64 data") from exc
     return url
+
+
+def _cleanup_with_blender(
+    model_path: Path,
+    max_triangles: int,
+    material: dict[str, Any] | None = None,
+    output_format: str | None = None,
+    normal_policy: str = "mixed",
+) -> Path:
+    configured = os.getenv("BLENDER_PATH")
+    executable = configured if configured and Path(configured).is_file() else shutil.which("blender")
+    if not executable:
+        raise tool_error(MCP_ERROR, "Blender not found; set BLENDER_PATH", provider="blender")
+    stem = model_path.stem.removesuffix("-clean")
+    suffix = f".{output_format}" if output_format else model_path.suffix
+    output_path = model_path.with_name(f"{stem}-clean{suffix}")
+    try:
+        command = [
+            executable,
+            "--background",
+            "--python",
+            str(BLENDER_SCRIPT),
+            "--",
+            str(model_path),
+            str(output_path),
+            str(max_triangles),
+        ]
+        command.extend(
+            [json.dumps(material, separators=(",", ":")), normal_policy]
+        )
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise tool_error(MCP_ERROR, f"Blender cleanup failed: {exc}", provider="blender") from exc
+    if process.returncode or not output_path.is_file():
+        message = (process.stderr or process.stdout)[-800:]
+        raise tool_error(MCP_ERROR, f"Blender cleanup failed: {message}", provider="blender")
+    return output_path
+
+
+def _blender_inspection(model_path: Path) -> dict[str, Any] | None:
+    report_path = Path(f"{model_path}.report.json")
+    if not report_path.is_file():
+        return None
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return report if isinstance(report, dict) else None
 
 
 def _require_meshy_model_url(value: Any) -> str:
@@ -409,7 +559,13 @@ def _require_meshy_model_url(value: Any) -> str:
     return value
 
 
-def _inspect_model(model: bytes, model_format: str, animation_required: bool) -> dict[str, int]:
+def _inspect_model(
+    model: bytes,
+    model_format: str,
+    animation_required: bool,
+    texture_required: bool = True,
+    max_triangles: int | None = None,
+) -> dict[str, int | bool]:
     if model_format == "glb":
         if len(model) < 20:
             raise tool_error(MCP_ERROR, "Meshy returned a truncated GLB model", provider="meshy")
@@ -424,19 +580,53 @@ def _inspect_model(model: bytes, model_format: str, animation_required: bool) ->
         meshes = len(document.get("meshes") or [])
         textures = len(document.get("textures") or [])
         rigs = len(document.get("skins") or [])
+        accessors = document.get("accessors") or []
+        vertices = triangles = 0
+        for mesh in document.get("meshes") or []:
+            for primitive in mesh.get("primitives") or []:
+                position = (primitive.get("attributes") or {}).get("POSITION")
+                indices = primitive.get("indices")
+                if isinstance(position, int) and 0 <= position < len(accessors):
+                    vertices += accessors[position].get("count", 0)
+                if isinstance(indices, int) and 0 <= indices < len(accessors):
+                    triangles += accessors[indices].get("count", 0) // 3
     else:
         if not (model.startswith(b"Kaydara FBX Binary") or model.startswith(b"; FBX")):
             raise tool_error(MCP_ERROR, "Meshy returned an invalid FBX model", provider="meshy")
         meshes = model.count(b"Geometry::")
         textures = model.count(b"Texture::")
         rigs = model.count(b"Deformer::")
-    if not meshes or not textures or (animation_required and not rigs):
+        vertices = triangles = 0
+    if not meshes or (texture_required and not textures) or (animation_required and not rigs):
         raise tool_error(
             MCP_ERROR,
             "Meshy model failed mesh, texture, or required rig validation",
             provider="meshy",
         )
-    return {"meshes": meshes, "textures": textures, "rigs": rigs}
+    inspection: dict[str, int | bool] = {
+        "meshes": meshes,
+        "textures": textures,
+        "rigs": rigs,
+        "vertices": vertices,
+        "triangles": triangles,
+    }
+    if max_triangles is not None:
+        inspection["triangleBudgetPassed"] = triangles <= max_triangles
+    return inspection
+
+
+def _texture_strategy(spec: dict[str, Any]) -> dict[str, str]:
+    if not spec["textureRequired"]:
+        return {"mode": "none", "reason": "assetSpec.texture.required is false"}
+    if spec["textureMaterial"] and not spec["textureSurfaceDetails"]:
+        return {
+            "mode": "material_only",
+            "reason": "a numeric material is provided and no unique surface details are required",
+        }
+    return {
+        "mode": "generated_texture",
+        "reason": "unique surface details are required or no numeric material was provided",
+    }
 
 
 def _task_path(task_id: str) -> Path:
@@ -503,6 +693,7 @@ def prepare_3d_asset_request(
         "assetId": provenance["assetId"],
         "assetType": provenance["assetType"],
         "modelFormat": provenance["modelFormat"],
+        "textureStrategy": package["textureStrategy"],
         "status": package["status"],
         "providerConfigured": False,
     }
@@ -522,19 +713,24 @@ def submit_3d_asset_generation(
     method = package["generationPrompt"]["method"]
     if method not in {"text_to_3d", "image_to_3d"}:
         raise tool_error(VALIDATION_ERROR, f"Meshy does not submit generation.method={method}")
-    model_format = _meshy_format(provenance)
+    output_format = _meshy_format(provenance)
+    model_format = "glb" if method == "image_to_3d" else output_format
     max_triangles = _meshy_triangle_limit(assetSpec, method)
+    spec = _validate_asset_spec(assetSpec)
+    meshy_prompt = ""
+    texture_prompt = _meshy_texture_prompt(spec)
     try:
         if method == "image_to_3d":
             task_id = meshy_client.create_image_task(
-                _require_https_url(referenceImageUrl, "referenceImageUrl"),
+                _require_reference_image(referenceImageUrl, "referenceImageUrl"),
                 model_format,
                 max_triangles,
             )
             phase = "generation"
         else:
+            meshy_prompt, texture_prompt = _meshy_prompts(assetSpec)
             task_id = meshy_client.create_text_preview(
-                package["generationPrompt"]["prompt"], model_format, max_triangles
+                meshy_prompt, model_format, max_triangles
             )
             phase = "preview"
     except meshy_client.MeshyUnavailable as exc:
@@ -546,10 +742,19 @@ def submit_3d_asset_generation(
         "phase": phase,
         "method": method,
         "modelFormat": model_format,
+        "outputFormat": output_format,
         "gameId": game_id,
         "featureId": feature_id,
         "requestPath": str(request_path),
-        "animationRequired": _validate_asset_spec(assetSpec)["animationRequired"],
+        "animationRequired": spec["animationRequired"],
+        "textureRequired": spec["textureRequired"],
+        "texturePrompt": texture_prompt,
+        "textureStrategy": package["textureStrategy"],
+        "textureMaterial": spec["textureMaterial"],
+        "normalPolicy": spec["normalPolicy"],
+        "maxTriangles": max_triangles,
+        "providerPrompt": meshy_prompt,
+        "topology": "triangle" if method == "text_to_3d" else "",
         "createdAt": _now(),
     }
     package.update(
@@ -567,6 +772,7 @@ def submit_3d_asset_generation(
         "phase": phase,
         "provider": "meshy",
         "providerConfigured": True,
+        "textureStrategy": package["textureStrategy"],
         "status": "submitted",
     }
 
@@ -576,21 +782,114 @@ def submit_3d_asset_generation(
 def refine_3d_asset_generation(taskId: str) -> dict[str, Any]:
     task_id = _require_id(taskId, "taskId")
     task = _read_task(task_id)
-    if task["method"] != "text_to_3d" or task["phase"] != "preview":
-        raise tool_error(VALIDATION_ERROR, "only a Meshy text-to-3D preview can be refined")
+    if (task["method"], task["phase"]) not in {
+        ("text_to_3d", "preview"),
+        ("image_to_3d", "generation"),
+    }:
+        raise tool_error(VALIDATION_ERROR, "only completed Meshy geometry can be refined")
     try:
-        current = meshy_client.get_task("text_to_3d", task_id)
+        current = meshy_client.get_task(task["method"], task_id)
     except meshy_client.MeshyUnavailable as exc:
         _meshy_error(exc)
     if current.get("status") != "SUCCEEDED":
-        return {"taskId": task_id, "phase": "preview", "status": current.get("status", "UNKNOWN")}
-    try:
-        refine_task_id = meshy_client.create_text_refine(task_id, task["modelFormat"])
-    except meshy_client.MeshyUnavailable as exc:
-        _meshy_error(exc)
-    refined = {**task, "taskId": refine_task_id, "phase": "refine", "createdAt": _now()}
+        return {
+            "taskId": task_id,
+            "phase": task["phase"],
+            "status": current.get("status", "UNKNOWN"),
+        }
+    if (
+        task["method"] == "text_to_3d"
+        and task["textureStrategy"]["mode"] == "generated_texture"
+    ):
+        try:
+            refine_task_id = meshy_client.create_text_refine(
+                task_id, task["modelFormat"], task["texturePrompt"]
+            )
+        except meshy_client.MeshyUnavailable as exc:
+            _meshy_error(exc)
+        refined = {**task, "taskId": refine_task_id, "phase": "refine", "createdAt": _now()}
+    else:
+        model_url = _require_meshy_model_url(
+            (current.get("model_urls") or {}).get(task["modelFormat"])
+        )
+        try:
+            output = meshy_client.download_model(model_url)
+        except meshy_client.MeshyUnavailable as exc:
+            _meshy_error(exc)
+        raw_path = ROOT / "3d" / "models" / task["gameId"] / f"{task_id}.{task['modelFormat']}"
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_bytes(output)
+        material = (
+            task["textureMaterial"]
+            if task["textureStrategy"]["mode"] == "material_only"
+            else None
+        )
+        clean_path = _cleanup_with_blender(
+            raw_path,
+            task["maxTriangles"],
+            material,
+            None,
+            task["normalPolicy"],
+        )
+        clean_model = clean_path.read_bytes()
+        inspection = _blender_inspection(clean_path) or _inspect_model(
+            clean_model, task["modelFormat"], task["animationRequired"], False, task["maxTriangles"]
+        )
+        if not inspection.get("triangleBudgetPassed"):
+            raise tool_error(MCP_ERROR, "Blender output exceeds triangle budget", provider="blender")
+        if inspection.get("gameReadyPassed") is False:
+            raise tool_error(MCP_ERROR, "Blender output failed the GameReady quality gate", provider="blender")
+        if task["textureStrategy"]["mode"] != "generated_texture":
+            final_path = clean_path
+            if task.get("outputFormat", task["modelFormat"]) != task["modelFormat"]:
+                final_path = _cleanup_with_blender(
+                    clean_path,
+                    task["maxTriangles"],
+                    material,
+                    task["outputFormat"],
+                    task["normalPolicy"],
+                )
+                inspection = _blender_inspection(final_path) or inspection
+            return {
+                "taskId": task_id,
+                "phase": (
+                    "material"
+                    if task["textureStrategy"]["mode"] == "material_only"
+                    else "geometry"
+                ),
+                "provider": "blender",
+                "status": "SUCCEEDED",
+                "assetPath": str(final_path),
+                "modelFormat": task.get("outputFormat", task["modelFormat"]),
+                "inspection": inspection,
+                "textureStrategy": task["textureStrategy"],
+            }
+        try:
+            refine_task_id = meshy_client.create_retexture_task(
+                clean_model,
+                task.get("outputFormat", task["modelFormat"]),
+                task["texturePrompt"],
+            )
+        except meshy_client.MeshyUnavailable as exc:
+            _meshy_error(exc)
+        refined = {
+            **task,
+            "taskId": refine_task_id,
+            "method": "retexture",
+            "modelFormat": task.get("outputFormat", task["modelFormat"]),
+            "phase": "retexture",
+            "sourceTaskId": task_id,
+            "postprocessedPath": str(clean_path),
+            "postprocessInspection": inspection,
+            "createdAt": _now(),
+        }
     _write_json(_task_path(refine_task_id), refined)
-    return {"taskId": refine_task_id, "phase": "refine", "provider": "meshy", "status": "submitted"}
+    return {
+        "taskId": refine_task_id,
+        "phase": refined["phase"],
+        "provider": "meshy",
+        "status": "submitted",
+    }
 
 
 @mcp.tool(description="Get a Meshy 3D generation status and download its completed model.")
@@ -625,7 +924,13 @@ def get_3d_asset_generation(taskId: str) -> dict[str, Any]:
         {
             "assetPath": str(output_path),
             "modelFormat": task["modelFormat"],
-            "inspection": _inspect_model(output, task["modelFormat"], task["animationRequired"]),
+            "inspection": _inspect_model(
+                output,
+                task["modelFormat"],
+                task["animationRequired"],
+                task["phase"] in {"refine", "retexture"} and task["textureRequired"],
+                task.get("maxTriangles"),
+            ),
         }
     )
     return result

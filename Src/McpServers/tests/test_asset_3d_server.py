@@ -12,8 +12,14 @@ from mcp import Client, ClientSession
 from asset3d import meshy_client, server
 
 
-def _glb() -> bytes:
-    document = json.dumps({"meshes": [{}], "textures": [{}]}).encode()
+def _glb(*, textured: bool = True) -> bytes:
+    document = json.dumps(
+        {
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}],
+            "accessors": [{"count": 100}, {"count": 300}],
+            "textures": [{}] if textured else [],
+        }
+    ).encode()
     document += b" " * (-len(document) % 4)
     return struct.pack("<IIIII", 0x46546C67, 2, 20 + len(document), len(document), 0x4E4F534A) + document
 
@@ -156,6 +162,8 @@ async def test_image_to_3d_composes_consistent_front_side_and_back_views():
     assert set(reference["viewPrompts"]) == {"front", "side", "back"}
     for view, prompt in reference["viewPrompts"].items():
         assert view in prompt
+        assert "Design for at most 2500 triangles" in prompt
+        assert "tiny non-silhouette details as flat color or normal-map information" in prompt
         assert "neutral pose" in prompt
         assert "consistent lighting" in prompt
         assert "minimal perspective distortion" in prompt
@@ -293,10 +301,37 @@ async def test_submit_requires_a_configured_meshy_key(tmp_path, monkeypatch):
     assert '"errorCode": 3000' in "".join(getattr(block, "text", "") for block in result.content)
 
 
+def test_meshy_preview_uses_runtime_triangle_remesh(monkeypatch):
+    created = []
+    monkeypatch.setattr(
+        meshy_client,
+        "_create",
+        lambda path, payload: created.append((path, payload)) or "task-preview",
+    )
+
+    meshy_client.create_text_preview("closed laptop", "glb", 5000)
+
+    assert created[0][1] == {
+        "mode": "preview",
+        "prompt": "closed laptop",
+        "model_type": "standard",
+        "ai_model": "meshy-6",
+        "should_remesh": True,
+        "topology": "triangle",
+        "target_polycount": 5000,
+        "target_formats": ["glb"],
+    }
+
+
 async def test_submit_and_download_meshy_text_generation(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "ROOT", tmp_path)
     monkeypatch.setenv("MESHY_API_KEY", "test-key")
-    monkeypatch.setattr(meshy_client, "create_text_preview", lambda *_: "task-preview")
+    submitted_args = []
+    monkeypatch.setattr(
+        meshy_client,
+        "create_text_preview",
+        lambda *args: submitted_args.append(args) or "task-preview",
+    )
     monkeypatch.setattr(
         meshy_client,
         "get_task",
@@ -306,7 +341,7 @@ async def test_submit_and_download_meshy_text_generation(tmp_path, monkeypatch):
             "model_urls": {"glb": "https://assets.meshy.ai/model.glb"},
         },
     )
-    monkeypatch.setattr(meshy_client, "download_model", lambda _: _glb())
+    monkeypatch.setattr(meshy_client, "download_model", lambda _: _glb(textured=False))
     asset_spec = _asset_spec("prop", "text_to_3d")
 
     async with session() as client:
@@ -320,13 +355,74 @@ async def test_submit_and_download_meshy_text_generation(tmp_path, monkeypatch):
 
     assert submitted.structured_content["phase"] == "preview"
     assert downloaded.structured_content["status"] == "SUCCEEDED"
-    assert Path(downloaded.structured_content["assetPath"]).read_bytes() == _glb()
-    assert downloaded.structured_content["inspection"] == {"meshes": 1, "textures": 1, "rigs": 0}
+    prompt, model_format, max_triangles = submitted_args[0]
+    assert len(prompt) <= server.MESHY_PROMPT_LIMIT
+    assert "silhouette:" in prompt and "exclude: text, weapons" in prompt
+    assert "preserve: round silhouette" in prompt
+    assert (model_format, max_triangles) == ("glb", 2500)
+    assert Path(downloaded.structured_content["assetPath"]).read_bytes() == _glb(textured=False)
+    assert downloaded.structured_content["inspection"] == {
+        "meshes": 1,
+        "textures": 0,
+        "rigs": 0,
+        "vertices": 100,
+        "triangles": 100,
+        "triangleBudgetPassed": True,
+    }
 
 
-async def test_image_generation_requires_an_https_reference_image(tmp_path, monkeypatch):
+async def test_refine_passes_the_texture_prompt(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "ROOT", tmp_path)
     monkeypatch.setenv("MESHY_API_KEY", "test-key")
+    monkeypatch.setattr(meshy_client, "create_text_preview", lambda *_: "task-preview")
+    monkeypatch.setattr(meshy_client, "get_task", lambda *_: {"status": "SUCCEEDED"})
+    refined_args = []
+    monkeypatch.setattr(
+        meshy_client,
+        "create_text_refine",
+        lambda *args: refined_args.append(args) or "task-refine",
+    )
+
+    async with session() as client:
+        submitted = await client.call_tool(
+            "submit_3d_asset_generation",
+            {"featureId": "slime-art", "assetSpec": _asset_spec("prop", "text_to_3d")},
+        )
+        refined = await client.call_tool(
+            "refine_3d_asset_generation", {"taskId": submitted.structured_content["taskId"]}
+        )
+
+    assert refined.structured_content["phase"] == "refine"
+    assert refined_args == [
+        ("task-preview", "glb", "matte stylized surface with readable color separation; colors: leaf green, cream; materials: soft matte body")
+    ]
+
+
+async def test_image_generation_accepts_data_uri_and_refines_with_blender(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("MESHY_API_KEY", "test-key")
+    submitted = []
+    retextured = []
+    monkeypatch.setattr(
+        meshy_client,
+        "create_image_task",
+        lambda *args: submitted.append(args) or "task-image",
+    )
+    monkeypatch.setattr(
+        meshy_client,
+        "get_task",
+        lambda *_: {
+            "status": "SUCCEEDED",
+            "model_urls": {"glb": "https://assets.meshy.ai/model.glb"},
+        },
+    )
+    monkeypatch.setattr(meshy_client, "download_model", lambda _: _glb(textured=False))
+    monkeypatch.setattr(server, "_cleanup_with_blender", lambda path, *_: path)
+    monkeypatch.setattr(
+        meshy_client,
+        "create_retexture_task",
+        lambda *args: retextured.append(args) or "task-retexture",
+    )
 
     async with session() as client:
         result = await client.call_tool(
@@ -334,9 +430,97 @@ async def test_image_generation_requires_an_https_reference_image(tmp_path, monk
             {
                 "featureId": "slime-art",
                 "assetSpec": _asset_spec("prop", "image_to_3d"),
-                "referenceImageUrl": "http://example.com/reference.png",
+                "referenceImageUrl": "data:image/png;base64,aW1hZ2U=",
             },
         )
+        refined = await client.call_tool(
+            "refine_3d_asset_generation", {"taskId": result.structured_content["taskId"]}
+        )
 
-    assert result.is_error is True
-    assert '"errorCode": 1000' in "".join(getattr(block, "text", "") for block in result.content)
+    assert result.is_error is False
+    assert submitted == [("data:image/png;base64,aW1hZ2U=", "glb", 2500)]
+    assert refined.structured_content["phase"] == "retexture"
+    assert retextured[0][0] == _glb(textured=False)
+    assert retextured[0][1:] == (
+        "glb",
+        "matte stylized surface with readable color separation; colors: leaf green, cream; materials: soft matte body",
+    )
+
+
+async def test_material_only_strategy_skips_meshy_retexture(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("MESHY_API_KEY", "test-key")
+    asset_spec = _asset_spec("prop", "image_to_3d")
+    asset_spec["output"]["format"] = "fbx"
+    asset_spec["texture"].update(
+        {
+            "surfaceDetails": [],
+            "material": {"baseColor": "#111111", "metallic": 0.15, "roughness": 0.65},
+        }
+    )
+    monkeypatch.setattr(meshy_client, "create_image_task", lambda *_: "task-image")
+    monkeypatch.setattr(
+        meshy_client,
+        "get_task",
+        lambda *_: {
+            "status": "SUCCEEDED",
+            "model_urls": {"glb": "https://assets.meshy.ai/model.glb"},
+        },
+    )
+    monkeypatch.setattr(meshy_client, "download_model", lambda _: _glb(textured=False))
+    cleanup_args = []
+    monkeypatch.setattr(
+        server,
+        "_cleanup_with_blender",
+        lambda path, limit, material, *output_format: cleanup_args.append(
+            (limit, material, output_format[0] if output_format else None)
+        )
+        or path,
+    )
+    monkeypatch.setattr(
+        meshy_client,
+        "create_retexture_task",
+        lambda *_: pytest.fail("material-only assets must not call Meshy Retexture"),
+    )
+
+    async with session() as client:
+        composed = await client.call_tool("compose_3d_asset_prompts", {"assetSpec": asset_spec})
+        submitted = await client.call_tool(
+            "submit_3d_asset_generation",
+            {
+                "featureId": "laptop-art",
+                "assetSpec": asset_spec,
+                "referenceImageUrl": "data:image/png;base64,aW1hZ2U=",
+            },
+        )
+        refined = await client.call_tool(
+            "refine_3d_asset_generation", {"taskId": submitted.structured_content["taskId"]}
+        )
+
+    assert composed.structured_content["textureStrategy"]["mode"] == "material_only"
+    assert refined.structured_content["status"] == "SUCCEEDED"
+    assert refined.structured_content["phase"] == "material"
+    assert cleanup_args == [
+        (2500, asset_spec["texture"]["material"], None),
+        (2500, asset_spec["texture"]["material"], "fbx"),
+    ]
+
+
+def test_reads_blender_game_ready_report(tmp_path):
+    model = tmp_path / "asset.fbx"
+    report = {
+        "triangles": 999,
+        "triangleBudgetPassed": True,
+        "gameReadyPassed": True,
+    }
+    Path(f"{model}.report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    assert server._blender_inspection(model) == report
+
+
+def test_blender_cleanup_converts_srgb_and_checks_material_slots():
+    source = server.BLENDER_SCRIPT.read_text(encoding="utf-8")
+
+    assert "from_srgb_to_scene_linear" in source
+    assert 'result["materialPassed"]' in source
+    assert 'and result["materialPassed"]' in source

@@ -445,6 +445,7 @@ async def create_prefab(
     prefabName: str,
     components: list[str] | None = None,
     sprite: str = "",
+    model: str = "",
     prefabPath: str = "",
 ) -> dict[str, Any]:
     """``design_architecture`` 의 ``prefabs[]`` 한 항목을 그대로 받는다.
@@ -472,11 +473,12 @@ async def create_prefab(
             for index, item in enumerate(components or [])
         ]
         image = assembly.require_asset_path(sprite, "sprite") if str(sprite).strip() else ""
+        model_path = assembly.require_asset_path(model, "model") if str(model).strip() else ""
     except AssemblyError as exc:
         raise tool_error(VALIDATION_ERROR, str(exc), gameId=gameId) from exc
 
     inner = await _run_command(
-        assembly.prefab_command(name, path, types, image),
+        assembly.prefab_command(name, path, types, image, model_path),
         f"AutoGen prefab {name}",
         _assembly_timeout(),
     )
