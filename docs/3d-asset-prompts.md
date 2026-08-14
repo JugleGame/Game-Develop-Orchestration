@@ -69,11 +69,21 @@ and primary volumes; repeated or tiny details that do not change the silhouette 
 flat color or normal-map information so Image-to-3D does not spend geometry on them.
 
 `texture.material` contains `baseColor` (`#RRGGBB`), `metallic`, and `roughness`
-(both from 0 to 1). When it is present and `texture.surfaceDetails` is empty, the
-server selects `material_only`, applies the material in Blender, and skips Meshy
-Retexture. Required decals, patterns, wear, or other unique appearance belong in
-`surfaceDetails` and select `generated_texture`. Omitting `material` preserves the
-existing generated-texture behavior.
+(both from 0 to 1). The server selects `material_only` only when `design.colors`
+and `design.materials` each declare at most one appearance region and
+`texture.surfaceDetails` is empty. Multiple colors or materials select
+`generated_texture`; flattening a screen, keyboard, body, or other distinct region
+into one material is not an optimization. Required decals, patterns, wear, or other
+unique appearance also belong in `surfaceDetails` and select `generated_texture`.
+Omitting `material` preserves the generated-texture behavior.
+
+Multiple Unity material slots are not a safe automatic substitute when the provider returns
+one mesh without semantic face or part IDs: assigning screen, keys, trim, or body by position
+would be object-specific and can silently damage unrelated assets. Prefer a compact generated
+texture in that case. A texture-free multi-material palette is valid only when the generated
+model carries stable, specification-matched part or material IDs; each extra material slot also
+adds a render submission, so it must be chosen for measured runtime value rather than appearance
+flattening.
 
 Asset-type differences are expressed through specification values.
 

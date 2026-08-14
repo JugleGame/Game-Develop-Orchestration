@@ -451,6 +451,8 @@ async def test_material_only_strategy_skips_meshy_retexture(tmp_path, monkeypatc
     monkeypatch.setattr(server, "ROOT", tmp_path)
     monkeypatch.setenv("MESHY_API_KEY", "test-key")
     asset_spec = _asset_spec("prop", "image_to_3d")
+    asset_spec["design"]["colors"] = ["matte black"]
+    asset_spec["design"]["materials"] = ["matte plastic"]
     asset_spec["output"]["format"] = "fbx"
     asset_spec["texture"].update(
         {
@@ -504,6 +506,20 @@ async def test_material_only_strategy_skips_meshy_retexture(tmp_path, monkeypatc
         (2500, asset_spec["texture"]["material"], None),
         (2500, asset_spec["texture"]["material"], "fbx"),
     ]
+
+
+def test_multiple_color_or_material_regions_keep_generated_texture():
+    asset_spec = _asset_spec("prop", "image_to_3d")
+    asset_spec["texture"].update(
+        {
+            "surfaceDetails": [],
+            "material": {"baseColor": "#111111", "metallic": 0.15, "roughness": 0.65},
+        }
+    )
+
+    spec = server._validate_asset_spec(asset_spec)
+
+    assert server._texture_strategy(spec)["mode"] == "generated_texture"
 
 
 def test_reads_blender_game_ready_report(tmp_path):

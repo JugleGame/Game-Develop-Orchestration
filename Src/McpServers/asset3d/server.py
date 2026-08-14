@@ -618,14 +618,15 @@ def _inspect_model(
 def _texture_strategy(spec: dict[str, Any]) -> dict[str, str]:
     if not spec["textureRequired"]:
         return {"mode": "none", "reason": "assetSpec.texture.required is false"}
-    if spec["textureMaterial"] and not spec["textureSurfaceDetails"]:
+    uniform_palette = len(spec["colors"]) <= 1 and len(spec["materials"]) <= 1
+    if spec["textureMaterial"] and not spec["textureSurfaceDetails"] and uniform_palette:
         return {
             "mode": "material_only",
-            "reason": "a numeric material is provided and no unique surface details are required",
+            "reason": "one color and material are declared with no unique surface details",
         }
     return {
         "mode": "generated_texture",
-        "reason": "unique surface details are required or no numeric material was provided",
+        "reason": "multiple appearance regions, unique details, or no numeric material are declared",
     }
 
 
