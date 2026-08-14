@@ -48,7 +48,7 @@ flowchart TB
 ### Asset MCP
 
 - Call configured asset providers and return usage metadata.
-- Validate file metadata and record human review metadata.
+- Validate file metadata, measure deterministic raster defects, and record human review metadata.
 - Store output under `var/assets` and record human review metadata.
 
 ### 3D Asset MCP
@@ -69,9 +69,12 @@ flowchart TB
 ## Ordering and exit
 
 Drafts are directly editable. Only a fully published, acyclic specification graph may be exported
-as a hand-off package. After export, code and asset requests may be prepared in parallel. Import and bind assets
-only after validation. Make the final feature judgment only after build, compile, PlayMode, and
-layout evidence is available. Retry the same failure at most three times, then ask the user.
+as a hand-off package. After export, code and asset requests may be prepared in parallel. Asset
+generation follows a bounded host-agent loop: complete the brief, generate one MCP prototype,
+inspect technical evidence, obtain semantic and human review, then generate API variations from
+one to four approved style anchors. Import and bind assets only after validation. Make the final
+feature judgment only after build, compile, PlayMode, and layout evidence is available. Retry the
+same failure at most three times, then ask the user.
 
 ## Source of truth and write order
 
