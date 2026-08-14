@@ -30,6 +30,7 @@ def test_task_prompt_carries_lightweight_handoff_fields():
     assert prompt["implementationRequirements"] == ["Read movement input."]
     assert prompt["constraints"] == ["Do not add combat rules."]
     assert prompt["verificationMethod"] == ["Run the movement PlayMode test."]
+    assert prompt["asset_specs"] == []
     assert "## Verification method" in prompt["description"]
 
 

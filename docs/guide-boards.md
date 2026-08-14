@@ -65,6 +65,7 @@ review approves the complete dependency graph.
 {
   "title": "Example game",
   "genre": "platformer",
+  "visualDimension": "3D",
   "coreMechanics": ["run", "jump", "collect"],
   "artStyle": "project-defined visual style",
   "structureOverview": "Describe the playable structure and independently testable features.",
@@ -107,6 +108,7 @@ the exported feature prompt contains these execution-ready keys:
 | `implementationRequirements`, `constraints` | Planning | Define behavior and boundaries. |
 | `acceptanceCriteria`, `verificationMethod` | Planning + QA | Define observable completion and its evidence. |
 | `assets_needed` | Planning | Declare the assets associated with this feature. |
+| `asset_specs` | Planning | Carry complete 3D specifications directly to the 3D Asset MCP. |
 | file/type/scene mapping | Execution | Produced by `design_architecture`; this prevents planning from dictating implementation details. |
 
 `status` remains on the stored spec. A draft can be edited directly; a published
@@ -128,10 +130,10 @@ listed by the manifest.
 
 ### Asset AI
 
-1. Read the asset declarations from the execution manifest and corresponding feature spec.
-2. Select a provider appropriate to the requested asset, such as PixelLab for 2D pixel art, an image generator for other 2D work, or a 3D provider for models.
-3. Preserve generated provenance and require human review metadata.
-4. Return structured feedback for a rejected asset; do not silently substitute placeholder art.
+1. Read `blueprint.visualDimension` and the asset declarations from the execution manifest.
+2. For each `asset_specs` entry, pass the unchanged object and feature ID to the 3D Asset MCP. Generate the reference image first when its method is `image_to_3d`.
+3. Select PixelLab only for declared 2D work; never route a 3D failure to a 2D placeholder.
+4. Preserve generated provenance and return structured feedback for rejected output.
 
 ### Unity execution AI
 

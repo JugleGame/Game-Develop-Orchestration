@@ -29,9 +29,10 @@ required only when `animation.required` is `true`. The optional lists `materials
 | Area | Fields |
 |---|---|
 | Identity | `assetId`, `assetName`, `assetType`, `gameplayRole` |
-| Design | `description`, `style`, `proportions`, `colors`, optional `materials`, `preserve`, `exclude` |
-| Geometry | `maxTriangles`, `separateMeshes` |
-| Output | `format`, `scale`, `pivot`, `collider` |
+| Design | `description`, `style`, `proportions`, `colors`, required `form`, optional `materials`, `preserve`, `exclude` |
+| Geometry | `maxTriangles`, `separateMeshes`, required `shading` |
+| Output | `format`, `scale`, `pivot`, `pivotPolicy`, `collider` |
+| Texture | `required`, `description`, `maps`, optional `surfaceDetails`, optional `material` |
 | Animation | `required`, conditional `rigType`, `clips` |
 | Generation | `method` |
 | Validation | `requirements` |
@@ -39,7 +40,50 @@ required only when `animation.required` is `true`. The optional lists `materials
 Supported `assetType` values are `character`, `slime`, `monster`, `prop`,
 `environment`, `building`, and `interactive`. Supported `method` values are
 `image_to_3d`, `text_to_3d`, `manual_blender`, `procedural`, and `existing_asset`.
+
+`design.form` prevents a recognizable silhouette from hiding an unusable object. It requires
+`silhouette`, `primaryVolumes`, `partRelationships`, `surfaceFeatures`, and `bevelPolicy`.
+Describe connected parts, intentional inset/extrude depth, and only the edges that justify bevel
+budget. Do not approximate an inset frame by attaching four unrelated bars.
+
+`output.pivotPolicy` is one of `ground_center`, `center`, `root`, or `custom`. Ordinary static
+props normally use `ground_center`: the lowest support point is on the ground plane and the
+horizontal center is the origin. Organic, animated, hanging, or gameplay-specific assets may use
+another explicit policy. Export and format conversion must preserve the selected origin.
+
+`geometry.shading` requires `normalPolicy`, outward `faceOrientation`, and non-empty
+`smoothingRules`. Hard-surface props normally use `explicit_hard`; organic surfaces use
+`explicit_smooth` or `mixed`. Exported meshes must carry explicit normals, keep all renderable
+faces outward, and split normals across intended hard edges so triangulation cannot create
+diagonal lighting gradients or expose flipped faces.
+`geometry.integrity` requires all four safeguards to be true: reject degenerate faces,
+duplicate faces, and coplanar overlaps, while preserving hard-edge vertex/normal splits across
+triangulation and format conversion. Parts may touch intentionally, but they must not intersect
+or leave thin sliver faces at joints.
 Supported output formats are `fbx`, `glb`, and `gltf`.
+
+Treat `geometry.maxTriangles` as a final runtime ceiling, not a detail target. Planning should
+normally budget 100-500 triangles for distant background props, 500-1,500 for ordinary props,
+and more only for close-up or silhouette-complex assets. Reference prompts model only silhouette
+and primary volumes; repeated or tiny details that do not change the silhouette must be shown as
+flat color or normal-map information so Image-to-3D does not spend geometry on them.
+
+`texture.material` contains `baseColor` (`#RRGGBB`), `metallic`, and `roughness`
+(both from 0 to 1). The server selects `material_only` only when `design.colors`
+and `design.materials` each declare at most one appearance region and
+`texture.surfaceDetails` is empty. Multiple colors or materials select
+`generated_texture`; flattening a screen, keyboard, body, or other distinct region
+into one material is not an optimization. Required decals, patterns, wear, or other
+unique appearance also belong in `surfaceDetails` and select `generated_texture`.
+Omitting `material` preserves the generated-texture behavior.
+
+Multiple Unity material slots are not a safe automatic substitute when the provider returns
+one mesh without semantic face or part IDs: assigning screen, keys, trim, or body by position
+would be object-specific and can silently damage unrelated assets. Prefer a compact generated
+texture in that case. A texture-free multi-material palette is valid only when the generated
+model carries stable, specification-matched part or material IDs; each extra material slot also
+adds a render submission, so it must be chosen for measured runtime value rather than appearance
+flattening.
 
 Asset-type differences are expressed through specification values.
 
@@ -86,19 +130,43 @@ a prompt is therefore rejected with error code `1000`.
     "style": "cute stylized 3D",
     "proportions": "compact and broad",
     "colors": ["leaf green", "cream"],
+    "form": {
+      "silhouette": "compact rounded outline",
+      "primaryVolumes": ["one rounded body"],
+      "partRelationships": ["eyes attached to the front surface"],
+      "surfaceFeatures": ["preserve intentional recesses and protrusions"],
+      "bevelPolicy": ["bevel only silhouette-defining hard edges"]
+    },
     "materials": ["soft matte body"],
     "preserve": ["round silhouette"],
     "exclude": ["text", "weapons"]
   },
   "geometry": {
     "maxTriangles": 2500,
-    "separateMeshes": []
+    "separateMeshes": [],
+    "shading": {
+      "normalPolicy": "mixed",
+      "faceOrientation": "outward",
+      "smoothingRules": ["split normals across silhouette-defining hard edges"]
+    },
+    "integrity": {
+      "forbidDegenerateFaces": true,
+      "forbidDuplicateFaces": true,
+      "forbidCoplanarOverlaps": true,
+      "preserveHardEdgeSplits": true
+    }
   },
   "output": {
     "format": "glb",
     "scale": 1.0,
     "pivot": "ground center",
+    "pivotPolicy": "ground_center",
     "collider": "single capsule"
+  },
+  "texture": {
+    "required": true,
+    "description": "matte stylized surface with readable color separation",
+    "maps": ["base color"]
   },
   "animation": {
     "required": true,

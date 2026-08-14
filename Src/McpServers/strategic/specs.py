@@ -221,7 +221,23 @@ def lint_spec(spec: SpecDocument, known_card_ids: set[str]) -> list[str]:
     errors += _lint_architecture(spec)
     errors += _lint_contamination(spec)
     errors += _lint_role_boundary(spec)
+    errors += _lint_asset_handoff(spec)
     return errors
+
+
+def _lint_asset_handoff(spec: SpecDocument) -> list[str]:
+    """Keep planning's structured asset hand-off safe without duplicating Asset MCP validation."""
+
+    asset_specs = spec.unity_hints.get("assetSpecs")
+    if asset_specs is None:
+        return []
+    if not isinstance(asset_specs, list):
+        return ["asset handoff: unityHints.assetSpecs must be a list"]
+    return [
+        f"asset handoff: unityHints.assetSpecs[{index}] must be an object"
+        for index, asset_spec in enumerate(asset_specs)
+        if not isinstance(asset_spec, dict)
+    ]
 
 
 def dependency_errors(specs: Iterable[SpecDocument]) -> list[str]:
