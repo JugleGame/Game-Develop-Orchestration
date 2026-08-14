@@ -16,15 +16,16 @@ Before starting normal development work, identify the related GitHub Issue and r
 Pay particular attention to Objective, Scope, Out of Scope, Acceptance Criteria, and Test.
 
 1. Do not start normal development work without a valid, open Issue.
-2. Use `<issue-number>-<type>-<short-description>` for branch names.
+2. Write the Issue title and explanatory prose in Korean. Preserve code identifiers, file paths, commands, and required GitHub keywords exactly.
+3. Use `<issue-number>-<type>-<short-description>` for branch names.
    `type` is one of `feat`, `fix`, `refactor`, `test`, `docs`, or `chore`; the description uses lowercase letters and hyphens only.
-3. Treat one independently verifiable outcome as one Issue. Keep its required implementation steps, tests, documentation, and configuration together.
-4. Create a new Issue candidate when discovered work has a separate functional responsibility, external dependency, failure or completion state, or independent rollback reason.
-5. Adjust Scope only for work required to complete the existing Objective, and update the Issue before proceeding. A new Objective requires a new Issue.
-6. Do not change files within the Issue's Out of Scope section.
-7. Verify every Acceptance Criterion and run the required tests.
-8. For a feature PR to `dev`, include exactly `Refs #<issue-number>`. For a `dev`-to-`main` integration PR, include one or more `Closes #<issue-number>` references. Also record the changes, reason, test result, and Acceptance Criteria evidence.
-9. The only no-Issue exception is a documentation typo. Use a `docs/<short-description>` branch and include
+4. Treat one independently verifiable outcome as one Issue. Keep its required implementation steps, tests, documentation, and configuration together.
+5. Create a new Issue candidate when discovered work has a separate functional responsibility, external dependency, failure or completion state, or independent rollback reason.
+6. Adjust Scope only for work required to complete the existing Objective, and update the Issue before proceeding. A new Objective requires a new Issue.
+7. Do not change files within the Issue's Out of Scope section.
+8. Verify every Acceptance Criterion and run the required tests.
+9. For a feature PR to `dev`, include exactly `Refs #<issue-number>`. For a `dev`-to-`main` integration PR, include one or more `Closes #<issue-number>` references. Also record the changes, reason, test result, and Acceptance Criteria evidence.
+10. The only no-Issue exception is a documentation typo. Use a `docs/<short-description>` branch and include
    `No-Issue-Reason: Typo-only documentation change` in the PR body.
 
 Automation validates these links, but human review and GitHub branch-protection settings are also required.
