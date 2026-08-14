@@ -8,11 +8,12 @@ body:
       value: |
         This Issue is a work contract for maintaining the development pipeline.
         State exactly which MCP server, GitHub Action, test, document, or developer-environment behavior will change.
+        Define one independently verifiable outcome: group the procedure, split the responsibility.
   - type: textarea
     id: objective
     attributes:
       label: Objective
-      description: What pipeline behavior will you fix or make safer?
+      description: What single, independently verifiable pipeline outcome will you deliver?
       placeholder: "Example: Make the GitHub Actions check fail when the Issue and PR numbers differ."
     validations:
       required: true
@@ -27,7 +28,7 @@ body:
     id: scope
     attributes:
       label: Scope
-      description: List the servers, workflows, documents, scripts, and tests that may change in this work.
+      description: List the implementation, tests, documentation, and configuration required to complete the Objective. Required procedural steps belong together.
       placeholder: |
         - .github/workflows/issue-contract.yml
         - docs/github-issue-workflow.md
@@ -37,7 +38,7 @@ body:
     id: out-of-scope
     attributes:
       label: Out of Scope
-      description: List servers, behavior, or external-service settings that must not change in this work.
+      description: List separate objectives or responsibilities that must not change. Split work with its own external dependency, failure or completion state, or rollback reason into another Issue.
     validations:
       required: true
   - type: textarea

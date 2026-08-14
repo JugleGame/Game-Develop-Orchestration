@@ -24,6 +24,13 @@ Refs #<issue-number>
 
 - [ ] I verified every Issue Acceptance Criterion.
 
+## Feature PR Scope
+
+<!-- Applies to a feature PR targeting dev; omit for a dev-to-main integration PR. -->
+
+- [ ] Every change is required to deliver the Issue Objective, including its tests, documentation, and configuration.
+- [ ] I moved any new objective or independently completable, fallible, dependent, or reversible responsibility to another Issue.
+
 ## No-Issue-Reason
 
 <!-- Use only for a no-Issue documentation typo change.

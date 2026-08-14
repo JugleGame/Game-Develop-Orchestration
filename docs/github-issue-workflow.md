@@ -31,6 +31,23 @@ Create pipeline Issue #123
    problem.
 7. Merge only after the automated tests and contract check are green.
 
+## How to size an Issue
+
+Use **one independently verifiable outcome** as the boundary of an Issue:
+
+- Keep the implementation steps, tests, documentation, and configuration
+  changes required to deliver that outcome in the same Issue, even when they
+  happen in sequence.
+- Create a new Issue when discovered work has a separate functional
+  responsibility, external dependency, failure or completion state, or reason
+  to roll it back independently.
+- Adjust Scope only for work required to complete the existing Objective. Add
+  a new Objective as a new Issue instead. Update the Issue before proceeding
+  when a required Scope adjustment is discovered during implementation.
+
+In short: group the procedure, split the responsibility. File count, line
+count, and implementation order do not define the boundary.
+
 ## Small exception
 
 The only no-Issue exception is a documentation typo. Use a
