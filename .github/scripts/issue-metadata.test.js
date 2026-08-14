@@ -8,7 +8,13 @@ test("pipeline Issue receives the review metadata defaults", async () => {
   const applied = await applyDefaults({
     context: {
       repo: { owner: "JugleGame", repo: "Game-Develop-Orchestration" },
-      payload: { issue: { number: 14, title: "[pipeline] metadata 자동 입력" } },
+      payload: {
+        issue: {
+          number: 14,
+          title: "[pipeline] metadata 자동 입력",
+          user: { login: "issue-author" },
+        },
+      },
     },
     github: {
       request: async (route, input) => requests.push({ route, input }),
@@ -17,7 +23,7 @@ test("pipeline Issue receives the review metadata defaults", async () => {
 
   assert.equal(applied, true);
   assert.equal(requests[0].route, "PATCH /repos/{owner}/{repo}/issues/{issue_number}");
-  assert.deepEqual(requests[0].input.assignees, DEFAULTS.assignees);
+  assert.deepEqual(requests[0].input.assignees, ["issue-author"]);
   assert.deepEqual(requests[0].input.labels, DEFAULTS.labels);
   assert.equal(requests[0].input.type, "Task");
   assert.deepEqual(requests[0].input.issue_field_values, DEFAULTS.issue_field_values);

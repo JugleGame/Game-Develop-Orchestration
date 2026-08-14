@@ -1,7 +1,6 @@
 const PIPELINE_PREFIX = "[pipeline] ";
 
 const DEFAULTS = Object.freeze({
-  assignees: ["bbie-6772"],
   labels: ["pipeline"],
   type: "Task",
   issue_field_values: [
@@ -22,6 +21,7 @@ async function applyDefaults({ context, github }) {
     ...context.repo,
     issue_number: issue.number,
     ...DEFAULTS,
+    assignees: [issue.user.login],
     headers: { "X-GitHub-Api-Version": "2026-03-10" },
   });
   return true;

@@ -69,8 +69,8 @@ even when small.
 
 - `.github/ISSUE_TEMPLATE/work-item.yml` requires a complete pipeline-maintenance Issue.
 - `.github/pull_request_template.md` asks for the Issue link, change reason, tests, and acceptance evidence.
-- The `Issue metadata defaults` workflow assigns new `[pipeline]` Issues to
-  `bbie-6772` and sets label `pipeline`, type `Task`, Priority `Medium`, and
+- The `Issue metadata defaults` workflow assigns each new `[pipeline]` Issue
+  to its author and sets label `pipeline`, type `Task`, Priority `Medium`, and
   Effort `Medium`. These are reviewable defaults; a human may change them.
   Projects, milestones, relationships, and development links are not invented
   when no real target or relationship exists.
