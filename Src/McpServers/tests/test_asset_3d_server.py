@@ -649,6 +649,78 @@ async def test_poly_haven_fake_response_found_and_not_found(monkeypatch):
     assert missing["status"] == "not_found"
 
 
+def test_cc0_candidate_requires_an_explicit_identity_word():
+    spec = _asset_spec("prop", "text_to_3d")
+    spec["assetId"] = "memory-chest"
+    spec["assetName"] = "Memory Fragment Chest"
+    spec["design"]["description"] = "A compact weathered chest with a large lid"
+
+    wrong = {"id": "rusted_hacksaw", "name": "Rusted Hacksaw", "tags": ["weathered", "compact"]}
+    right = {"id": "wooden_military_crate", "name": "Wooden Military Crate", "tags": ["chest", "weathered"]}
+
+    assert cc0_client._candidate_score(spec, wrong)[0] == 0
+    assert cc0_client._candidate_score(spec, right) > cc0_client._candidate_score(spec, wrong)
+
+
+def test_cc0_candidate_requires_primary_noun_when_only_one_identity_word_matches():
+    spec = _asset_spec("environment", "text_to_3d")
+    spec["assetId"] = "bus-stop-shelter"
+    spec["assetName"] = "Abandoned Bus Stop Shelter"
+
+    wrong = {"id": "old_tyre", "name": "Old Tyre", "tags": ["door stop", "abandoned"]}
+    right = {"id": "urban_bus_shelter", "name": "Urban Bus Shelter", "tags": ["street"]}
+
+    assert cc0_client._candidate_score(spec, wrong)[0] == 0
+    assert cc0_client._candidate_score(spec, right)[0] >= 1
+
+
+async def test_poly_haven_ignores_texture_urls_nested_under_fbx(monkeypatch):
+    downloaded = []
+
+    class Download:
+        content = b"fbx"
+
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url):
+            downloaded.append(url)
+            return Download()
+
+    responses = {
+        "/assets?t=models": {"green_prop": {"name": "Green prop", "tags": ["green", "prop"]}},
+        "/files/green_prop": {
+            "fbx": {
+                "1k": {
+                    "fbx": {
+                        "url": "https://cdn.polyhaven.com/green_prop.fbx",
+                        "include": {"textures": {"normal": {"url": "https://cdn.polyhaven.com/green_prop_nor.exr"}}},
+                    }
+                }
+            }
+        },
+    }
+
+    async def fake_json(_client, path):
+        return responses[path]
+
+    monkeypatch.setattr(cc0_client.httpx, "AsyncClient", lambda **_kwargs: Client())
+    monkeypatch.setattr(cc0_client, "_get_json", fake_json)
+
+    found = await cc0_client.search_poly_haven(_asset_spec("prop"))
+
+    assert found["status"] == "found"
+    assert downloaded == ["https://cdn.polyhaven.com/green_prop.fbx"]
+    assert found["format"] == "fbx"
+
+
 async def test_poly_haven_network_error_is_provider_failed(monkeypatch):
     monkeypatch.delenv("CC0_MANIFEST_PATHS", raising=False)
 

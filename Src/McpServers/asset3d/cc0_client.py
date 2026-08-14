@@ -19,6 +19,13 @@ TIMEOUT_SECONDS = 30.0
 SUPPORTED_FORMATS = frozenset({"glb", "fbx"})
 CC0_LICENSES = frozenset({"cc0", "cc0-1.0", "cc0 1.0", "public-domain"})
 _WORDS = re.compile(r"[a-z0-9]+")
+_STOP_WORDS = frozenset(
+    {
+        "and", "the", "with", "that", "one", "two", "for", "from", "into",
+        "asset", "model", "three", "low", "poly", "stylized", "materials",
+        "warm", "muted", "gray", "blue", "stage", "visual", "small", "large",
+    }
+)
 
 
 class CC0ProviderError(Exception):
@@ -45,10 +52,35 @@ def _terms(asset_spec: dict[str, Any]) -> set[str]:
             design.get("style", ""),
         )
     )
-    return {word for word in _WORDS.findall(text.lower()) if len(word) > 2}
+    return {
+        word
+        for word in _WORDS.findall(text.lower())
+        if len(word) > 2 and word not in _STOP_WORDS
+    }
 
 
-def _candidate_score(asset_spec: dict[str, Any], candidate: dict[str, Any]) -> tuple[int, str]:
+def _identity_terms(asset_spec: dict[str, Any]) -> set[str]:
+    """Return explicit identity words that a semantic CC0 match must contain."""
+    asset_type = str(asset_spec.get("assetType", "")).lower()
+    text = f"{asset_spec.get('assetId', '')} {asset_spec.get('assetName', '')}"
+    return {
+        word
+        for word in _WORDS.findall(text.lower())
+        if len(word) > 2 and word not in _STOP_WORDS and word != asset_type
+    }
+
+
+def _primary_identity_term(asset_spec: dict[str, Any]) -> str:
+    asset_type = str(asset_spec.get("assetType", "")).lower()
+    words = [
+        word
+        for word in _WORDS.findall(str(asset_spec.get("assetName", "")).lower())
+        if len(word) > 2 and word not in _STOP_WORDS and word != asset_type
+    ]
+    return words[-1] if words else ""
+
+
+def _candidate_score(asset_spec: dict[str, Any], candidate: dict[str, Any]) -> tuple[int, int, str]:
     haystack = " ".join(
         str(value)
         for value in (
@@ -59,8 +91,13 @@ def _candidate_score(asset_spec: dict[str, Any], candidate: dict[str, Any]) -> t
             candidate.get("id", ""),
         )
     ).lower()
-    score = sum(1 for term in _terms(asset_spec) if term in haystack)
-    return score, str(candidate.get("id", ""))
+    candidate_terms = set(_WORDS.findall(haystack))
+    identity_matches = len(_identity_terms(asset_spec) & candidate_terms)
+    primary = _primary_identity_term(asset_spec)
+    if not primary or primary not in candidate_terms:
+        identity_matches = 0
+    total_matches = len(_terms(asset_spec) & candidate_terms)
+    return identity_matches, total_matches, str(candidate.get("id", ""))
 
 
 def _license_is_cc0(value: Any) -> bool:
@@ -88,7 +125,7 @@ def _manifest_entries(path: Path) -> list[dict[str, Any]]:
 def search_local(asset_spec: dict[str, Any]) -> dict[str, Any]:
     rejected_license = 0
     rejected_quality = 0
-    candidates: list[tuple[tuple[int, str], dict[str, Any], Path]] = []
+    candidates: list[tuple[tuple[int, int, str], dict[str, Any], Path]] = []
     for manifest_path in _manifest_paths():
         for entry in _manifest_entries(manifest_path):
             if not _license_is_cc0(entry.get("license")):
@@ -194,7 +231,7 @@ async def search_poly_haven(asset_spec: dict[str, Any]) -> dict[str, Any]:
             joined = "/".join(trail)
             url = descriptor.get("url", "")
             suffix = Path(httpx.URL(url).path).suffix[1:].lower()
-            model_format = "glb" if suffix == "glb" or "glb" in trail else "fbx" if suffix == "fbx" or "fbx" in trail else ""
+            model_format = suffix if suffix in SUPPORTED_FORMATS else ""
             if model_format in SUPPORTED_FORMATS:
                 resolution_rank = next((index for index, token in enumerate(("1k", "2k", "4k", "8k")) if token in joined), 99)
                 options.append((resolution_rank, model_format != "glb", url, model_format))
