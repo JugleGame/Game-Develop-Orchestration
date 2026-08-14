@@ -10,8 +10,7 @@ permissions:
 
 jobs:
   apply:
-    name: Apply pipeline Issue metadata
-    if: startsWith(github.event.issue.title, '[pipeline] ')
+    name: Apply Issue metadata
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

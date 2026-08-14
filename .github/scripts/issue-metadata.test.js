@@ -1,42 +1,78 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { DEFAULTS, applyDefaults, isPipelineIssue } = require("./issue-metadata");
+const { FIELD_DEFAULTS, applyDefaults, contractFromTitle, metadataFor } = require("./issue-metadata");
 
-test("pipeline Issue receives the review metadata defaults", async () => {
+function fixture(issue, currentFields = []) {
   const requests = [];
-  const applied = await applyDefaults({
-    context: {
-      repo: { owner: "JugleGame", repo: "Game-Develop-Orchestration" },
-      payload: {
-        issue: {
-          number: 14,
-          title: "[pipeline] metadata 자동 입력",
-          user: { login: "issue-author" },
+  return {
+    requests,
+    input: {
+      context: {
+        repo: { owner: "JugleGame", repo: "Game-Develop-Orchestration" },
+        payload: { issue },
+      },
+      github: {
+        request: async (route, request) => {
+          requests.push({ route, request });
+          return { data: route.startsWith("GET ") ? currentFields : {} };
         },
       },
     },
-    github: {
-      request: async (route, input) => requests.push({ route, input }),
-    },
+  };
+}
+
+test("every Issue receives an author, type, Priority, and Effort default", async () => {
+  const scenario = fixture({
+    number: 14,
+    title: "제목 contract가 없는 일반 Issue",
+    user: { login: "issue-author" },
+    assignees: [],
+    labels: [],
   });
 
-  assert.equal(applied, true);
-  assert.equal(requests[0].route, "PATCH /repos/{owner}/{repo}/issues/{issue_number}");
-  assert.deepEqual(requests[0].input.assignees, ["issue-author"]);
-  assert.deepEqual(requests[0].input.labels, DEFAULTS.labels);
-  assert.equal(requests[0].input.type, "Task");
-  assert.deepEqual(requests[0].input.issue_field_values, DEFAULTS.issue_field_values);
+  assert.equal(await applyDefaults(scenario.input), true);
+  assert.deepEqual(scenario.requests.map(({ route }) => route), [
+    "GET /repos/{owner}/{repo}/issues/{issue_number}/issue-field-values",
+    "PATCH /repos/{owner}/{repo}/issues/{issue_number}",
+    "POST /repos/{owner}/{repo}/issues/{issue_number}/issue-field-values",
+  ]);
+  assert.deepEqual(scenario.requests[1].request.assignees, ["issue-author"]);
+  assert.deepEqual(scenario.requests[1].request.labels, []);
+  assert.equal(scenario.requests[1].request.type, "Task");
+  assert.deepEqual(scenario.requests[2].request.issue_field_values, FIELD_DEFAULTS);
 });
 
-test("only the exact English pipeline contract type is handled", async () => {
-  assert.equal(isPipelineIssue("[pipeline] 유효한 제목"), true);
-  assert.equal(isPipelineIssue("[파이프라인] 번역된 제목"), false);
-  assert.equal(isPipelineIssue("[pipeline]공백 없는 제목"), false);
+test("existing metadata is preserved and only missing fields are added", async () => {
+  const scenario = fixture(
+    {
+      number: 15,
+      title: "[bug] 로그인 실패",
+      user: { login: "reporter" },
+      assignees: [{ login: "maintainer" }],
+      labels: [{ name: "help wanted" }],
+    },
+    [{ issue_field_id: 45512566 }],
+  );
 
-  const applied = await applyDefaults({
-    context: { payload: { issue: { number: 15, title: "[feature] 다른 Issue" } } },
-    github: { request: async () => assert.fail("metadata request must not run") },
-  });
-  assert.equal(applied, false);
+  await applyDefaults(scenario.input);
+  assert.deepEqual(scenario.requests[1].request.assignees, ["maintainer", "reporter"]);
+  assert.deepEqual(scenario.requests[1].request.labels, ["help wanted", "bug"]);
+  assert.equal(scenario.requests[1].request.type, "Bug");
+  assert.deepEqual(scenario.requests[2].request.issue_field_values, [FIELD_DEFAULTS[1]]);
+});
+
+test("contract mapping never overrides an existing Issue type", () => {
+  assert.equal(contractFromTitle("[feature] 새 기능"), "feature");
+  assert.equal(contractFromTitle("대괄호가 없는 제목"), null);
+  assert.equal(
+    metadataFor({
+      title: "[bug] 문서 오류",
+      user: { login: "author" },
+      type: { name: "Task" },
+      assignees: [{ login: "author" }],
+      labels: ["documentation"],
+    }).type,
+    "Task",
+  );
 });
