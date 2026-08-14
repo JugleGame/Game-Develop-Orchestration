@@ -4,8 +4,8 @@
 
 The host agent writes an `assetSpec` that captures the game's intent. Without making
 model-driven decisions, `Asset3DGenMcpServer` applies the specification to deterministic
-templates, composes and validates provider-neutral prompts, and preserves the request
-package. External 3D providers and Unity integration are outside this contract.
+templates, composes and validates provider-neutral prompts, searches verified CC0 sources,
+controls the Meshy fallback, and preserves provenance through Blender validation and Unity import.
 
 ```mermaid
 flowchart TD
@@ -16,8 +16,12 @@ flowchart TD
     S --> P["prepare_3d_asset_request"]
     G --> P
     Q --> P
-    P --> H["Request package under var/assets/3d/requests"]
-    H -->|"Separate work after provider approval"| E["External 3D generation"]
+    P --> H["Request package under external ASSET3D_RUN_ROOT"]
+    H --> C0["Local CC0 manifest + Poly Haven"]
+    C0 -->|"not_found only"| E["Meshy fallback"]
+    C0 -->|"found"| B["Blender GameReady gate"]
+    E --> B
+    B -->|"pass only"| U["Unity Assets/Generated3D"]
 ```
 
 ## Specification
@@ -201,18 +205,21 @@ to produce prompts and a request package with a new SHA-256 digest.
 1. compose_3d_asset_prompts(assetSpec)
 2. Optionally validate_3d_asset_prompts(assetSpec, generationPrompt, referenceSearchPrompt)
 3. prepare_3d_asset_request(featureId, assetSpec, gameId)
+4. submit_3d_asset_generation(featureId, assetSpec, gameId, referenceImageUrl?)
+5. get_3d_asset_generation(taskId) / refine_3d_asset_generation(taskId)
 ```
 
 `prepare_3d_asset_request` recomposes and validates the prompts before saving them to:
 
 ```text
-var/assets/3d/requests/<gameId>/<assetId>__<spec-hash>.json
+<ASSET3D_RUN_ROOT>/3d/requests/<gameId>/<assetId>__<spec-hash>.json
 ```
 
 The package preserves the original specification, both derived prompts, their SHA-256
-digests, game and feature IDs, and the creation timestamp. Because no provider is approved,
-the status is `provider_unconfigured`, and neither an `assetPath` nor a 2D placeholder is
-returned.
+digests, game and feature IDs, and the creation timestamp. The status is `prepared`; submission
+then reports `found`, `not_found`, `license_rejected`, `quality_rejected`, or `provider_failed`.
+Only `not_found` authorizes Meshy. A Blender GameReady pass is required before the final model is
+copied into Unity `Assets/`.
 
 Run locally:
 

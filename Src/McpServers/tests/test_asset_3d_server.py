@@ -9,7 +9,19 @@ from pathlib import Path
 import pytest
 from mcp import Client, ClientSession
 
-from asset3d import meshy_client, server
+from asset3d import cc0_client, meshy_client, server
+
+REAL_CC0_ACQUIRE = cc0_client.acquire
+
+
+@pytest.fixture(autouse=True)
+def _isolate_external_providers(monkeypatch):
+    async def no_cc0_match(_asset_spec):
+        return {"status": "not_found", "provider": "poly_haven"}
+
+    monkeypatch.setattr(cc0_client, "acquire", no_cc0_match)
+    monkeypatch.setattr(meshy_client, "get_balance", lambda: {"balance": 1000})
+    monkeypatch.setattr(server, "_unity_import_path", lambda _task, path, _sha: path)
 
 
 def _glb(*, textured: bool = True) -> bytes:
@@ -269,8 +281,8 @@ async def test_request_composes_and_preserves_prompts_without_a_placeholder(tmp_
 
     assert result.is_error is False
     body = result.structured_content
-    assert body["status"] == "provider_unconfigured"
-    assert body["providerConfigured"] is False
+    assert body["status"] == "prepared"
+    assert body["providerConfigured"] is meshy_client.is_configured()
     assert "assetPath" not in body
     package = json.loads(Path(body["requestPath"]).read_text(encoding="utf-8"))
     assert package["assetSpec"] == asset_spec
@@ -354,6 +366,7 @@ async def test_submit_and_download_meshy_text_generation(tmp_path, monkeypatch):
         )
 
     assert submitted.structured_content["phase"] == "preview"
+    assert submitted.structured_content["estimatedCredits"] == 20
     assert downloaded.structured_content["status"] == "SUCCEEDED"
     prompt, model_format, max_triangles = submitted_args[0]
     assert len(prompt) <= server.MESHY_PROMPT_LIMIT
@@ -393,6 +406,7 @@ async def test_refine_passes_the_texture_prompt(tmp_path, monkeypatch):
         )
 
     assert refined.structured_content["phase"] == "refine"
+    assert refined.structured_content["estimatedCredits"] == 10
     assert refined_args == [
         ("task-preview", "glb", "matte stylized surface with readable color separation; colors: leaf green, cream; materials: soft matte body")
     ]
@@ -540,3 +554,269 @@ def test_blender_cleanup_converts_srgb_and_checks_material_slots():
     assert "from_srgb_to_scene_linear" in source
     assert 'result["materialPassed"]' in source
     assert 'and result["materialPassed"]' in source
+
+
+def test_local_cc0_manifest_verifies_license_and_hash(tmp_path, monkeypatch):
+    model = tmp_path / "pack" / "green-prop.glb"
+    model.parent.mkdir()
+    content = _glb(textured=True)
+    model.write_bytes(content)
+    manifest = tmp_path / "pack.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "assets": [
+                    {
+                        "id": "green-prop",
+                        "name": "Green prop",
+                        "tags": ["green", "prop"],
+                        "path": str(model),
+                        "format": "glb",
+                        "license": "CC0-1.0",
+                        "provider": "Kenney",
+                        "sha256": __import__("hashlib").sha256(content).hexdigest(),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CC0_MANIFEST_PATHS", str(manifest))
+
+    result = cc0_client.search_local(_asset_spec("prop", "text_to_3d"))
+
+    assert result["status"] == "found"
+    assert result["provenance"]["license"] == "CC0-1.0"
+    assert result["provenance"]["provider"] == "Kenney"
+
+
+def test_local_manifest_distinguishes_license_and_hash_rejections(tmp_path, monkeypatch):
+    model = tmp_path / "green-prop.glb"
+    model.write_bytes(_glb())
+    manifest = tmp_path / "pack.json"
+    manifest.write_text(
+        json.dumps({"assets": [{"name": "green prop", "path": str(model), "license": "CC-BY", "format": "glb"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CC0_MANIFEST_PATHS", str(manifest))
+    assert cc0_client.search_local(_asset_spec("prop"))["status"] == "license_rejected"
+
+    manifest.write_text(
+        json.dumps({"assets": [{"name": "green prop", "path": str(model), "license": "CC0", "format": "glb", "sha256": "0" * 64}]}),
+        encoding="utf-8",
+    )
+    assert cc0_client.search_local(_asset_spec("prop"))["status"] == "quality_rejected"
+
+
+async def test_poly_haven_fake_response_found_and_not_found(monkeypatch):
+    class Download:
+        content = _glb()
+
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, _url):
+            return Download()
+
+    responses = {
+        "/assets?t=models": {
+            "green_prop": {"name": "Green prop", "tags": ["green", "prop"]}
+        },
+        "/files/green_prop": {
+            "glb": {"1k": {"glb": {"url": "https://cdn.polyhaven.com/green_prop.glb"}}}
+        },
+    }
+
+    async def fake_json(_client, path):
+        return responses[path]
+
+    monkeypatch.setattr(cc0_client.httpx, "AsyncClient", lambda **_kwargs: Client())
+    monkeypatch.setattr(cc0_client, "_get_json", fake_json)
+
+    found = await cc0_client.search_poly_haven(_asset_spec("prop"))
+    responses["/assets?t=models"] = {}
+    missing = await cc0_client.search_poly_haven(_asset_spec("prop"))
+
+    assert found["status"] == "found"
+    assert found["provenance"]["license"] == "CC0-1.0"
+    assert missing["status"] == "not_found"
+
+
+async def test_poly_haven_network_error_is_provider_failed(monkeypatch):
+    monkeypatch.delenv("CC0_MANIFEST_PATHS", raising=False)
+
+    async def failed(_asset_spec):
+        raise cc0_client.CC0ProviderError("offline")
+
+    monkeypatch.setattr(cc0_client, "search_poly_haven", failed)
+
+    result = await REAL_CC0_ACQUIRE(_asset_spec("prop"))
+
+    assert result == {
+        "status": "provider_failed",
+        "provider": "poly_haven",
+        "reason": "offline",
+    }
+
+
+async def test_cc0_found_never_calls_meshy(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        cc0_client,
+        "acquire",
+        lambda _spec: _async_value(
+            {
+                "status": "found",
+                "provider": "local_manifest",
+                "assetId": "green-prop",
+                "content": _glb(),
+                "format": "glb",
+                "provenance": {"license": "CC0-1.0", "provider": "Kenney", "sha256": "a" * 64},
+            }
+        ),
+    )
+    monkeypatch.setattr(meshy_client, "create_text_preview", lambda *_: pytest.fail("Meshy must not be called"))
+    monkeypatch.setattr(server, "_cleanup_with_blender", lambda path, *_: path)
+    monkeypatch.setattr(
+        server,
+        "_blender_inspection",
+        lambda _path: {"triangleBudgetPassed": True, "gameReadyPassed": True},
+    )
+
+    async with session() as client:
+        result = await client.call_tool(
+            "submit_3d_asset_generation",
+            {"featureId": "slime-art", "gameId": "slime-ranch", "assetSpec": _asset_spec("prop", "text_to_3d")},
+        )
+
+    assert result.structured_content["cc0Status"] == "found"
+    assert result.structured_content["provenance"]["license"] == "CC0-1.0"
+
+
+async def _async_value(value):
+    return value
+
+
+async def test_cc0_provider_failure_does_not_fall_back_to_meshy(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        cc0_client,
+        "acquire",
+        lambda _spec: _async_value({"status": "provider_failed", "provider": "poly_haven", "reason": "offline"}),
+    )
+    monkeypatch.setattr(meshy_client, "create_text_preview", lambda *_: pytest.fail("Meshy must not be called"))
+
+    async with session() as client:
+        result = await client.call_tool(
+            "submit_3d_asset_generation",
+            {"featureId": "slime-art", "assetSpec": _asset_spec("prop", "text_to_3d")},
+        )
+
+    assert result.structured_content["status"] == "provider_failed"
+
+
+@pytest.mark.parametrize(
+    ("status_code", "message", "expected"),
+    [
+        (401, "unauthorized", "auth_failed"),
+        (402, "payment required", "insufficient_credits"),
+        (429, "rate limit", "rate_limited"),
+        (429, "concurrent queue limit", "queue_limit"),
+    ],
+)
+async def test_meshy_http_failures_have_distinct_states(
+    monkeypatch, status_code, message, expected
+):
+    class Response:
+        headers = {}
+        text = message
+
+        def json(self):
+            return {"message": message}
+
+        @property
+        def status_code(self):
+            return status_code
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def request(self, *_args, **_kwargs):
+            return Response()
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setenv("MESHY_API_KEY", "test-key")
+    monkeypatch.setattr(meshy_client.httpx, "AsyncClient", lambda **_kwargs: Client())
+    monkeypatch.setattr(meshy_client.asyncio, "sleep", no_sleep)
+
+    with pytest.raises(meshy_client.MeshyUnavailable) as caught:
+        await meshy_client._request_async("GET", "/test")
+
+    assert caught.value.status == expected
+
+
+async def test_duplicate_spec_blocks_second_paid_submission(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    calls = []
+    monkeypatch.setenv("MESHY_API_KEY", "test-key")
+    monkeypatch.setattr(
+        meshy_client,
+        "create_text_preview",
+        lambda *_args: calls.append("submitted") or "task-preview",
+    )
+
+    arguments = {
+        "featureId": "slime-art",
+        "gameId": "slime-ranch",
+        "assetSpec": _asset_spec("prop", "text_to_3d"),
+    }
+    async with session() as client:
+        first = await client.call_tool("submit_3d_asset_generation", arguments)
+        second = await client.call_tool("submit_3d_asset_generation", arguments)
+
+    assert first.structured_content["status"] == "submitted"
+    assert second.structured_content["status"] == "duplicate_blocked"
+    assert calls == ["submitted"]
+
+
+async def test_cancel_persists_terminal_task_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    server._write_json(
+        server._task_path("task-preview"),
+        {"provider": "meshy", "taskId": "task-preview", "method": "text_to_3d"},
+    )
+    monkeypatch.setattr(meshy_client, "cancel_task", lambda *_args: {"result": "ok"})
+
+    async with session() as client:
+        result = await client.call_tool(
+            "cancel_3d_asset_generation", {"taskId": "task-preview"}
+        )
+
+    assert result.structured_content["status"] == "CANCELED"
+    assert server._read_task("task-preview")["status"] == "CANCELED"
+
+
+def test_runtime_root_rejects_relative_and_repository_paths(monkeypatch):
+    monkeypatch.setattr(server, "ROOT", server._DEFAULT_ROOT)
+    monkeypatch.setenv("ASSET3D_RUN_ROOT", "relative/staging")
+    with pytest.raises(Exception, match="absolute path"):
+        server._require_external_runtime_root()
+
+    monkeypatch.setenv("ASSET3D_RUN_ROOT", str(server.REPOSITORY_ROOT / "var" / "3d"))
+    monkeypatch.setattr(server, "ROOT", server.REPOSITORY_ROOT / "var" / "3d")
+    monkeypatch.setattr(server, "_DEFAULT_ROOT", server.REPOSITORY_ROOT / "var" / "3d")
+    with pytest.raises(Exception, match="outside the orchestration repository"):
+        server._require_external_runtime_root()

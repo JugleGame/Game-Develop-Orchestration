@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -18,11 +19,19 @@ from urllib.parse import urlsplit
 from common.errors import MCP_ERROR, VALIDATION_ERROR, tool_error
 from common.server import build, expects_dict_return, serve
 
-from . import meshy_client
+from . import cc0_client, meshy_client
 
 
 mcp = build("Asset3DGenMcpServer")
-ROOT = Path(os.getenv("ASSET_ROOT", "./var/assets")).resolve()
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+_UNITY_PROJECT = os.getenv("UNITY_PROJECT_PATH", "").strip()
+_DEFAULT_ROOT = Path(
+    os.getenv(
+        "ASSET3D_RUN_ROOT",
+        str(Path(_UNITY_PROJECT) / ".asset3d-staging") if _UNITY_PROJECT else "./var/assets",
+    )
+).resolve()
+ROOT = _DEFAULT_ROOT
 
 ASSET_TYPES = frozenset(
     {"character", "slime", "monster", "prop", "environment", "building", "interactive"}
@@ -54,6 +63,47 @@ def _digest(value: Any) -> str:
 def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _require_external_runtime_root() -> Path:
+    root = ROOT
+    # Tests replace the module root with an isolated temporary directory. The
+    # production value remains _DEFAULT_ROOT and is always subject to the
+    # repository/Unity-workspace boundary checks below.
+    if root != _DEFAULT_ROOT:
+        return root
+    configured = os.getenv("ASSET3D_RUN_ROOT", "").strip()
+    if root == _DEFAULT_ROOT and configured and not Path(configured).is_absolute():
+        raise tool_error(VALIDATION_ERROR, "ASSET3D_RUN_ROOT must be an absolute path")
+    if _is_within(root, REPOSITORY_ROOT):
+        raise tool_error(
+            VALIDATION_ERROR,
+            "3D runtime root must be outside the orchestration repository",
+        )
+    unity_value = os.getenv("UNITY_PROJECT_PATH", "").strip()
+    if unity_value:
+        unity_root = Path(unity_value)
+        if not unity_root.is_absolute():
+            raise tool_error(VALIDATION_ERROR, "UNITY_PROJECT_PATH must be an absolute path")
+        assets_root = unity_root.resolve() / "Assets"
+        if not _is_within(root, unity_root) or _is_within(root, assets_root):
+            raise tool_error(
+                VALIDATION_ERROR,
+                "3D runtime root must be inside the external Unity workspace and outside Assets",
+            )
+    return root
+
+
+async def _await_result(value: Any) -> Any:
+    return await value if inspect.isawaitable(value) else value
 
 
 def _require_text(value: Any, field: str) -> str:
@@ -646,7 +696,127 @@ def _read_task(task_id: str) -> dict[str, Any]:
 
 
 def _meshy_error(exc: meshy_client.MeshyUnavailable) -> None:
-    raise tool_error(MCP_ERROR, str(exc), provider="meshy") from exc
+    raise tool_error(
+        MCP_ERROR,
+        str(exc),
+        provider="meshy",
+        status=getattr(exc, "status", "provider_failed"),
+        httpStatus=getattr(exc, "http_status", None),
+    ) from exc
+
+
+def _actual_credits(
+    current: dict[str, Any],
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+) -> int | float | None:
+    reported = current.get("consumed_credits")
+    if isinstance(reported, (int, float)) and not isinstance(reported, bool):
+        return reported
+    before_value = (before or {}).get("balance")
+    after_value = (after or {}).get("balance")
+    if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in (before_value, after_value)):
+        return max(0, before_value - after_value)
+    return None
+
+
+def _unity_import_path(task: dict[str, Any], model_path: Path, sha256: str) -> Path:
+    unity_value = os.getenv("UNITY_PROJECT_PATH", "").strip()
+    if not unity_value:
+        raise tool_error(VALIDATION_ERROR, "UNITY_PROJECT_PATH must be set for Unity import")
+    unity_root = Path(unity_value)
+    if not unity_root.is_absolute() or _is_within(unity_root, REPOSITORY_ROOT):
+        raise tool_error(
+            VALIDATION_ERROR,
+            "UNITY_PROJECT_PATH must be an absolute workspace outside the orchestration repository",
+        )
+    assets = unity_root.resolve() / "Assets"
+    if not assets.is_dir():
+        raise tool_error(VALIDATION_ERROR, f"Unity Assets directory not found: {assets}")
+    target = assets / "Generated3D" / task["featureId"] / (
+        f"{task['assetId']}-{sha256[:12]}{model_path.suffix.lower()}"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(model_path, target)
+    return target
+
+
+def _game_ready_result(
+    task: dict[str, Any],
+    source_path: Path,
+    *,
+    provider: str,
+    provenance: dict[str, Any],
+) -> dict[str, Any]:
+    material = task.get("textureMaterial") if task["textureStrategy"]["mode"] == "material_only" else None
+    output_format = task.get("outputFormat", task["modelFormat"])
+    clean_path = _cleanup_with_blender(
+        source_path,
+        task["maxTriangles"],
+        material,
+        output_format if source_path.suffix[1:].lower() != output_format else None,
+        task["normalPolicy"],
+    )
+    inspection = _blender_inspection(clean_path)
+    if not inspection or not inspection.get("triangleBudgetPassed"):
+        raise tool_error(MCP_ERROR, "Blender output exceeds triangle budget", provider="blender", status="quality_rejected")
+    if not inspection.get("gameReadyPassed"):
+        raise tool_error(MCP_ERROR, "Blender output failed the GameReady quality gate", provider="blender", status="quality_rejected")
+    content_hash = hashlib.sha256(clean_path.read_bytes()).hexdigest()
+    unity_path = _unity_import_path(task, clean_path, content_hash)
+    completed = {
+        **task,
+        "status": "SUCCEEDED",
+        "provider": provider,
+        "assetPath": str(clean_path),
+        "unityAssetPath": str(unity_path),
+        "inspection": inspection,
+        "provenance": {**provenance, "gameReadySha256": content_hash},
+        "completedAt": _now(),
+    }
+    _write_json(_task_path(task["taskId"]), completed)
+    return {
+        "taskId": task["taskId"],
+        "status": "SUCCEEDED",
+        "provider": provider,
+        "assetPath": str(clean_path),
+        "unityAssetPath": str(unity_path),
+        "modelFormat": output_format,
+        "inspection": inspection,
+        "provenance": completed["provenance"],
+    }
+
+
+async def _try_cc0(package: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
+    acquisition = await cc0_client.acquire(package["assetSpec"])
+    status = acquisition.get("status", "provider_failed")
+    if status != "found":
+        return acquisition
+    content = acquisition.pop("content")
+    source_format = acquisition["format"]
+    source_path = (
+        _require_external_runtime_root()
+        / "3d"
+        / "downloads"
+        / task["gameId"]
+        / f"{acquisition['assetId']}.{source_format}"
+    )
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(content)
+    task.update(
+        {
+            "provider": acquisition["provider"],
+            "phase": "cc0_validation",
+            "modelFormat": source_format,
+            "taskId": f"cc0-{package['requestId']}",
+        }
+    )
+    return _game_ready_result(
+        task,
+        source_path,
+        provider=acquisition["provider"],
+        provenance=acquisition["provenance"],
+    )
 
 
 @mcp.tool(description="Compose provider-neutral generation and reference prompts from an asset spec.")
@@ -665,8 +835,8 @@ def validate_3d_asset_prompts(
 
 @mcp.tool(
     description=(
-        "Compose, validate, and save a provider-neutral 3D request package. No provider is "
-        "configured, so this never returns a generated model or a 2D placeholder."
+        "Compose, validate, and save a provider-neutral 3D request package in the external "
+        "Unity workspace staging area."
     )
 )
 @expects_dict_return
@@ -675,15 +845,16 @@ def prepare_3d_asset_request(
     assetSpec: dict[str, Any],
     gameId: str | None = None,
 ) -> dict[str, Any]:
+    _require_external_runtime_root()
     feature_id = _require_id(featureId, "featureId")
     game_id = _require_id(gameId or os.getenv("ASSET_DEFAULT_GAME_ID", "default"), "gameId")
     request_path, package, provenance = _request_package(feature_id, game_id, assetSpec)
     package.update(
         {
-        "status": "provider_unconfigured",
-        "provider": {
-            "configured": False,
-            "message": "No 3D provider is configured; use this package for approved external generation.",
+            "status": "prepared",
+            "provider": {
+            "configured": meshy_client.is_configured(),
+            "message": "CC0 discovery is always attempted before any configured Meshy fallback.",
         },
         }
     )
@@ -696,18 +867,19 @@ def prepare_3d_asset_request(
         "modelFormat": provenance["modelFormat"],
         "textureStrategy": package["textureStrategy"],
         "status": package["status"],
-        "providerConfigured": False,
+        "providerConfigured": meshy_client.is_configured(),
     }
 
 
-@mcp.tool(description="Submit a validated 3D asset specification to the configured Meshy provider.")
+@mcp.tool(description="Acquire CC0 first and submit to Meshy only after a verified not_found result.")
 @expects_dict_return
-def submit_3d_asset_generation(
+async def submit_3d_asset_generation(
     featureId: str,
     assetSpec: dict[str, Any],
     referenceImageUrl: str = "",
     gameId: str | None = None,
 ) -> dict[str, Any]:
+    _require_external_runtime_root()
     feature_id = _require_id(featureId, "featureId")
     game_id = _require_id(gameId or os.getenv("ASSET_DEFAULT_GAME_ID", "default"), "gameId")
     request_path, package, provenance = _request_package(feature_id, game_id, assetSpec)
@@ -718,44 +890,103 @@ def submit_3d_asset_generation(
     model_format = "glb" if method == "image_to_3d" else output_format
     max_triangles = _meshy_triangle_limit(assetSpec, method)
     spec = _validate_asset_spec(assetSpec)
+    task = {
+        "provider": "cc0",
+        "taskId": package["requestId"],
+        "phase": "cc0_search",
+        "method": method,
+        "modelFormat": model_format,
+        "outputFormat": output_format,
+        "gameId": game_id,
+        "featureId": feature_id,
+        "assetId": provenance["assetId"],
+        "requestPath": str(request_path),
+        "sourceSpecSha256": provenance["sourceSpecSha256"],
+        "animationRequired": spec["animationRequired"],
+        "textureRequired": spec["textureRequired"],
+        "texturePrompt": _meshy_texture_prompt(spec),
+        "textureStrategy": package["textureStrategy"],
+        "textureMaterial": spec["textureMaterial"],
+        "normalPolicy": spec["normalPolicy"],
+        "maxTriangles": max_triangles,
+        "createdAt": _now(),
+    }
+    cc0_result = await _try_cc0(package, task)
+    cc0_status = cc0_result.get("status")
+    if cc0_status == "SUCCEEDED":
+        package.update({"status": "found", "provider": cc0_result["provider"], "provenance": cc0_result["provenance"]})
+        _write_json(request_path, package)
+        return {"requestId": package["requestId"], "cc0Status": "found", **cc0_result}
+    if cc0_status != "not_found":
+        package.update({"status": cc0_status, "cc0": cc0_result})
+        _write_json(request_path, package)
+        return {
+            "requestId": package["requestId"],
+            "status": cc0_status,
+            "cc0Status": cc0_status,
+            "provider": cc0_result.get("provider"),
+            "reason": cc0_result.get("reason", ""),
+        }
+    if not meshy_client.is_configured():
+        raise tool_error(
+            MCP_ERROR,
+            "CC0 search returned not_found and MESHY_API_KEY is not set",
+            provider="meshy",
+            status="provider_unconfigured",
+            cc0Status="not_found",
+        )
+    submission_path = _require_external_runtime_root() / "3d" / "submissions" / f"{package['requestId']}.json"
+    if submission_path.is_file():
+        try:
+            existing = json.loads(submission_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+        existing_id = existing.get("taskId")
+        if isinstance(existing_id, str) and existing_id:
+            return {
+                "requestId": package["requestId"],
+                "taskId": existing_id,
+                "status": "duplicate_blocked",
+                "cc0Status": "not_found",
+                "provider": "meshy",
+            }
     meshy_prompt = ""
-    texture_prompt = _meshy_texture_prompt(spec)
+    texture_prompt = task["texturePrompt"]
     try:
+        balance_before = await _await_result(meshy_client.get_balance())
         if method == "image_to_3d":
-            task_id = meshy_client.create_image_task(
+            credit_estimate = meshy_client.estimate_credits("image_smart_topology_untextured")
+            task_id = await _await_result(meshy_client.create_image_task(
                 _require_reference_image(referenceImageUrl, "referenceImageUrl"),
                 model_format,
                 max_triangles,
-            )
+            ))
             phase = "generation"
         else:
+            credit_estimate = meshy_client.estimate_credits("text_preview_meshy_6")
             meshy_prompt, texture_prompt = _meshy_prompts(assetSpec)
-            task_id = meshy_client.create_text_preview(
+            task_id = await _await_result(meshy_client.create_text_preview(
                 meshy_prompt, model_format, max_triangles
-            )
+            ))
             phase = "preview"
     except meshy_client.MeshyUnavailable as exc:
         _meshy_error(exc)
 
     task = {
+        **task,
         "provider": "meshy",
         "taskId": task_id,
         "phase": phase,
         "method": method,
         "modelFormat": model_format,
         "outputFormat": output_format,
-        "gameId": game_id,
-        "featureId": feature_id,
-        "requestPath": str(request_path),
-        "animationRequired": spec["animationRequired"],
-        "textureRequired": spec["textureRequired"],
         "texturePrompt": texture_prompt,
-        "textureStrategy": package["textureStrategy"],
-        "textureMaterial": spec["textureMaterial"],
-        "normalPolicy": spec["normalPolicy"],
-        "maxTriangles": max_triangles,
         "providerPrompt": meshy_prompt,
         "topology": "triangle" if method == "text_to_3d" else "",
+        "cc0Status": "not_found",
+        "estimatedCredits": credit_estimate["credits"],
+        "creditEstimate": credit_estimate,
+        "balanceBefore": balance_before,
         "createdAt": _now(),
     }
     package.update(
@@ -766,6 +997,7 @@ def submit_3d_asset_generation(
     )
     _write_json(request_path, package)
     _write_json(_task_path(task_id), task)
+    _write_json(submission_path, {"requestId": package["requestId"], "taskId": task_id, "createdAt": _now()})
     return {
         "requestId": package["requestId"],
         "requestPath": str(request_path),
@@ -775,12 +1007,16 @@ def submit_3d_asset_generation(
         "providerConfigured": True,
         "textureStrategy": package["textureStrategy"],
         "status": "submitted",
+        "cc0Status": "not_found",
+        "estimatedCredits": task["estimatedCredits"],
+        "creditEstimate": task["creditEstimate"],
+        "balanceBefore": balance_before,
     }
 
 
 @mcp.tool(description="Refine a completed Meshy text-to-3D preview into a textured model.")
 @expects_dict_return
-def refine_3d_asset_generation(taskId: str) -> dict[str, Any]:
+async def refine_3d_asset_generation(taskId: str) -> dict[str, Any]:
     task_id = _require_id(taskId, "taskId")
     task = _read_task(task_id)
     if (task["method"], task["phase"]) not in {
@@ -789,7 +1025,7 @@ def refine_3d_asset_generation(taskId: str) -> dict[str, Any]:
     }:
         raise tool_error(VALIDATION_ERROR, "only completed Meshy geometry can be refined")
     try:
-        current = meshy_client.get_task(task["method"], task_id)
+        current = await _await_result(meshy_client.get_task(task["method"], task_id))
     except meshy_client.MeshyUnavailable as exc:
         _meshy_error(exc)
     if current.get("status") != "SUCCEEDED":
@@ -803,18 +1039,28 @@ def refine_3d_asset_generation(taskId: str) -> dict[str, Any]:
         and task["textureStrategy"]["mode"] == "generated_texture"
     ):
         try:
-            refine_task_id = meshy_client.create_text_refine(
+            balance_before = await _await_result(meshy_client.get_balance())
+            refine_task_id = await _await_result(meshy_client.create_text_refine(
                 task_id, task["modelFormat"], task["texturePrompt"]
-            )
+            ))
         except meshy_client.MeshyUnavailable as exc:
             _meshy_error(exc)
-        refined = {**task, "taskId": refine_task_id, "phase": "refine", "createdAt": _now()}
+        estimate = meshy_client.estimate_credits("text_refine_2k")
+        refined = {
+            **task,
+            "taskId": refine_task_id,
+            "phase": "refine",
+            "balanceBefore": balance_before,
+            "estimatedCredits": estimate["credits"],
+            "creditEstimate": estimate,
+            "createdAt": _now(),
+        }
     else:
         model_url = _require_meshy_model_url(
             (current.get("model_urls") or {}).get(task["modelFormat"])
         )
         try:
-            output = meshy_client.download_model(model_url)
+            output = await _await_result(meshy_client.download_model(model_url))
         except meshy_client.MeshyUnavailable as exc:
             _meshy_error(exc)
         raw_path = ROOT / "3d" / "models" / task["gameId"] / f"{task_id}.{task['modelFormat']}"
@@ -851,6 +1097,27 @@ def refine_3d_asset_generation(taskId: str) -> dict[str, Any]:
                     task["normalPolicy"],
                 )
                 inspection = _blender_inspection(final_path) or inspection
+            final_hash = hashlib.sha256(final_path.read_bytes()).hexdigest()
+            unity_path = _unity_import_path(task, final_path, final_hash)
+            try:
+                balance_after = await _await_result(meshy_client.get_balance())
+            except meshy_client.MeshyUnavailable as exc:
+                balance_after = {"error": str(exc), "status": exc.status}
+            consumed_credits = _actual_credits(current, task.get("balanceBefore"), balance_after)
+            provenance = {
+                "license": "generated",
+                "provider": "meshy",
+                "taskId": task_id,
+                "estimatedCredits": task.get("estimatedCredits"),
+                "consumedCredits": consumed_credits,
+                "balanceBefore": task.get("balanceBefore"),
+                "balanceAfter": balance_after,
+                "downloadedAt": _now(),
+                "sha256": hashlib.sha256(output).hexdigest(),
+                "gameReadySha256": final_hash,
+            }
+            task.update({"status": "SUCCEEDED", "unityAssetPath": str(unity_path), "provenance": provenance})
+            _write_json(_task_path(task_id), task)
             return {
                 "taskId": task_id,
                 "phase": (
@@ -861,16 +1128,19 @@ def refine_3d_asset_generation(taskId: str) -> dict[str, Any]:
                 "provider": "blender",
                 "status": "SUCCEEDED",
                 "assetPath": str(final_path),
+                "unityAssetPath": str(unity_path),
                 "modelFormat": task.get("outputFormat", task["modelFormat"]),
                 "inspection": inspection,
                 "textureStrategy": task["textureStrategy"],
+                "provenance": provenance,
             }
         try:
-            refine_task_id = meshy_client.create_retexture_task(
+            balance_before = await _await_result(meshy_client.get_balance())
+            refine_task_id = await _await_result(meshy_client.create_retexture_task(
                 clean_model,
                 task.get("outputFormat", task["modelFormat"]),
                 task["texturePrompt"],
-            )
+            ))
         except meshy_client.MeshyUnavailable as exc:
             _meshy_error(exc)
         refined = {
@@ -882,6 +1152,9 @@ def refine_3d_asset_generation(taskId: str) -> dict[str, Any]:
             "sourceTaskId": task_id,
             "postprocessedPath": str(clean_path),
             "postprocessInspection": inspection,
+            "balanceBefore": balance_before,
+            "estimatedCredits": meshy_client.estimate_credits("retexture_2k")["credits"],
+            "creditEstimate": meshy_client.estimate_credits("retexture_2k"),
             "createdAt": _now(),
         }
     _write_json(_task_path(refine_task_id), refined)
@@ -890,16 +1163,18 @@ def refine_3d_asset_generation(taskId: str) -> dict[str, Any]:
         "phase": refined["phase"],
         "provider": "meshy",
         "status": "submitted",
+        "estimatedCredits": refined.get("estimatedCredits"),
+        "balanceBefore": refined.get("balanceBefore"),
     }
 
 
 @mcp.tool(description="Get a Meshy 3D generation status and download its completed model.")
 @expects_dict_return
-def get_3d_asset_generation(taskId: str) -> dict[str, Any]:
+async def get_3d_asset_generation(taskId: str) -> dict[str, Any]:
     task_id = _require_id(taskId, "taskId")
     task = _read_task(task_id)
     try:
-        current = meshy_client.get_task(task["method"], task_id)
+        current = await _await_result(meshy_client.get_task(task["method"], task_id))
     except meshy_client.MeshyUnavailable as exc:
         _meshy_error(exc)
     status = current.get("status", "UNKNOWN")
@@ -909,6 +1184,7 @@ def get_3d_asset_generation(taskId: str) -> dict[str, Any]:
         "provider": "meshy",
         "status": status,
         "progress": current.get("progress"),
+        "consumedCredits": current.get("consumed_credits"),
     }
     if status != "SUCCEEDED":
         result["providerError"] = (current.get("task_error") or {}).get("message", "")
@@ -916,11 +1192,42 @@ def get_3d_asset_generation(taskId: str) -> dict[str, Any]:
     model_url = _require_meshy_model_url((current.get("model_urls") or {}).get(task["modelFormat"]))
     output_path = ROOT / "3d" / "models" / task["gameId"] / f"{task_id}.{task['modelFormat']}"
     try:
-        output = meshy_client.download_model(model_url)
+        output = await _await_result(meshy_client.download_model(model_url))
     except meshy_client.MeshyUnavailable as exc:
         _meshy_error(exc)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(output)
+    if task["phase"] in {"refine", "retexture"}:
+        try:
+            balance_after = await _await_result(meshy_client.get_balance())
+        except meshy_client.MeshyUnavailable as exc:
+            balance_after = {"error": str(exc), "status": exc.status}
+        consumed_credits = _actual_credits(current, task.get("balanceBefore"), balance_after)
+        finalized = _game_ready_result(
+            task,
+            output_path,
+            provider="meshy",
+            provenance={
+                "license": "generated",
+                "provider": "meshy",
+                "taskId": task_id,
+                "sourceSpecSha256": task["sourceSpecSha256"],
+                "estimatedCredits": task.get("estimatedCredits"),
+                "consumedCredits": consumed_credits,
+                "balanceBefore": task.get("balanceBefore"),
+                "balanceAfter": balance_after,
+                "downloadedAt": _now(),
+                "sha256": hashlib.sha256(output).hexdigest(),
+            },
+        )
+        finalized.update(
+            {
+                "phase": task["phase"],
+                "progress": current.get("progress"),
+                "consumedCredits": consumed_credits,
+            }
+        )
+        return finalized
     result.update(
         {
             "assetPath": str(output_path),
@@ -934,7 +1241,37 @@ def get_3d_asset_generation(taskId: str) -> dict[str, Any]:
             ),
         }
     )
+    try:
+        result["balanceAfter"] = await _await_result(meshy_client.get_balance())
+    except meshy_client.MeshyUnavailable as exc:
+        result["balanceEvidenceError"] = {"status": exc.status, "message": str(exc)}
+    result["consumedCredits"] = _actual_credits(
+        current, task.get("balanceBefore"), result.get("balanceAfter")
+    )
+    task.update(
+        {
+            "status": status,
+            "consumedCredits": result.get("consumedCredits"),
+            "balanceAfter": result.get("balanceAfter"),
+            "providerEvidence": current,
+        }
+    )
+    _write_json(_task_path(task_id), task)
     return result
+
+
+@mcp.tool(description="Cancel a resumable Meshy task by provider task id.")
+@expects_dict_return
+async def cancel_3d_asset_generation(taskId: str) -> dict[str, Any]:
+    task_id = _require_id(taskId, "taskId")
+    task = _read_task(task_id)
+    try:
+        evidence = await _await_result(meshy_client.cancel_task(task["method"], task_id))
+    except meshy_client.MeshyUnavailable as exc:
+        _meshy_error(exc)
+    task.update({"status": "CANCELED", "canceledAt": _now(), "cancelEvidence": evidence})
+    _write_json(_task_path(task_id), task)
+    return {"taskId": task_id, "status": "CANCELED", "provider": "meshy"}
 
 
 if __name__ == "__main__":
