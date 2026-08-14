@@ -16,7 +16,7 @@ Before starting normal development work, identify the related GitHub Issue and r
 Pay particular attention to Objective, Scope, Out of Scope, Acceptance Criteria, and Test.
 
 1. Do not start normal development work without a valid, open Issue.
-2. Write the Issue title and explanatory prose in Korean. Keep its bracketed Issue contract type in exact English, such as `[pipeline]`; do not translate it. Preserve code identifiers, file paths, commands, and required GitHub keywords exactly.
+2. Write Issue and PR titles and explanatory prose in Korean. Keep the bracketed Issue contract type in exact English, such as `[pipeline]`; do not translate it. Preserve code identifiers, file paths, commands, and required GitHub keywords exactly.
 3. Use `<issue-number>-<type>-<short-description>` for branch names.
    `type` is one of `feat`, `fix`, `refactor`, `test`, `docs`, or `chore`; the description uses lowercase letters and hyphens only.
 4. Treat one independently verifiable outcome as one Issue. Keep its required implementation steps, tests, documentation, and configuration together.
