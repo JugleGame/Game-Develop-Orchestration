@@ -28,5 +28,7 @@ jobs:
         run: python -m pytest Src/McpServers/tests
       - name: Run workflow contract tests
         run: node --test .github/scripts/issue-contract.test.js
+      - name: Run Issue metadata tests
+        run: node --test .github/scripts/issue-metadata.test.js
       - name: Verify MCP contracts
         run: python Src/McpServers/verify_contract.py
