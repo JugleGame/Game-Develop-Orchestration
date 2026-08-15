@@ -6,9 +6,11 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
+import anyio
 from mcp.types import CallToolResult, TextContent
 
 from common.errors import MCP_ERROR, UNITY_BUILD_ERROR, VALIDATION_ERROR, tool_error
@@ -1409,6 +1411,111 @@ def _split_record(value: str, fields: tuple[str, ...]) -> dict[str, str]:
     parts = str(value).split(":")
     parts += [""] * (len(fields) - len(parts))
     return dict(zip(fields, parts))
+
+# ---------------------------------------------------------------------------
+# 행동 검증 — 이름으로 지목한 테스트를 실제로 돌린다
+# ---------------------------------------------------------------------------
+_TEST_POLL_SECONDS = 3.0
+
+
+@mcp.tool(
+    description=(
+        "Run named Unity tests (EditMode or PlayMode) and return per-test results. "
+        "Requires PipelineTestReporter in the target project's Assets/Editor."
+    )
+)
+@expects_dict_return
+async def run_named_tests(
+    gameId: str,
+    testNames: list[str] | None = None,
+    mode: str = "PlayMode",
+    timeoutSeconds: float = 300.0,
+) -> dict[str, Any]:
+    """합격 기준에 적힌 테스트 이름을 실제 증거로 바꾸는 단계다.
+
+    ``run_playmode_test`` 는 10초 돌리고 콘솔 에러만 줍는다. 예외를 던지지 않는
+    결함은 그 검사를 통과한다 — 접지 판정이 항상 참을 돌려주어 점프가 무한히
+    가능했던 상태가 컴파일·레이아웃·PlayMode 세 게이트를 모두 통과했다.
+
+    테스트 실행은 도메인 리로드를 넘어가므로 여기서 기다릴 수 없다. 시작만
+    보내고, 대상 프로젝트에 설치된 리포터가 남긴 기록을 폴링한다.
+    """
+
+    gameId = _require(gameId, "gameId")
+    if mode not in assembly.TEST_MODES:
+        raise tool_error(
+            VALIDATION_ERROR, f"mode 는 {assembly.TEST_MODES} 중 하나여야 합니다", gameId=gameId
+        )
+    if timeoutSeconds <= 0:
+        raise tool_error(VALIDATION_ERROR, "timeoutSeconds 는 0보다 커야 합니다", gameId=gameId)
+
+    try:
+        names = [
+            assembly.require_name(item, f"testNames[{index}]")
+            for index, item in enumerate(testNames or [])
+        ]
+    except AssemblyError as exc:
+        raise tool_error(VALIDATION_ERROR, str(exc), gameId=gameId) from exc
+
+    await _run_command(
+        assembly.test_start_command(mode, names),
+        f"AutoGen test start {mode}",
+        _assembly_timeout(),
+    )
+
+    deadline = time.monotonic() + timeoutSeconds
+    inner: dict[str, Any] = {}
+    status = "starting"
+    while time.monotonic() < deadline:
+        await anyio.sleep(_TEST_POLL_SECONDS)
+        inner = await _run_command(
+            assembly.test_poll_command(),
+            "AutoGen test poll",
+            _assembly_timeout(),
+        )
+        status = str(inner.get("status", "absent"))
+        if status in ("completed", "absent"):
+            break
+
+    if status == "absent":
+        raise tool_error(
+            MCP_ERROR,
+            "PipelineTestReporter is not installed in the Unity project; "
+            "copy templates/unity-editor/PipelineTestReporter.cs and its .asmdef "
+            "into Assets/Editor",
+            gameId=gameId,
+        )
+
+    results = list(inner.get("results") or [])
+    if status == "completed" and not results:
+        # A filter that matches nothing is not a pass. Reporting it as one is how an
+        # acceptance criterion gets ticked without any test behind it.
+        raise tool_error(
+            VALIDATION_ERROR,
+            "no test matched the requested names",
+            gameId=gameId,
+            testNames=names,
+            mode=mode,
+        )
+
+    failed = [item for item in results if str(item.get("status", "")).lower() != "passed"]
+    timed_out = status != "completed"
+
+    logger.info(
+        "Named tests finished",
+        extra={"game_id": gameId, "mode": mode, "tests": len(results), "failed": len(failed)},
+    )
+    return {
+        "gameId": gameId,
+        "mode": mode,
+        "requested": names,
+        "status": "timeout" if timed_out else "completed",
+        "passed": not timed_out and not failed,
+        "testCount": len(results),
+        "failedCount": len(failed),
+        "results": results,
+        "failures": failed,
+    }
 
 if __name__ == "__main__":
     serve(mcp)

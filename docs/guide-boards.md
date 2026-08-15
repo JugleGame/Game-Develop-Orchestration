@@ -192,6 +192,23 @@ an execution agent copies it into the target Unity project's `Assets/Editor/`
 directory. Treat compilation and an import test as Unity-side evidence, not as
 evidence supplied by this template alone.
 
+## Unity test reporter
+
+[`templates/unity-editor/PipelineTestReporter.cs`](../templates/unity-editor/PipelineTestReporter.cs)
+and its `.asmdef` are copied into `Assets/Editor/` alongside the other templates. The MCP
+tool `run_named_tests` starts a filtered run through `TestRunnerApi`; this reporter records
+each finished test into `EditorPrefs`, and the tool polls those keys.
+
+Two constraints force that shape. A test run crosses a domain reload, so callbacks
+registered by an injected command die before the run ends; an `[InitializeOnLoad]` class in
+the project re-registers after every reload. And the MCP command runner refuses source that
+merely mentions `File.WriteAllText`, so `EditorPrefs` carries the hand-off instead of a
+results file.
+
+Without the reporter installed, `run_named_tests` reports the reporter as absent rather than
+guessing. Results are written after every finished test, so a run that stalls still leaves
+behind what it managed to prove.
+
 ## Unity animation debugging tool
 
 [`templates/unity-editor/AnimationDebugWindow.cs`](../templates/unity-editor/AnimationDebugWindow.cs)
