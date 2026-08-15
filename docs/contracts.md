@@ -78,7 +78,14 @@ Server: `UnityMcpServer`.
   motions, parameters with their types, and per-clip frame counts — without judging it. An `Animator`
   with no controller raises no error at runtime, so `inspect_project_layout` reports that case as
   layout rule `L8`.
-- Evidence: `build_project`, `run_playmode_test`, `get_compile_errors`,
+- `run_named_tests` runs the tests an acceptance criterion names, in EditMode or PlayMode, and
+  returns each test with its status, duration, and failure message. `run_playmode_test` only
+  collects console errors, so a defect that throws nothing passes it; a named test is what turns
+  a criterion such as `Test_Player_NoDoubleJump` into evidence. A filter that matches no test is
+  reported as an error, never as a pass. Because a run crosses a domain reload, results are
+  recorded by `templates/unity-editor/PipelineTestReporter.cs`, which the target project must
+  carry in `Assets/Editor`; its absence is reported as such.
+- Evidence: `build_project`, `run_playmode_test`, `run_named_tests`, `get_compile_errors`,
   `inspect_project_layout`, `unity_bridge_status`, `inspect_animator`.
 - Return evidence; never declare final PASS.
 

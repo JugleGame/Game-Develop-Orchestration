@@ -1155,3 +1155,71 @@ def animator_inspect_command(target: str) -> str:
             + "}}";
         result.Log("{RESULT_MARKER} {{0}}", payload);"""
     return _wrap(body)
+
+
+# ---------------------------------------------------------------------------
+# run_named_tests
+# ---------------------------------------------------------------------------
+#: Test modes ``TestRunnerApi`` accepts.
+TEST_MODES = ("EditMode", "PlayMode")
+
+#: Keys the editor-side reporter writes. Kept here so the poll command and the
+#: template cannot drift apart silently.
+TEST_STATUS_KEY = "pipeline.tests.status"
+TEST_RESULTS_KEY = "pipeline.tests.results"
+TEST_COUNT_KEY = "pipeline.tests.count"
+
+
+def test_start_command(mode: str, test_names: list[str]) -> str:
+    """Start a filtered test run and leave the waiting to the poll command.
+
+    A test run crosses a domain reload, so nothing registered here survives to see
+    the result. This only starts the run; ``PipelineTestReporter`` in the target
+    project records what happens (see ``docs/guide-boards.md``).
+    """
+
+    body = f"""        string[] names = new string[] {{ {_string_array(test_names)} }};
+
+        global::UnityEditor.EditorPrefs.SetString({_literal(TEST_STATUS_KEY)}, "starting");
+        global::UnityEditor.EditorPrefs.SetString({_literal(TEST_RESULTS_KEY)}, "");
+        global::UnityEditor.EditorPrefs.SetInt({_literal(TEST_COUNT_KEY)}, 0);
+
+        var api = global::UnityEngine.ScriptableObject
+            .CreateInstance<global::UnityEditor.TestTools.TestRunner.Api.TestRunnerApi>();
+        var filter = new global::UnityEditor.TestTools.TestRunner.Api.Filter();
+        filter.testMode = global::UnityEditor.TestTools.TestRunner.Api.TestMode.{mode};
+        if (names.Length > 0)
+        {{
+            filter.testNames = names;
+        }}
+
+        api.Execute(new global::UnityEditor.TestTools.TestRunner.Api.ExecutionSettings(filter));
+
+        string payload = "{{\\"success\\":true"
+            + ",\\"mode\\":\\"{mode}\\""
+            + ",\\"requested\\":" + names.Length
+            + "}}";
+        result.Log("{RESULT_MARKER} {{0}}", payload);"""
+    return _wrap(body)
+
+
+def test_poll_command() -> str:
+    """Read whatever the reporter has written so far.
+
+    ``status`` comes back as ``absent`` when the reporter was never installed, which
+    is a different problem from a run that is still going.
+    """
+
+    body = f"""        string status = global::UnityEditor.EditorPrefs
+            .GetString({_literal(TEST_STATUS_KEY)}, "absent");
+        string results = global::UnityEditor.EditorPrefs
+            .GetString({_literal(TEST_RESULTS_KEY)}, "");
+        int count = global::UnityEditor.EditorPrefs.GetInt({_literal(TEST_COUNT_KEY)}, 0);
+
+        string payload = "{{\\"success\\":true"
+            + ",\\"status\\":\\"" + status + "\\""
+            + ",\\"count\\":" + count
+            + ",\\"results\\":" + (results.Length > 0 ? results : "[]")
+            + "}}";
+        result.Log("{RESULT_MARKER} {{0}}", payload);"""
+    return _wrap(body)
