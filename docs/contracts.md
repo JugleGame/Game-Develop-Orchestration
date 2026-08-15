@@ -108,7 +108,15 @@ Server: `AssetGenMcpServer`.
   `no_background`: the endpoint defaults it to false and then returns every frame on an opaque
   plate, which cannot be used as a sprite. Each frame is inspected as it is saved, so a sequence
   that still comes back opaque is reported as `technicalStatus: fail` with
-  `transparent_background_missing` instead of waiting for a later `inspect_asset` call. Frames land under `ASSET_ROOT/assets/<game>/
+  `transparent_background_missing` instead of waiting for a later `inspect_asset` call.
+  The frames are also measured *as a motion*, which a per-image check cannot do: subject drift
+  between frames, subject size stability, how much of the canvas each step redraws, and how far
+  the last frame sits from the first. Those come back as `sequenceWarnings` and `sequenceMetrics`.
+  They are warnings, never failures — a sequence that legitimately crosses the canvas measures the
+  same as one that shakes in place, so the judgment stays with the host and the human.
+  Each frame also carries a `footAnchor`: the normalised pivot at the bottom centre of its own
+  subject. Unity anchors a sprite by its canvas unless told otherwise, so without it a few pixels
+  of drift per frame become on-screen shake. Frames land under `ASSET_ROOT/assets/<game>/
   animations/<feature>_<digest>/` with zero-padded names that sort into play order, beside an
   `animation.json` index recording the action, first-frame asset ID, provider job ID, and usage.
   Each frame is an ordinary manifest asset: it starts `pending` and needs the same human review

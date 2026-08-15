@@ -875,6 +875,7 @@ def generate_2d_animation(
     out_dir = ROOT / "assets" / resolved_game / "animations" / f"{feature_id}_{motion_digest}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    sequence = quality.inspect_sequence(frames, kind)
     records: list[dict[str, Any]] = []
     failures: set[str] = set()
     for index, frame in enumerate(frames):
@@ -921,6 +922,9 @@ def generate_2d_animation(
                 "status": PENDING,
                 "technicalStatus": inspection["technicalStatus"],
                 "failures": inspection["failures"],
+                # Unity anchors a sprite by its canvas unless told otherwise, and the
+                # subject sits a few pixels differently in every generated frame.
+                "footAnchor": list(sequence["anchors"][index]),
             }
         )
 
@@ -937,6 +941,8 @@ def generate_2d_animation(
                 "usage": usage,
                 "technicalStatus": "fail" if failures else "pass",
                 "technicalFailures": sorted(failures),
+                "sequenceWarnings": sequence["warnings"],
+                "sequenceMetrics": sequence["metrics"],
                 "frames": records,
             },
             indent=2,
@@ -960,6 +966,8 @@ def generate_2d_animation(
         "usage": usage,
         "technicalStatus": "fail" if failures else "pass",
         "technicalFailures": sorted(failures),
+        "sequenceWarnings": sequence["warnings"],
+        "sequenceMetrics": sequence["metrics"],
     }
 
 
