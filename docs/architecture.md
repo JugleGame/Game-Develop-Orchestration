@@ -9,7 +9,7 @@ Web, FastAPI, or LangGraph orchestrator.
 flowchart TB
     U["User"] --> H["Planning / execution host agent"]
     H --> R["Research MCP: evidence, draft/spec storage, dependency lint"]
-    H --> N["Unity MCP: apply, assemble, build, PlayMode, validation"]
+    H --> N["Unity MCP: apply, assemble, named tests, PlayMode, build"]
     H --> A["Asset MCP: 2D asset requests and review metadata"]
     H --> A3["3D Asset MCP: Meshy generation, Blender GameReady"]
     R --> DB["Research DB"]
@@ -43,7 +43,7 @@ flowchart TB
 
 - Validate completed architecture and C#.
 - Apply files; assemble scenes, prefabs, and references.
-- Return raw compile, build, PlayMode, and layout evidence.
+- Return raw compile, named-test, PlayMode console, build, and layout evidence.
 
 ### Asset MCP
 
@@ -74,9 +74,11 @@ Drafts are directly editable. Only a fully published, acyclic specification grap
 as a hand-off package. After export, code and asset requests may be prepared in parallel. Asset
 generation follows a bounded host-agent loop: complete the brief, generate one MCP prototype,
 inspect technical evidence, obtain semantic and human review, then generate API variations from
-one to four approved style anchors. Import and bind assets only after validation. Make the final
-feature judgment only after build, compile, PlayMode, and layout evidence is available. Retry the
-same failure at most three times, then ask the user.
+one to four approved style anchors. Import and bind assets only after validation. For each Unity
+feature, apply [the functional QA policy](unity-functional-qa.md): compile, focal named tests,
+PlayMode console smoke, regression tests, and layout checks precede the final build. Make the final
+feature judgment only after all required evidence is available. Retry the same failure at most
+three times, then ask the user.
 
 ## Source of truth and write order
 

@@ -29,6 +29,7 @@ Read only what the task needs:
 - Setup and runtime: [docs/operations.md](docs/operations.md)
 - Open work: [docs/backlog.md](docs/backlog.md)
 - AI migration, hand-off, graph, asset, and Unity-tool boards: [docs/guide-boards.md](docs/guide-boards.md)
+- Unity feature QA workflow and test contract: [docs/unity-functional-qa.md](docs/unity-functional-qa.md)
 - GitHub Issue-based work and required repository settings: [docs/github-issue-workflow.md](docs/github-issue-workflow.md)
 
 ## Workflow
@@ -36,10 +37,14 @@ Read only what the task needs:
 1. Interpret the user's idea and query Research for evidence and counterexamples.
 2. Draft a blueprint and feature specs; obtain user approval.
 3. Draft the architecture and C#.
-4. Use Unity MCP to validate, apply, assemble, build, and run PlayMode checks.
+4. For every Unity feature, follow [the functional QA policy](docs/unity-functional-qa.md):
+   define its named test, implement it, then run compile, focal functional, console smoke,
+   regression, and layout checks. Run the final build only after those gates pass.
 5. Use Asset MCP to generate and validate required assets.
 6. Judge the collected evidence. Retry a repeated failure at most three times, then escalate.
 7. After user approval, use native Git to commit, push, or tag.
+
+`build_project` success and `run_playmode_test` success alone never prove that a feature works.
 
 ## Setup
 

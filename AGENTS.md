@@ -6,6 +6,11 @@ Read `README.md` first, then only the document required by the task:
 - MCP tools or ownership: `docs/contracts.md`
 - Setup or environment: `docs/operations.md`
 - Open work: `docs/backlog.md`
+- Unity feature implementation or QA: `docs/unity-functional-qa.md`
+
+Before implementing or completing any Unity gameplay feature, read and follow
+`docs/unity-functional-qa.md`. Never treat `build_project` or `run_playmode_test` alone as
+functional PASS.
 
 Never add model calls inside MCP servers. Use native Git only within user-approved scope.
 Treat `var/` as disposable output, never source.
