@@ -927,26 +927,26 @@ def animator_controller_command(
 
         for (int i = 0; i < conditionOwner.Length; i++)
         {{
-            var mode = global::UnityEngine.AnimatorConditionMode.If;
+            var mode = global::UnityEditor.Animations.AnimatorConditionMode.If;
             if (conditionModes[i] == "IfNot")
             {{
-                mode = global::UnityEngine.AnimatorConditionMode.IfNot;
+                mode = global::UnityEditor.Animations.AnimatorConditionMode.IfNot;
             }}
             else if (conditionModes[i] == "Greater")
             {{
-                mode = global::UnityEngine.AnimatorConditionMode.Greater;
+                mode = global::UnityEditor.Animations.AnimatorConditionMode.Greater;
             }}
             else if (conditionModes[i] == "Less")
             {{
-                mode = global::UnityEngine.AnimatorConditionMode.Less;
+                mode = global::UnityEditor.Animations.AnimatorConditionMode.Less;
             }}
             else if (conditionModes[i] == "Equals")
             {{
-                mode = global::UnityEngine.AnimatorConditionMode.Equals;
+                mode = global::UnityEditor.Animations.AnimatorConditionMode.Equals;
             }}
             else if (conditionModes[i] == "NotEqual")
             {{
-                mode = global::UnityEngine.AnimatorConditionMode.NotEqual;
+                mode = global::UnityEditor.Animations.AnimatorConditionMode.NotEqual;
             }}
             transitions[conditionOwner[i]].AddCondition(
                 mode, conditionThresholds[i], conditionParameters[i]);
