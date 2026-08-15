@@ -798,6 +798,157 @@ def generate_2d_variations(
 
 @mcp.tool(
     description=(
+        "Animate an approved 2D prototype into an ordered frame sequence through PixelLab. "
+        "The approved prototype is the first frame, so the human gate still holds."
+    )
+)
+@expects_dict_return
+def generate_2d_animation(
+    featureId: str,
+    firstFrameAssetId: str,
+    action: str,
+    gameId: str | None = None,
+    frameCount: int = 8,
+    description: str = "",
+) -> dict[str, Any]:
+    """Turn one approved sprite into an ordered motion sequence.
+
+    The sequence is one review unit: half an approved walk cycle cannot be
+    played, so the frames share a status the way a tileset does.
+    """
+
+    feature_id = _require_identifier(featureId, "featureId")
+    first_frame_id = _require(firstFrameAssetId, "firstFrameAssetId")
+    motion = _require(action, "action")
+    if not 2 <= frameCount <= 16:
+        raise tool_error(VALIDATION_ERROR, "frameCount must be between 2 and 16")
+
+    source_game = first_frame_id.split("__", 1)[0]
+    resolved_game = _resolve_game_id(gameId) if gameId else source_game
+    if resolved_game != source_game:
+        raise tool_error(VALIDATION_ERROR, "gameId must match the first frame asset")
+
+    manifest = _load_manifest(resolved_game)
+    source = manifest["assets"].get(first_frame_id)
+    if source is None:
+        raise tool_error(VALIDATION_ERROR, f"unknown firstFrameAssetId: {first_frame_id}")
+    if source["status"] != APPROVED:
+        raise tool_error(
+            VALIDATION_ERROR, "the first frame asset must be approved before animating"
+        )
+
+    source_path = Path(source["asset_path"])
+    if not source_path.is_file():
+        raise tool_error(VALIDATION_ERROR, f"first frame file is missing: {source_path}")
+    with Image.open(source_path) as opened:
+        first_frame = opened.convert("RGBA").copy()
+
+    if not pixellab_client.is_configured():
+        raise tool_error(
+            MCP_ERROR,
+            "PIXELLAB_API_KEY is not set; animation requires PixelLab",
+            featureId=feature_id,
+        )
+
+    try:
+        frames, usage, job_id = pixellab_client.create_animation(
+            first_frame=first_frame,
+            action=motion,
+            frame_count=frameCount,
+            description=description or None,
+        )
+    except pixellab_client.PixelLabUnavailable as exc:
+        raise tool_error(
+            MCP_ERROR,
+            f"PixelLab animation failed: {exc}",
+            featureId=feature_id,
+            firstFrameAssetId=first_frame_id,
+        ) from exc
+
+    kind = source["kind"]
+    motion_digest = hashlib.sha256(f"{first_frame_id}|{motion}".encode()).hexdigest()[:8]
+    sequence_id = f"{resolved_game}__{feature_id}__animation__{motion_digest}"
+    out_dir = ROOT / "assets" / resolved_game / "animations" / f"{feature_id}_{motion_digest}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    records: list[dict[str, Any]] = []
+    for index, frame in enumerate(frames):
+        asset_id = f"{sequence_id}__{index:02d}"
+        # Zero-padded so the play order survives any directory listing.
+        path = out_dir / f"{index:02d}_{motion_digest}.png"
+        frame.save(path)
+        manifest["assets"][asset_id] = {
+            "asset_id": asset_id,
+            "feature_id": feature_id,
+            "kind": kind,
+            "prompt": motion,
+            "provider_prompt": motion,
+            "status": PENDING,
+            "asset_path": str(path),
+            "created_at": _now(),
+            "reviewed_at": None,
+            "review_note": None,
+            "prototype_asset_id": first_frame_id,
+            "sequence_id": sequence_id,
+            "frame_index": index,
+            "provenance": {
+                "method": "pixellab-api",
+                "endpoint": "animate-with-text-v3",
+                "job_id": job_id,
+                "action": motion,
+                "frame_index": index,
+                "frame_count": len(frames),
+                "first_frame_asset_id": first_frame_id,
+                "usage": usage,
+                "commercial_use": "see PixelLab terms of service",
+            },
+        }
+        records.append(
+            {
+                "assetId": asset_id,
+                "assetPath": str(path),
+                "frameIndex": index,
+                "status": PENDING,
+            }
+        )
+
+    index_path = out_dir / "animation.json"
+    index_path.write_text(
+        json.dumps(
+            {
+                "sequenceId": sequence_id,
+                "firstFrameAssetId": first_frame_id,
+                "action": motion,
+                "kind": kind,
+                "frameCount": len(records),
+                "jobId": job_id,
+                "usage": usage,
+                "frames": records,
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    _save_manifest(manifest)
+    return {
+        "sequenceId": sequence_id,
+        "gameId": resolved_game,
+        "firstFrameAssetId": first_frame_id,
+        "action": motion,
+        "kind": kind,
+        "status": PENDING,
+        "workflowStage": "animation",
+        "indexPath": str(index_path),
+        "frames": records,
+        "frameCount": len(records),
+        "jobId": job_id,
+        "usage": usage,
+    }
+
+
+@mcp.tool(
+    description=(
         "Generate a corner-Wang tileset (16 tiles: ground, wall, and every transition) "
         "for a biome's level art. Returns the tile files and their corner terrain map."
     )
