@@ -107,10 +107,8 @@ Server: `Asset3DGenMcpServer` (`asset3d.server`).
   `ASSET3D_RUN_ROOT/3d/requests`; it records SHA-256 provenance for the specification and both
   prompt artifacts. The root must be absolute, inside the external Unity workspace, outside
   `Assets/`, and outside this repository.
-- `submit_3d_asset_generation` always searches local CC0 manifests and Poly Haven's official API
-  first. Automatic adoption requires verified CC0 provenance. `license_rejected`,
-  `quality_rejected`, and `provider_failed` never authorize Meshy; only `not_found` does. Unity
-  Asset Store and non-CC0 assets are not automatic sources.
+- `submit_3d_asset_generation` sends only host-supplied, human-approved reference images to
+  Meshy. It does not automatically search or adopt third-party assets.
 - Meshy remains the only paid generation boundary. The host may use the GPT image API to turn the
   user's prompt into reference images, but the MCP server never calls GPT or another model. The
   host passes one to four user-approved references plus `referenceProvenance` to the MCP.
@@ -137,8 +135,8 @@ Server: `Asset3DGenMcpServer` (`asset3d.server`).
   expired-download failures are distinct. `cancel_3d_asset_generation` cancels a resumable task,
   and identical specification submissions are deduplicated before another paid task is created.
 - Balance evidence and estimated/actual consumed credits are preserved with task provenance.
-- Completed GLB or FBX source files remain beneath the external staging root. CC0 and Meshy
-  outputs share the Blender GameReady gate, and only passing files are copied beneath Unity
+- Completed GLB or FBX source files remain beneath the external staging root. Meshy outputs pass
+  the Blender GameReady gate, and only passing files are copied beneath Unity
   `Assets/Generated3D/<featureId>/`. Geometry-only previews do not require textures; GLB
   inspection reports vertices, triangles, and whether the requested triangle budget passed.
   GLTF is rejected because the selected provider does not return it directly.

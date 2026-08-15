@@ -223,7 +223,7 @@ async def test_animation_fields_are_required_only_for_animated_assets():
 
 
 async def test_requires_concrete_form_texture_and_pivot_policy():
-    asset_spec = _asset_spec("prop", "image_to_3d")
+    asset_spec = _asset_spec("slime", "image_to_3d")
     del asset_spec["design"]["form"]
     async with session() as client:
         missing_form = await client.call_tool("compose_3d_asset_prompts", {"assetSpec": asset_spec})
@@ -251,6 +251,21 @@ async def test_prompt_preserves_shape_surface_texture_and_origin_requirements():
     assert "Texture: matte stylized surface" in prompt
     assert "Normals explicit_hard; faces outward" in prompt
     assert "pivot ground center (ground_center); preserve that origin after export" in prompt
+
+
+def test_geometry_preview_accepts_an_untextured_unrigged_mesh():
+    inspection = server._inspect_model(
+        _glb(textured=False),
+        "glb",
+        animation_required=False,
+        texture_required=False,
+        max_triangles=2500,
+    )
+
+    assert inspection["meshes"] == 1
+    assert inspection["textures"] == 0
+    assert inspection["rigs"] == 0
+    assert inspection["triangleBudgetPassed"] is True
 
 
 async def test_validation_rejects_a_prompt_that_drifted_from_the_specification():
@@ -310,7 +325,11 @@ async def test_submit_requires_a_configured_meshy_key(tmp_path, monkeypatch):
                 "featureId": "slime-art",
                 "gameId": "slime-ranch",
                 "assetSpec": _asset_spec("prop", "image_to_3d"),
-                "referenceImageUrl": "data:image/png;base64,aW1hZ2U=",
+                "referenceImageUrls": [
+                    "data:image/png;base64,ZnJvbnQ=",
+                    "data:image/png;base64,c2lkZQ==",
+                    "data:image/png;base64,YmFjaw==",
+                ],
                 "referenceProvenance": {
                     "source": "gpt_image_api",
                     "humanApproved": True,
@@ -355,7 +374,7 @@ async def test_image_generation_accepts_data_uri_and_refines_with_blender(tmp_pa
     retextured = []
     monkeypatch.setattr(
         meshy_client,
-        "create_image_task",
+        "create_multi_image_task",
         lambda *args: submitted.append(args) or "task-image",
     )
     monkeypatch.setattr(
@@ -380,7 +399,7 @@ async def test_image_generation_accepts_data_uri_and_refines_with_blender(tmp_pa
             {
                 "featureId": "slime-art",
                 "assetSpec": _asset_spec("prop", "image_to_3d"),
-                "referenceImageUrl": "data:image/png;base64,aW1hZ2U=",
+                "referenceImageUrls": ["data:image/png;base64,ZnJvbnQ=", "data:image/png;base64,c2lkZQ==", "data:image/png;base64,YmFjaw=="],
                 "referenceProvenance": {
                     "source": "gpt_image_api",
                     "humanApproved": True,
@@ -396,7 +415,11 @@ async def test_image_generation_accepts_data_uri_and_refines_with_blender(tmp_pa
         )
 
     assert result.is_error is False
-    assert submitted == [("data:image/png;base64,aW1hZ2U=", "glb", 2500)]
+    assert submitted == [(
+        ["data:image/png;base64,ZnJvbnQ=", "data:image/png;base64,c2lkZQ==", "data:image/png;base64,YmFjaw=="],
+        "glb",
+        2500,
+    )]
     assert refined.structured_content["phase"] == "retexture"
     assert retextured[0][0] == _glb(textured=False)
     assert retextured[0][1:] == (
@@ -430,6 +453,35 @@ async def test_image_generation_requires_approved_reference_provenance(tmp_path,
 
     assert result.is_error is True
     assert "humanApproved" in "".join(getattr(block, "text", "") for block in result.content)
+
+
+async def test_static_image_generation_requires_three_distinct_references(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("MESHY_API_KEY", "test-key")
+    monkeypatch.setattr(
+        meshy_client,
+        "create_image_task",
+        lambda *_: pytest.fail("single static reference must not reach Meshy"),
+    )
+
+    async with session() as client:
+        result = await client.call_tool(
+            "submit_3d_asset_generation",
+            {
+                "featureId": "prop-art",
+                "assetSpec": _asset_spec("prop", "image_to_3d"),
+                "referenceImageUrl": "data:image/png;base64,aW1hZ2U=",
+                "referenceProvenance": {
+                    "source": "gpt_image_api",
+                    "humanApproved": True,
+                },
+            },
+        )
+
+    assert result.is_error is True
+    assert "exactly three approved front, side, and back references" in "".join(
+        getattr(block, "text", "") for block in result.content
+    )
 
 
 async def test_multiple_approved_references_use_multi_image(tmp_path, monkeypatch):
@@ -513,7 +565,7 @@ async def test_material_only_strategy_skips_meshy_retexture(tmp_path, monkeypatc
             "material": {"baseColor": "#111111", "metallic": 0.15, "roughness": 0.65},
         }
     )
-    monkeypatch.setattr(meshy_client, "create_image_task", lambda *_: "task-image")
+    monkeypatch.setattr(meshy_client, "create_multi_image_task", lambda *_: "task-image")
     monkeypatch.setattr(
         meshy_client,
         "get_task",
@@ -545,7 +597,11 @@ async def test_material_only_strategy_skips_meshy_retexture(tmp_path, monkeypatc
             {
                 "featureId": "laptop-art",
                 "assetSpec": asset_spec,
-                "referenceImageUrl": "data:image/png;base64,aW1hZ2U=",
+                "referenceImageUrls": [
+                    "data:image/png;base64,ZnJvbnQ=",
+                    "data:image/png;base64,c2lkZQ==",
+                    "data:image/png;base64,YmFjaw==",
+                ],
                 "referenceProvenance": {
                     "source": "gpt_image_api",
                     "humanApproved": True,
@@ -832,60 +888,6 @@ async def test_poly_haven_network_error_is_provider_failed(monkeypatch):
     }
 
 
-async def test_cc0_found_never_calls_meshy(tmp_path, monkeypatch):
-    monkeypatch.setattr(server, "ROOT", tmp_path)
-    monkeypatch.setattr(
-        cc0_client,
-        "acquire",
-        lambda _spec: _async_value(
-            {
-                "status": "found",
-                "provider": "local_manifest",
-                "assetId": "green-prop",
-                "content": _glb(),
-                "format": "glb",
-                "provenance": {"license": "CC0-1.0", "provider": "Kenney", "sha256": "a" * 64},
-            }
-        ),
-    )
-    monkeypatch.setattr(server, "_cleanup_with_blender", lambda path, *_: path)
-    monkeypatch.setattr(
-        server,
-        "_blender_inspection",
-        lambda _path: {"triangleBudgetPassed": True, "gameReadyPassed": True},
-    )
-
-    async with session() as client:
-        result = await client.call_tool(
-            "submit_3d_asset_generation",
-            {"featureId": "slime-art", "gameId": "slime-ranch", "assetSpec": _asset_spec("prop", "image_to_3d")},
-        )
-
-    assert result.structured_content["cc0Status"] == "found"
-    assert result.structured_content["provenance"]["license"] == "CC0-1.0"
-
-
-async def _async_value(value):
-    return value
-
-
-async def test_cc0_provider_failure_does_not_fall_back_to_meshy(tmp_path, monkeypatch):
-    monkeypatch.setattr(server, "ROOT", tmp_path)
-    monkeypatch.setattr(
-        cc0_client,
-        "acquire",
-        lambda _spec: _async_value({"status": "provider_failed", "provider": "poly_haven", "reason": "offline"}),
-    )
-
-    async with session() as client:
-        result = await client.call_tool(
-            "submit_3d_asset_generation",
-            {"featureId": "slime-art", "assetSpec": _asset_spec("prop", "image_to_3d")},
-        )
-
-    assert result.structured_content["status"] == "provider_failed"
-
-
 @pytest.mark.parametrize(
     ("status_code", "message", "expected"),
     [
@@ -945,7 +947,7 @@ async def test_duplicate_spec_blocks_second_paid_submission(tmp_path, monkeypatc
     arguments = {
         "featureId": "slime-art",
         "gameId": "slime-ranch",
-        "assetSpec": _asset_spec("prop", "image_to_3d"),
+        "assetSpec": _asset_spec("slime", "image_to_3d"),
         "referenceImageUrl": "data:image/png;base64,aW1hZ2U=",
         "referenceProvenance": {
             "source": "gpt_image_api",

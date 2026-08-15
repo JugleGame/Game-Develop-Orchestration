@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 from common.errors import MCP_ERROR, VALIDATION_ERROR, tool_error
 from common.server import build, expects_dict_return, serve
 
-from . import cc0_client, meshy_client
+from . import meshy_client
 
 
 mcp = build("Asset3DGenMcpServer")
@@ -805,38 +805,6 @@ def _game_ready_result(
     }
 
 
-async def _try_cc0(package: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
-    acquisition = await cc0_client.acquire(package["assetSpec"])
-    status = acquisition.get("status", "provider_failed")
-    if status != "found":
-        return acquisition
-    content = acquisition.pop("content")
-    source_format = acquisition["format"]
-    source_path = (
-        _require_external_runtime_root()
-        / "3d"
-        / "downloads"
-        / task["gameId"]
-        / f"{acquisition['assetId']}.{source_format}"
-    )
-    source_path.parent.mkdir(parents=True, exist_ok=True)
-    source_path.write_bytes(content)
-    task.update(
-        {
-            "provider": acquisition["provider"],
-            "phase": "cc0_validation",
-            "modelFormat": source_format,
-            "taskId": f"cc0-{package['requestId']}",
-        }
-    )
-    return _game_ready_result(
-        task,
-        source_path,
-        provider=acquisition["provider"],
-        provenance=acquisition["provenance"],
-    )
-
-
 @mcp.tool(description="Compose provider-neutral generation and reference prompts from an asset spec.")
 @expects_dict_return
 def compose_3d_asset_prompts(assetSpec: dict[str, Any]) -> dict[str, Any]:
@@ -872,7 +840,7 @@ def prepare_3d_asset_request(
             "status": "prepared",
             "provider": {
             "configured": meshy_client.is_configured(),
-            "message": "CC0 discovery is always attempted before any configured Meshy fallback.",
+            "message": "Meshy is the configured 3D generation provider.",
         },
         }
     )
@@ -889,7 +857,7 @@ def prepare_3d_asset_request(
     }
 
 
-@mcp.tool(description="Acquire CC0 first and submit to Meshy only after a verified not_found result.")
+@mcp.tool(description="Submit approved reference images to Meshy for 3D generation.")
 @expects_dict_return
 async def submit_3d_asset_generation(
     featureId: str,
@@ -916,9 +884,9 @@ async def submit_3d_asset_generation(
     references: list[str] = []
     reference_evidence: dict[str, Any] = {}
     task = {
-        "provider": "cc0",
+        "provider": "meshy",
         "taskId": package["requestId"],
-        "phase": "cc0_search",
+        "phase": "generation",
         "method": method,
         "modelFormat": model_format,
         "outputFormat": output_format,
@@ -938,25 +906,14 @@ async def submit_3d_asset_generation(
         "referenceImageCount": len(references),
         "createdAt": _now(),
     }
-    cc0_result = await _try_cc0(package, task)
-    cc0_status = cc0_result.get("status")
-    if cc0_status == "SUCCEEDED":
-        package.update({"status": "found", "provider": cc0_result["provider"], "provenance": cc0_result["provenance"]})
-        _write_json(request_path, package)
-        return {"requestId": package["requestId"], "cc0Status": "found", **cc0_result}
-    if cc0_status != "not_found":
-        package.update({"status": cc0_status, "cc0": cc0_result})
-        _write_json(request_path, package)
-        return {
-            "requestId": package["requestId"],
-            "status": cc0_status,
-            "cc0Status": cc0_status,
-            "provider": cc0_result.get("provider"),
-            "reason": cc0_result.get("reason", ""),
-        }
     references, reference_evidence = _reference_inputs(
         referenceImageUrl, referenceImageUrls, referenceProvenance
     )
+    if spec["assetType"] in {"prop", "environment", "building", "interactive"} and len(references) != 3:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "static image_to_3d assets require exactly three approved front, side, and back references",
+        )
     reference_set_sha256 = _digest(
         {"images": references, "provenance": reference_evidence}
     )
@@ -970,10 +927,9 @@ async def submit_3d_asset_generation(
     if not meshy_client.is_configured():
         raise tool_error(
             MCP_ERROR,
-            "CC0 search returned not_found and MESHY_API_KEY is not set",
+            "MESHY_API_KEY is not set",
             provider="meshy",
             status="provider_unconfigured",
-            cc0Status="not_found",
         )
     submission_key = package["requestId"]
     submission_key = f"{submission_key}__{task['referenceSetSha256'][:16]}"
@@ -994,7 +950,6 @@ async def submit_3d_asset_generation(
                 "requestId": package["requestId"],
                 "taskId": existing_id,
                 "status": "duplicate_blocked",
-                "cc0Status": "not_found",
                 "provider": "meshy",
             }
     texture_prompt = task["texturePrompt"]
@@ -1033,7 +988,6 @@ async def submit_3d_asset_generation(
         "outputFormat": output_format,
         "texturePrompt": texture_prompt,
         "topology": "triangle",
-        "cc0Status": "not_found",
         "estimatedCredits": credit_estimate["credits"],
         "creditEstimate": credit_estimate,
         "balanceBefore": balance_before,
@@ -1059,7 +1013,6 @@ async def submit_3d_asset_generation(
         "providerConfigured": True,
         "textureStrategy": package["textureStrategy"],
         "status": "submitted",
-        "cc0Status": "not_found",
         "estimatedCredits": task["estimatedCredits"],
         "creditEstimate": task["creditEstimate"],
         "balanceBefore": balance_before,
@@ -1312,8 +1265,8 @@ async def get_3d_asset_generation(taskId: str) -> dict[str, Any]:
             "inspection": _inspect_model(
                 output,
                 task["modelFormat"],
-                task["animationRequired"],
-                task["phase"] == "retexture" and task["textureRequired"],
+                False,
+                False,
                 task.get("maxTriangles"),
             ),
         }

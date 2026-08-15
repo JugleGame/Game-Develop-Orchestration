@@ -11,13 +11,12 @@ flowchart TB
     H --> R["Research MCP: evidence, draft/spec storage, dependency lint"]
     H --> N["Unity MCP: apply, assemble, build, PlayMode, validation"]
     H --> A["Asset MCP: 2D asset requests and review metadata"]
-    H --> A3["3D Asset MCP: CC0 acquisition, Meshy fallback, Blender GameReady"]
+    H --> A3["3D Asset MCP: Meshy generation, Blender GameReady"]
     R --> DB["Research DB"]
     R -->|"published only"| HO["var/handoffs: hashed versioned files"] --> H
     N --> UE["Unity Editor"]
     A --> PX["Configured asset providers"]
     A --> V["var/assets"]
-    A3 --> C3["Local CC0 manifests + Poly Haven API"]
     A3 --> R3["External Unity workspace staging"]
     A3 --> M3["Meshy API"]
     A3 --> B3["Blender headless cleanup"]
@@ -55,10 +54,9 @@ flowchart TB
 ### 3D Asset MCP
 
 - Deterministically compose and validate provider-neutral 3D prompts from host-authored specifications.
-- Search local CC0 manifests and Poly Haven before submitting validated single- or multi-image
-  Image-to-3D work to Meshy. Reject Text-to-3D and store reference/provider provenance in external staging.
-- Search verified CC0 sources first, use Meshy only after `not_found`, then run Blender headless
-  cleanup and GameReady quality gates. Keep 3D runtime state in an absolute staging directory in
+- Submit validated single- or multi-image Image-to-3D work to Meshy from human-approved references.
+  Reject Text-to-3D and store reference/provider provenance in external staging.
+- Run Blender headless cleanup and GameReady quality gates. Keep 3D runtime state in an absolute staging directory in
   the external Unity workspace and copy only passing FBX or GLB output into Unity `Assets/`.
 - Hand a validated model path to Unity MCP for import, model-backed prefab creation, and scene composition.
 
