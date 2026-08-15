@@ -205,8 +205,14 @@ to produce prompts and a request package with a new SHA-256 digest.
 1. compose_3d_asset_prompts(assetSpec)
 2. Optionally validate_3d_asset_prompts(assetSpec, generationPrompt, referenceSearchPrompt)
 3. prepare_3d_asset_request(featureId, assetSpec, gameId)
-4. submit_3d_asset_generation(featureId, assetSpec, gameId, referenceImageUrl?)
-5. get_3d_asset_generation(taskId) / refine_3d_asset_generation(taskId)
+4. The host creates 1-4 consistent reference images from the user's prompt (GPT image API is
+   allowed at the host layer), shows them to the user, and records approval.
+5. submit_3d_asset_generation(featureId, assetSpec, gameId, referenceImageUrls,
+   referenceProvenance)
+6. get_3d_asset_generation(taskId), then inspect the geometry preview.
+7. refine_3d_asset_generation(taskId, geometryReviewApproved, geometryReviewNote?)
+8. get_3d_asset_generation(taskId), then inspect the textured/final visual output.
+9. finalize_3d_asset_generation(taskId, finalVisualReviewApproved, finalVisualReviewNote?)
 ```
 
 `prepare_3d_asset_request` recomposes and validates the prompts before saving them to:
@@ -218,8 +224,15 @@ to produce prompts and a request package with a new SHA-256 digest.
 The package preserves the original specification, both derived prompts, their SHA-256
 digests, game and feature IDs, and the creation timestamp. The status is `prepared`; submission
 then reports `found`, `not_found`, `license_rejected`, `quality_rejected`, or `provider_failed`.
-Only `not_found` authorizes Meshy. A Blender GameReady pass is required before the final model is
-copied into Unity `Assets/`.
+Only `not_found` authorizes Meshy. Image generation requires one to four approved PNG/JPEG HTTPS
+URLs or data URIs. `referenceProvenance.source` identifies the host-side source such as
+`gpt_image_api`, `humanApproved` must be true, and `sourcePromptSha256` may preserve prompt
+lineage. The MCP does not generate the reference image itself.
+
+Text-to-3D is limited to simple props. Refine/retexture is blocked until geometry review approval,
+and completed output remains in external staging as `AWAITING_FINAL_REVIEW`. A separate final
+visual approval is required before Blender GameReady and before the final model is copied into
+Unity `Assets/`.
 
 Run locally:
 

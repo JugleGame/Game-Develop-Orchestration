@@ -111,14 +111,29 @@ Server: `Asset3DGenMcpServer` (`asset3d.server`).
   first. Automatic adoption requires verified CC0 provenance. `license_rejected`,
   `quality_rejected`, and `provider_failed` never authorize Meshy; only `not_found` does. Unity
   Asset Store and non-CC0 assets are not automatic sources.
-- Meshy remains the only paid generation boundary. It accepts only `text_to_3d` and
-  `image_to_3d` specifications; text generation is explicitly `preview` then `refine`, while
-  image generation accepts a host-supplied HTTPS image or data URI.
-- Image generation creates an untextured smart-topology mesh directly at the final triangle ceiling. Reference prompts move repeated and non-silhouette microdetail to flat color or normal-map information instead of geometry.
-- `refine_3d_asset_generation` runs Blender headless cleanup per imported mesh, preserves part separation, applies conservative planar cleanup only for explicit hard-surface normals, triangulates and ground-centers the result, and rejects triangle-budget, loose-vertex, or zero-area failures using the Blender quality report.
+- Meshy remains the only paid generation boundary. The host may use the GPT image API to turn the
+  user's prompt into reference images, but the MCP server never calls GPT or another model. The
+  host passes one to four user-approved references plus `referenceProvenance` to the MCP.
+- One reference uses Meshy Image-to-3D and two to four consistent views use Multi-Image-to-3D.
+  Both create an untextured mesh at the requested triangle ceiling. `text_to_3d` is limited to
+  simple props and cannot silently replace the reference-first route for characters, monsters,
+  environments, buildings, or interactive assets.
+- `referenceProvenance` requires a non-empty source (for example `gpt_image_api`) and
+  `humanApproved: true`; an optional `sourcePromptSha256` records the user-prompt lineage without
+  storing the prompt itself. Reference prompts move repeated and non-silhouette microdetail to
+  flat color or normal-map information instead of geometry.
+- `refine_3d_asset_generation` requires explicit human geometry-preview approval before any paid
+  refine/retexture. Completed output is staged as `AWAITING_FINAL_REVIEW`.
+- `finalize_3d_asset_generation` requires explicit human final-visual approval, then runs Blender
+  headless cleanup, preserves part separation, applies conservative planar cleanup only for
+  explicit hard-surface normals, triangulates and ground-centers the result, and rejects
+  triangle-budget, loose-vertex, or zero-area failures using the Blender quality report. Only then
+  can it copy the asset into Unity.
 - The Blender report also exposes disconnected-component and BVH self-intersection candidates. `gameReadyPassed` covers static Unity render readiness; `topologyStrictPassed` additionally requires a manifold, intersection-free mesh for workflows such as deformation, destructive baking, or 3D printing. Exact Union and voxel remesh are not automatic defaults because they can visibly destroy valid generated surfaces.
 - `material_only` is allowed only for an explicitly uniform palette: numeric `texture.material`, no `texture.surfaceDetails`, and at most one declared design color and material. Blender converts the sRGB base color to scene-linear values and applies it to every mesh; the GameReady gate rejects missing material slots. Multiple appearance regions select `generated_texture` instead of flattening visual structure into one material.
-- Text preview submits a Meshy-specific geometry prompt within the provider's 600-character limit; refine submits texture requirements separately. Runtime-bound output requests triangle remeshing.
+- Text preview submits a Meshy-specific geometry prompt within the provider's 600-character limit.
+  The prompt starts with the asset description and style before structural constraints; refine
+  submits texture requirements separately. Runtime-bound output requests triangle remeshing.
 - `get_3d_asset_generation` resumes a Meshy task by provider task ID. Meshy I/O is async with a
   bounded retry/backoff policy; authentication, insufficient credit, rate, queue, provider, and
   expired-download failures are distinct. `cancel_3d_asset_generation` cancels a resumable task,

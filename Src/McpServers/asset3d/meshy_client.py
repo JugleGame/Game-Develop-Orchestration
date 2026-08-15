@@ -19,6 +19,7 @@ CREDIT_ESTIMATES = {
     "text_preview_meshy_6": 20,
     "text_refine_2k": 10,
     "image_smart_topology_untextured": 5,
+    "multi_image_meshy_6_untextured": 20,
     "retexture_2k": 10,
 }
 CREDIT_ESTIMATE_SOURCE = "https://docs.meshy.ai/en/api/pricing"
@@ -168,6 +169,23 @@ def create_image_task(image_url: str, model_format: str, max_triangles: int) -> 
     )
 
 
+def create_multi_image_task(
+    image_urls: list[str], model_format: str, max_triangles: int
+) -> Any:
+    return _create(
+        "/openapi/v1/multi-image-to-3d",
+        {
+            "image_urls": image_urls,
+            "ai_model": "meshy-6",
+            "should_texture": False,
+            "should_remesh": True,
+            "topology": "triangle",
+            "target_polycount": max_triangles,
+            "target_formats": [model_format],
+        },
+    )
+
+
 def create_retexture_task(model: bytes, model_format: str, texture_prompt: str) -> Any:
     model_url = "data:application/octet-stream;base64," + base64.b64encode(model).decode()
     return _create(
@@ -186,6 +204,7 @@ def create_retexture_task(model: bytes, model_format: str, texture_prompt: str) 
 def get_task(method: str, task_id: str) -> Any:
     path = {
         "image_to_3d": "/openapi/v1/image-to-3d",
+        "multi_image_to_3d": "/openapi/v1/multi-image-to-3d",
         "retexture": "/openapi/v1/retexture",
     }.get(method, "/openapi/v2/text-to-3d")
     return _request("GET", f"{path}/{task_id}")
@@ -198,6 +217,7 @@ def get_balance() -> Any:
 def cancel_task(method: str, task_id: str) -> Any:
     path = {
         "image_to_3d": "/openapi/v1/image-to-3d",
+        "multi_image_to_3d": "/openapi/v1/multi-image-to-3d",
         "retexture": "/openapi/v1/retexture",
     }.get(method, "/openapi/v2/text-to-3d")
     return _request("DELETE", f"{path}/{task_id}")

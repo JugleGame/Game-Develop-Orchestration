@@ -122,6 +122,7 @@ async def test_exposes_all_3d_tools_with_camel_case_inputs():
         "submit_3d_asset_generation",
         "refine_3d_asset_generation",
         "get_3d_asset_generation",
+        "finalize_3d_asset_generation",
     } <= set(tools)
     assert {"featureId", "assetSpec"} <= set(
         tools["prepare_3d_asset_request"].input_schema["properties"]
@@ -130,6 +131,9 @@ async def test_exposes_all_3d_tools_with_camel_case_inputs():
         tools["submit_3d_asset_generation"].input_schema["properties"]
     )
     assert {"taskId"} <= set(tools["get_3d_asset_generation"].input_schema["properties"])
+    assert {"referenceImageUrls", "referenceProvenance"} <= set(
+        tools["submit_3d_asset_generation"].input_schema["properties"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -335,6 +339,32 @@ def test_meshy_preview_uses_runtime_triangle_remesh(monkeypatch):
     }
 
 
+def test_meshy_multi_image_uses_official_endpoint(monkeypatch):
+    created = []
+    monkeypatch.setattr(
+        meshy_client,
+        "_create",
+        lambda path, payload: created.append((path, payload)) or "task-multi-image",
+    )
+
+    meshy_client.create_multi_image_task(["front", "side", "back"], "glb", 5000)
+
+    assert created == [
+        (
+            "/openapi/v1/multi-image-to-3d",
+            {
+                "image_urls": ["front", "side", "back"],
+                "ai_model": "meshy-6",
+                "should_texture": False,
+                "should_remesh": True,
+                "topology": "triangle",
+                "target_polycount": 5000,
+                "target_formats": ["glb"],
+            },
+        )
+    ]
+
+
 async def test_submit_and_download_meshy_text_generation(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "ROOT", tmp_path)
     monkeypatch.setenv("MESHY_API_KEY", "test-key")
@@ -372,6 +402,7 @@ async def test_submit_and_download_meshy_text_generation(tmp_path, monkeypatch):
     assert len(prompt) <= server.MESHY_PROMPT_LIMIT
     assert "silhouette:" in prompt and "exclude: text, weapons" in prompt
     assert "preserve: round silhouette" in prompt
+    assert "description: A rounded prop with a clear silhouette" in prompt
     assert (model_format, max_triangles) == ("glb", 2500)
     assert Path(downloaded.structured_content["assetPath"]).read_bytes() == _glb(textured=False)
     assert downloaded.structured_content["inspection"] == {
@@ -402,7 +433,11 @@ async def test_refine_passes_the_texture_prompt(tmp_path, monkeypatch):
             {"featureId": "slime-art", "assetSpec": _asset_spec("prop", "text_to_3d")},
         )
         refined = await client.call_tool(
-            "refine_3d_asset_generation", {"taskId": submitted.structured_content["taskId"]}
+            "refine_3d_asset_generation",
+            {
+                "taskId": submitted.structured_content["taskId"],
+                "geometryReviewApproved": True,
+            },
         )
 
     assert refined.structured_content["phase"] == "refine"
@@ -445,10 +480,18 @@ async def test_image_generation_accepts_data_uri_and_refines_with_blender(tmp_pa
                 "featureId": "slime-art",
                 "assetSpec": _asset_spec("prop", "image_to_3d"),
                 "referenceImageUrl": "data:image/png;base64,aW1hZ2U=",
+                "referenceProvenance": {
+                    "source": "gpt_image_api",
+                    "humanApproved": True,
+                },
             },
         )
         refined = await client.call_tool(
-            "refine_3d_asset_generation", {"taskId": result.structured_content["taskId"]}
+            "refine_3d_asset_generation",
+            {
+                "taskId": result.structured_content["taskId"],
+                "geometryReviewApproved": True,
+            },
         )
 
     assert result.is_error is False
@@ -458,6 +501,101 @@ async def test_image_generation_accepts_data_uri_and_refines_with_blender(tmp_pa
     assert retextured[0][1:] == (
         "glb",
         "matte stylized surface with readable color separation; colors: leaf green, cream; materials: soft matte body",
+    )
+
+
+async def test_image_generation_requires_approved_reference_provenance(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("MESHY_API_KEY", "test-key")
+    monkeypatch.setattr(
+        meshy_client,
+        "create_image_task",
+        lambda *_: pytest.fail("unapproved references must not reach Meshy"),
+    )
+
+    async with session() as client:
+        result = await client.call_tool(
+            "submit_3d_asset_generation",
+            {
+                "featureId": "slime-art",
+                "assetSpec": _asset_spec("prop", "image_to_3d"),
+                "referenceImageUrl": "data:image/png;base64,aW1hZ2U=",
+                "referenceProvenance": {
+                    "source": "gpt_image_api",
+                    "humanApproved": False,
+                },
+            },
+        )
+
+    assert result.is_error is True
+    assert "humanApproved" in "".join(getattr(block, "text", "") for block in result.content)
+
+
+async def test_multiple_approved_references_use_multi_image(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("MESHY_API_KEY", "test-key")
+    submitted = []
+    monkeypatch.setattr(
+        meshy_client,
+        "create_multi_image_task",
+        lambda *args: submitted.append(args) or "task-multi-image",
+    )
+    references = [
+        "data:image/png;base64,ZnJvbnQ=",
+        "data:image/png;base64,c2lkZQ==",
+        "data:image/png;base64,YmFjaw==",
+    ]
+    provenance = {
+        "source": "gpt_image_api",
+        "humanApproved": True,
+        "sourcePromptSha256": "a" * 64,
+    }
+
+    async with session() as client:
+        result = await client.call_tool(
+            "submit_3d_asset_generation",
+            {
+                "featureId": "slime-art",
+                "assetSpec": _asset_spec("prop", "image_to_3d"),
+                "referenceImageUrls": references,
+                "referenceProvenance": provenance,
+            },
+        )
+
+    assert result.is_error is False
+    assert submitted == [(references, "glb", 2500)]
+    task = server._read_task("task-multi-image")
+    assert task["providerMethod"] == "multi_image_to_3d"
+    assert task["referenceImageCount"] == 3
+    assert task["referenceProvenance"] == provenance
+    assert task["estimatedCredits"] == 20
+
+
+async def test_geometry_review_gate_blocks_refine(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    server._write_json(
+        server._task_path("task-preview"),
+        {
+            "provider": "meshy",
+            "taskId": "task-preview",
+            "method": "text_to_3d",
+            "phase": "preview",
+        },
+    )
+    monkeypatch.setattr(
+        meshy_client,
+        "get_task",
+        lambda *_: pytest.fail("review rejection must happen before provider access"),
+    )
+
+    async with session() as client:
+        result = await client.call_tool(
+            "refine_3d_asset_generation", {"taskId": "task-preview"}
+        )
+
+    assert result.is_error is True
+    assert "geometryReviewApproved" in "".join(
+        getattr(block, "text", "") for block in result.content
     )
 
 
@@ -507,19 +645,74 @@ async def test_material_only_strategy_skips_meshy_retexture(tmp_path, monkeypatc
                 "featureId": "laptop-art",
                 "assetSpec": asset_spec,
                 "referenceImageUrl": "data:image/png;base64,aW1hZ2U=",
+                "referenceProvenance": {
+                    "source": "gpt_image_api",
+                    "humanApproved": True,
+                },
             },
         )
         refined = await client.call_tool(
-            "refine_3d_asset_generation", {"taskId": submitted.structured_content["taskId"]}
+            "refine_3d_asset_generation",
+            {
+                "taskId": submitted.structured_content["taskId"],
+                "geometryReviewApproved": True,
+            },
         )
 
     assert composed.structured_content["textureStrategy"]["mode"] == "material_only"
-    assert refined.structured_content["status"] == "SUCCEEDED"
-    assert refined.structured_content["phase"] == "material"
+    assert refined.structured_content["status"] == "AWAITING_FINAL_REVIEW"
+    assert refined.structured_content["phase"] == "material_review"
+    assert "unityAssetPath" not in refined.structured_content
     assert cleanup_args == [
         (2500, asset_spec["texture"]["material"], None),
         (2500, asset_spec["texture"]["material"], "fbx"),
     ]
+
+
+async def test_final_review_gate_blocks_unity_and_approval_finalizes(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    source = tmp_path / "staged.glb"
+    source.write_bytes(_glb(textured=True))
+    server._write_json(
+        server._task_path("task-final"),
+        {
+            "provider": "meshy",
+            "taskId": "task-final",
+            "method": "retexture",
+            "phase": "retexture",
+            "status": "AWAITING_FINAL_REVIEW",
+            "assetPath": str(source),
+            "modelFormat": "glb",
+            "outputFormat": "glb",
+            "maxTriangles": 2500,
+            "normalPolicy": "mixed",
+            "textureStrategy": {"mode": "generated_texture"},
+            "provenance": {"license": "generated"},
+        },
+    )
+    monkeypatch.setattr(server, "_cleanup_with_blender", lambda path, *_: path)
+    monkeypatch.setattr(
+        server,
+        "_blender_inspection",
+        lambda _path: {"triangleBudgetPassed": True, "gameReadyPassed": True},
+    )
+
+    async with session() as client:
+        blocked = await client.call_tool(
+            "finalize_3d_asset_generation", {"taskId": "task-final"}
+        )
+        approved = await client.call_tool(
+            "finalize_3d_asset_generation",
+            {
+                "taskId": "task-final",
+                "finalVisualReviewApproved": True,
+                "finalVisualReviewNote": "silhouette and materials approved",
+            },
+        )
+
+    assert blocked.is_error is True
+    assert approved.structured_content["status"] == "SUCCEEDED"
+    assert server._read_task("task-final")["finalVisualReview"]["humanApproved"] is True
 
 
 def test_multiple_color_or_material_regions_keep_generated_texture():
