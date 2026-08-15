@@ -37,7 +37,6 @@ new dependency graph or downloading isolated build dependencies.
 | `MESHY_API_KEY` | Meshy 3D Asset generation | none |
 | `BLENDER_PATH` | Blender headless mesh cleanup | `blender` on `PATH` |
 | `ASSET3D_RUN_ROOT` | 3D requests, downloads, tasks, and reports | `<UNITY_PROJECT_PATH>/.asset3d-staging` |
-| `CC0_MANIFEST_PATHS` | `os.pathsep`-separated local CC0 manifests | none |
 | `ASSET_ROOT` | Asset output; relative paths resolve from the repository root | `./var/assets` |
 | `HANDOFF_ROOT` | Planning files for execution AI | `./var/handoffs` |
 | `UNITY_SCRIPT_ROOT` | C# root | `Assets/Scripts` |
@@ -47,10 +46,8 @@ Do not use `ANTHROPIC_API_KEY`, `*_MCP_URL`, `GIT_ROOT`, or Postgres/Redis job s
 
 ### Meshy 3D provider
 
-Every 3D submission first searches configured local CC0 manifests and Poly Haven's official
-API. Meshy is called only when both searches produce `not_found`; license, quality, or provider
-failures do not authorize a paid fallback. Poly Haven requests use an identifying User-Agent and
-record provider attribution and CC0 provenance.
+Every 3D submission uses host-supplied, human-approved reference images with Meshy. The runtime
+does not automatically search or adopt local or third-party CC0 models.
 
 `ASSET3D_RUN_ROOT` must be an absolute directory inside the external Unity project but outside
 its `Assets/` directory. Relative paths and paths inside this orchestration repository are

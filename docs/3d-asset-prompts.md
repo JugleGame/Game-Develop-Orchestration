@@ -4,8 +4,8 @@
 
 The host agent writes an `assetSpec` that captures the game's intent. Without making
 model-driven decisions, `Asset3DGenMcpServer` applies the specification to deterministic
-templates, composes and validates provider-neutral prompts, searches verified CC0 sources,
-controls the Meshy fallback, and preserves provenance through Blender validation and Unity import.
+templates, composes and validates provider-neutral prompts, submits approved references to Meshy,
+and preserves provenance through Blender validation and Unity import.
 
 ```mermaid
 flowchart TD
@@ -17,10 +17,8 @@ flowchart TD
     G --> P
     Q --> P
     P --> H["Request package under external ASSET3D_RUN_ROOT"]
-    H --> C0["Local CC0 manifest + Poly Haven"]
-    C0 -->|"not_found only"| E["Meshy fallback"]
-    C0 -->|"found"| B["Blender GameReady gate"]
-    E --> B
+    H --> E["Meshy generation"]
+    E --> B["Blender GameReady gate"]
     B -->|"pass only"| U["Unity Assets/Generated3D"]
 ```
 
@@ -225,9 +223,8 @@ to produce prompts and a request package with a new SHA-256 digest.
 ```
 
 The package preserves the original specification, both derived prompts, their SHA-256
-digests, game and feature IDs, and the creation timestamp. The status is `prepared`; submission
-then reports `found`, `not_found`, `license_rejected`, `quality_rejected`, or `provider_failed`.
-Only `not_found` authorizes Meshy. Image generation requires one to four approved PNG/JPEG HTTPS
+digests, game and feature IDs, and the creation timestamp. The status is `prepared`; Meshy
+submission requires one to four approved PNG/JPEG HTTPS
 URLs or data URIs. `referenceProvenance.source` identifies the host-side source such as
 `gpt_image_api`, `humanApproved` must be true, and `sourcePromptSha256` may preserve prompt
 lineage. The MCP does not generate the reference image itself.
