@@ -1122,3 +1122,41 @@ async def test_animation_passes_inspection_when_frames_carry_alpha(monkeypatch):
     body = result.structured_content
     assert body["technicalStatus"] == "pass"
     assert body["technicalFailures"] == []
+
+
+async def test_animation_reports_sequence_metrics_and_anchors(monkeypatch):
+    """A sequence that shakes must be visible at generation time, not after import."""
+
+    calls: list[dict] = []
+
+    def _drifting(*, first_frame, action, frame_count, description=None, **kwargs):
+        calls.append({"frame_count": frame_count})
+        frames = []
+        for index in range(frame_count):
+            frame = Image.new("RGBA", first_frame.size, (0, 0, 0, 0))
+            left = 8 + index * 10
+            frame.paste((10, 20, 30, 255), (left, 40, left + 30, 110))
+            frames.append(frame)
+        return frames, {"type": "generations", "generations": 2.0}, "job-drift"
+
+    monkeypatch.setattr(pixellab_client, "create_animation", _drifting)
+
+    async with session() as client:
+        first_frame_id = await _approved_prototype(client, "t-anim-drift", "f-anim-source")
+        result = await client.call_tool(
+            "generate_2d_animation",
+            {
+                "featureId": "f-anim",
+                "firstFrameAssetId": first_frame_id,
+                "action": "walk cycle",
+                "gameId": "t-anim-drift",
+                "frameCount": 4,
+            },
+        )
+
+    body = result.structured_content
+    assert "subject_drifts_between_frames" in body["sequenceWarnings"]
+    assert body["sequenceMetrics"]["anchorDriftPixels"] >= 6
+    # Every frame carries the anchor Unity needs to cancel that drift.
+    assert all(len(frame["footAnchor"]) == 2 for frame in body["frames"])
+    assert body["frames"][0]["footAnchor"] != body["frames"][-1]["footAnchor"]
