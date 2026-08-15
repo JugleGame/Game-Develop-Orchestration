@@ -727,3 +727,352 @@ def split_field(field: str) -> tuple[str, str]:
             field_name, "field 의 필드 부분"
         )
     return "", require_name(text, "field")
+
+
+# ---------------------------------------------------------------------------
+# create_animation_clip / create_animator_controller / inspect_animator
+# ---------------------------------------------------------------------------
+#: Animator parameter kinds the controller builder accepts.
+PARAMETER_TYPES = ("Float", "Int", "Bool", "Trigger")
+
+#: Condition modes, mapped onto ``AnimatorConditionMode``.
+CONDITION_MODES = ("If", "IfNot", "Greater", "Less", "Equals", "NotEqual")
+
+
+def _float_array(values: list[float]) -> str:
+    return ", ".join(f"{float(value)}f" for value in values)
+
+
+def _int_array(values: list[int]) -> str:
+    return ", ".join(str(int(value)) for value in values)
+
+
+def _bool_array(values: list[bool]) -> str:
+    return ", ".join("true" if value else "false" for value in values)
+
+
+def animation_clip_command(
+    clip_path: str,
+    frame_paths: list[str],
+    frames_per_second: float,
+    loop: bool,
+) -> str:
+    """낱장 스프라이트 프레임을 재생 순서 그대로 클립 하나로 묶는 C#.
+
+    프레임은 ``SpriteRenderer.m_Sprite`` 오브젝트 참조 커브로 들어간다 —
+    스프라이트 애니메이션은 값이 아니라 참조가 바뀌는 것이라 일반
+    ``AnimationCurve`` 로는 표현되지 않는다.
+    """
+
+    body = f"""        string clipPath = {_literal(clip_path)};
+        string[] framePaths = new string[] {{ {_string_array(frame_paths)} }};
+        float fps = {float(frames_per_second)}f;
+        bool loop = {"true" if loop else "false"};
+
+        var missing = new System.Collections.Generic.List<string>();
+        var sprites = new System.Collections.Generic.List<global::UnityEngine.Sprite>();
+        foreach (var path in framePaths)
+        {{
+            var sprite = global::UnityEditor.AssetDatabase
+                .LoadAssetAtPath<global::UnityEngine.Sprite>(path);
+            if (sprite == null)
+            {{
+                missing.Add(path);
+                continue;
+            }}
+            sprites.Add(sprite);
+        }}
+
+        if (missing.Count > 0 || sprites.Count == 0)
+        {{
+            string failure = "{{\\"success\\":false"
+                + ",\\"clip\\":\\"" + clipPath + "\\""
+                + ",\\"missing\\":" + JsonArray(missing)
+                + "}}";
+            result.Log("{RESULT_MARKER} {{0}}", failure);
+            return;
+        }}
+
+        EnsureFolder(clipPath);
+        var clip = new global::UnityEngine.AnimationClip();
+        clip.frameRate = fps;
+
+        var binding = global::UnityEditor.EditorCurveBinding.PPtrCurve(
+            "", typeof(global::UnityEngine.SpriteRenderer), "m_Sprite");
+        var keys = new global::UnityEditor.ObjectReferenceKeyframe[sprites.Count];
+        for (int i = 0; i < sprites.Count; i++)
+        {{
+            keys[i] = new global::UnityEditor.ObjectReferenceKeyframe();
+            keys[i].time = i / fps;
+            keys[i].value = sprites[i];
+        }}
+        global::UnityEditor.AnimationUtility.SetObjectReferenceCurve(clip, binding, keys);
+
+        var settings = global::UnityEditor.AnimationUtility.GetAnimationClipSettings(clip);
+        settings.loopTime = loop;
+        global::UnityEditor.AnimationUtility.SetAnimationClipSettings(clip, settings);
+
+        global::UnityEditor.AssetDatabase.CreateAsset(clip, clipPath);
+        global::UnityEditor.AssetDatabase.SaveAssets();
+
+        string payload = "{{\\"success\\":true"
+            + ",\\"clip\\":\\"" + clipPath + "\\""
+            + ",\\"frameCount\\":" + sprites.Count
+            + ",\\"frameRate\\":" + clip.frameRate
+            + ",\\"loop\\":" + (loop ? "true" : "false")
+            + ",\\"length\\":" + clip.length
+            + "}}";
+        result.Log("{RESULT_MARKER} {{0}}", payload);"""
+    return _wrap(body)
+
+
+def animator_controller_command(
+    controller_path: str,
+    state_names: list[str],
+    state_clips: list[str],
+    parameter_names: list[str],
+    parameter_types: list[str],
+    default_state: str,
+    transition_from: list[str],
+    transition_to: list[str],
+    transition_durations: list[float],
+    transition_has_exit: list[bool],
+    condition_transition: list[int],
+    condition_parameters: list[str],
+    condition_modes: list[str],
+    condition_thresholds: list[float],
+    target_prefab: str = "",
+) -> str:
+    """상태 전환 그래프를 만들고, 요청하면 프리팹의 ``Animator`` 에 꽂는 C#.
+
+    조건은 전환마다 개수가 달라서 하나의 평평한 배열로 보내고 전환 인덱스로
+    묶는다 — 중첩 구조를 C# 소스에 글자로 박는 것보다 검사하기 쉽다.
+    """
+
+    body = f"""        string controllerPath = {_literal(controller_path)};
+        string prefabPath = {_literal(target_prefab)};
+        string[] stateNames = new string[] {{ {_string_array(state_names)} }};
+        string[] stateClips = new string[] {{ {_string_array(state_clips)} }};
+        string[] parameterNames = new string[] {{ {_string_array(parameter_names)} }};
+        string[] parameterTypes = new string[] {{ {_string_array(parameter_types)} }};
+        string defaultState = {_literal(default_state)};
+        string[] fromStates = new string[] {{ {_string_array(transition_from)} }};
+        string[] toStates = new string[] {{ {_string_array(transition_to)} }};
+        float[] durations = new float[] {{ {_float_array(transition_durations)} }};
+        bool[] hasExitTime = new bool[] {{ {_bool_array(transition_has_exit)} }};
+        int[] conditionOwner = new int[] {{ {_int_array(condition_transition)} }};
+        string[] conditionParameters = new string[] {{ {_string_array(condition_parameters)} }};
+        string[] conditionModes = new string[] {{ {_string_array(condition_modes)} }};
+        float[] conditionThresholds = new float[] {{ {_float_array(condition_thresholds)} }};
+
+        var missing = new System.Collections.Generic.List<string>();
+        EnsureFolder(controllerPath);
+        var controller = global::UnityEditor.Animations.AnimatorController
+            .CreateAnimatorControllerAtPath(controllerPath);
+        var layer = controller.layers[0];
+        var machine = layer.stateMachine;
+
+        for (int i = 0; i < parameterNames.Length; i++)
+        {{
+            var kind = global::UnityEngine.AnimatorControllerParameterType.Float;
+            if (parameterTypes[i] == "Int")
+            {{
+                kind = global::UnityEngine.AnimatorControllerParameterType.Int;
+            }}
+            else if (parameterTypes[i] == "Bool")
+            {{
+                kind = global::UnityEngine.AnimatorControllerParameterType.Bool;
+            }}
+            else if (parameterTypes[i] == "Trigger")
+            {{
+                kind = global::UnityEngine.AnimatorControllerParameterType.Trigger;
+            }}
+            controller.AddParameter(parameterNames[i], kind);
+        }}
+
+        var states = new System.Collections.Generic.Dictionary<
+            string, global::UnityEditor.Animations.AnimatorState>();
+        for (int i = 0; i < stateNames.Length; i++)
+        {{
+            var state = machine.AddState(stateNames[i]);
+            if (stateClips[i].Length > 0)
+            {{
+                var clip = global::UnityEditor.AssetDatabase
+                    .LoadAssetAtPath<global::UnityEngine.AnimationClip>(stateClips[i]);
+                if (clip == null)
+                {{
+                    missing.Add(stateClips[i]);
+                }}
+                else
+                {{
+                    state.motion = clip;
+                }}
+            }}
+            states[stateNames[i]] = state;
+            if (stateNames[i] == defaultState)
+            {{
+                machine.defaultState = state;
+            }}
+        }}
+
+        var transitions = new System.Collections.Generic.List<
+            global::UnityEditor.Animations.AnimatorStateTransition>();
+        for (int i = 0; i < fromStates.Length; i++)
+        {{
+            var transition = states[fromStates[i]].AddTransition(states[toStates[i]]);
+            transition.hasExitTime = hasExitTime[i];
+            transition.duration = durations[i];
+            transitions.Add(transition);
+        }}
+
+        for (int i = 0; i < conditionOwner.Length; i++)
+        {{
+            var mode = global::UnityEditor.Animations.AnimatorConditionMode.If;
+            if (conditionModes[i] == "IfNot")
+            {{
+                mode = global::UnityEditor.Animations.AnimatorConditionMode.IfNot;
+            }}
+            else if (conditionModes[i] == "Greater")
+            {{
+                mode = global::UnityEditor.Animations.AnimatorConditionMode.Greater;
+            }}
+            else if (conditionModes[i] == "Less")
+            {{
+                mode = global::UnityEditor.Animations.AnimatorConditionMode.Less;
+            }}
+            else if (conditionModes[i] == "Equals")
+            {{
+                mode = global::UnityEditor.Animations.AnimatorConditionMode.Equals;
+            }}
+            else if (conditionModes[i] == "NotEqual")
+            {{
+                mode = global::UnityEditor.Animations.AnimatorConditionMode.NotEqual;
+            }}
+            transitions[conditionOwner[i]].AddCondition(
+                mode, conditionThresholds[i], conditionParameters[i]);
+        }}
+
+        bool bound = false;
+        if (prefabPath.Length > 0)
+        {{
+            var root = global::UnityEditor.PrefabUtility.LoadPrefabContents(prefabPath);
+            if (root == null)
+            {{
+                missing.Add(prefabPath);
+            }}
+            else
+            {{
+                var animator = root.GetComponent<global::UnityEngine.Animator>();
+                if (animator == null)
+                {{
+                    animator = root.AddComponent<global::UnityEngine.Animator>();
+                }}
+                animator.runtimeAnimatorController = controller;
+                global::UnityEditor.PrefabUtility.SaveAsPrefabAsset(root, prefabPath);
+                global::UnityEditor.PrefabUtility.UnloadPrefabContents(root);
+                bound = true;
+            }}
+        }}
+
+        global::UnityEditor.AssetDatabase.SaveAssets();
+
+        var stateList = new System.Collections.Generic.List<string>();
+        foreach (var name in stateNames)
+        {{
+            stateList.Add(name);
+        }}
+        var parameterList = new System.Collections.Generic.List<string>();
+        foreach (var name in parameterNames)
+        {{
+            parameterList.Add(name);
+        }}
+
+        string payload = "{{\\"success\\":" + (missing.Count == 0 ? "true" : "false")
+            + ",\\"controller\\":\\"" + controllerPath + "\\""
+            + ",\\"states\\":" + JsonArray(stateList)
+            + ",\\"parameters\\":" + JsonArray(parameterList)
+            + ",\\"transitions\\":" + transitions.Count
+            + ",\\"boundToPrefab\\":" + (bound ? "true" : "false")
+            + ",\\"missing\\":" + JsonArray(missing)
+            + "}}";
+        result.Log("{RESULT_MARKER} {{0}}", payload);"""
+    return _wrap(body)
+
+
+def animator_inspect_command(target: str) -> str:
+    """컨트롤러 또는 프리팹 하나의 상태·파라미터·클립 프레임 수를 읽는 C#.
+
+    자동 판정은 하지 않는다 — 무엇이 실려 있는지만 그대로 돌려주고 통과 여부는
+    호스트가 판단한다 (``docs/contracts.md`` 의 "증거를 돌려주고 PASS 를 선언하지
+    않는다").
+    """
+
+    body = f"""        string target = {_literal(target)};
+
+        var states = new System.Collections.Generic.List<string>();
+        var parameters = new System.Collections.Generic.List<string>();
+        var clips = new System.Collections.Generic.List<string>();
+        string controllerPath = "";
+        bool hasAnimator = false;
+
+        global::UnityEditor.Animations.AnimatorController controller = null;
+        if (target.EndsWith(".prefab"))
+        {{
+            var root = global::UnityEditor.AssetDatabase
+                .LoadAssetAtPath<global::UnityEngine.GameObject>(target);
+            if (root != null)
+            {{
+                var animator = root.GetComponent<global::UnityEngine.Animator>();
+                hasAnimator = animator != null;
+                if (animator != null && animator.runtimeAnimatorController != null)
+                {{
+                    controllerPath = global::UnityEditor.AssetDatabase
+                        .GetAssetPath(animator.runtimeAnimatorController);
+                    controller = global::UnityEditor.AssetDatabase
+                        .LoadAssetAtPath<global::UnityEditor.Animations.AnimatorController>(
+                            controllerPath);
+                }}
+            }}
+        }}
+        else
+        {{
+            controllerPath = target;
+            controller = global::UnityEditor.AssetDatabase
+                .LoadAssetAtPath<global::UnityEditor.Animations.AnimatorController>(target);
+        }}
+
+        if (controller != null)
+        {{
+            foreach (var parameter in controller.parameters)
+            {{
+                parameters.Add(parameter.name + ":" + parameter.type);
+            }}
+            foreach (var layer in controller.layers)
+            {{
+                foreach (var child in layer.stateMachine.states)
+                {{
+                    string motion = child.state.motion == null ? "-" : child.state.motion.name;
+                    states.Add(layer.name + "/" + child.state.name + ":" + motion);
+                }}
+            }}
+            foreach (var clip in controller.animationClips)
+            {{
+                var binding = global::UnityEditor.EditorCurveBinding.PPtrCurve(
+                    "", typeof(global::UnityEngine.SpriteRenderer), "m_Sprite");
+                var keys = global::UnityEditor.AnimationUtility
+                    .GetObjectReferenceCurve(clip, binding);
+                int frames = keys == null ? 0 : keys.Length;
+                clips.Add(clip.name + ":" + frames + ":" + clip.length);
+            }}
+        }}
+
+        string payload = "{{\\"success\\":" + (controller != null ? "true" : "false")
+            + ",\\"target\\":\\"" + target + "\\""
+            + ",\\"controller\\":\\"" + controllerPath + "\\""
+            + ",\\"hasAnimator\\":" + (hasAnimator ? "true" : "false")
+            + ",\\"states\\":" + JsonArray(states)
+            + ",\\"parameters\\":" + JsonArray(parameters)
+            + ",\\"clips\\":" + JsonArray(clips)
+            + "}}";
+        result.Log("{RESULT_MARKER} {{0}}", payload);"""
+    return _wrap(body)

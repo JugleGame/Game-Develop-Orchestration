@@ -192,6 +192,25 @@ an execution agent copies it into the target Unity project's `Assets/Editor/`
 directory. Treat compilation and an import test as Unity-side evidence, not as
 evidence supplied by this template alone.
 
+## Unity animation debugging tool
+
+[`templates/unity-editor/AnimationDebugWindow.cs`](../templates/unity-editor/AnimationDebugWindow.cs)
+is the human-facing companion to the animation MCP tools, opened from
+**Tools > Game Development > Animation Debugger** after the same copy into
+`Assets/Editor/`. It does three things the MCP tools cannot do for a person:
+
+1. Build a clip from a folder of loose frame PNGs, in file-name order — the order
+   `generate_2d_animation` zero-pads its frames for.
+2. List every `AnimatorController` with its states, parameters, and per-clip frame
+   counts, and flag prefabs and scene objects whose `Animator` has no controller.
+3. Drive a live `Animator`'s parameters during PlayMode and read back the current
+   state, so a transition that never fires can be seen rather than guessed.
+
+The second and third points exist because a missing controller fails silently:
+`SetFloat` and `SetTrigger` do nothing, no error is logged, and PlayMode
+verification still passes. `inspect_animator` reports the same facts to the host
+agent, and layout rule `L8` reports them in `inspect_project_layout`.
+
 ## First vertical slice and improvement evidence
 
 The first implementation must be a browser-playable vertical slice, not a

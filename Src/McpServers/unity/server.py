@@ -1100,5 +1100,315 @@ async def unity_bridge_status() -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# 애니메이션 — 프레임을 클립으로, 클립을 상태 전환 그래프로
+# ---------------------------------------------------------------------------
+def _animation_root() -> str:
+    return os.getenv("UNITY_ANIMATION_ROOT", "Assets/Animations").rstrip("/")
+
+
+@mcp.tool(
+    description=(
+        "Build one AnimationClip from an ordered list of sprite frames. "
+        "Frame order is the play order."
+    )
+)
+@expects_dict_return
+async def create_animation_clip(
+    gameId: str,
+    clipName: str,
+    framePaths: list[str],
+    framesPerSecond: float = 12.0,
+    loop: bool = True,
+) -> dict[str, Any]:
+    """생성된 프레임을 실제로 **움직이게** 만드는 단계다.
+
+    ``import_asset`` 은 그림을 프로젝트에 넣을 뿐이고, 프레임이 순서대로 재생되려면
+    클립이 있어야 한다. 클립이 없으면 게임 코드가 애니메이터 파라미터를 아무리
+    구동해도 화면은 정지 스프라이트 그대로다 — 오류가 없어서 검증도 통과한다.
+    """
+
+    gameId = _require(gameId, "gameId")
+    if not framePaths:
+        raise tool_error(VALIDATION_ERROR, "framePaths 가 비어 있습니다", gameId=gameId)
+    if not 1.0 <= framesPerSecond <= 60.0:
+        raise tool_error(
+            VALIDATION_ERROR, "framesPerSecond 는 1 이상 60 이하여야 합니다", gameId=gameId
+        )
+
+    try:
+        name = assembly.require_name(clipName, "clipName")
+        clip_path = assembly.require_asset_path(
+            f"{_animation_root()}/{name}.anim", "clipName", suffix=".anim"
+        )
+        resolved_frames = [
+            assembly.require_asset_path(path, f"framePaths[{index}]")
+            for index, path in enumerate(framePaths)
+        ]
+    except AssemblyError as exc:
+        raise tool_error(VALIDATION_ERROR, str(exc), gameId=gameId) from exc
+
+    inner = await _run_command(
+        assembly.animation_clip_command(clip_path, resolved_frames, framesPerSecond, loop),
+        f"AutoGen clip {name}",
+        _assembly_timeout(),
+    )
+
+    missing = list(inner.get("missing") or [])
+    if missing:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "every frame must be an imported Sprite asset",
+            gameId=gameId,
+            missing=missing,
+        )
+
+    logger.info(
+        "Animation clip created",
+        extra={"game_id": gameId, "clip": clip_path, "frames": len(resolved_frames)},
+    )
+    return {
+        "clip": clip_path,
+        "gameId": gameId,
+        "frameCount": inner.get("frameCount", len(resolved_frames)),
+        "frameRate": inner.get("frameRate", framesPerSecond),
+        "loop": bool(inner.get("loop", loop)),
+        "length": inner.get("length"),
+        "frames": resolved_frames,
+    }
+
+
+@mcp.tool(
+    description=(
+        "Create an AnimatorController from clips, parameters, and transitions, then bind it "
+        "to a prefab's Animator."
+    )
+)
+@expects_dict_return
+async def create_animator_controller(
+    gameId: str,
+    controllerName: str,
+    states: list[dict[str, Any]],
+    parameters: list[dict[str, Any]] | None = None,
+    transitions: list[dict[str, Any]] | None = None,
+    defaultState: str = "",
+    targetPrefab: str = "",
+) -> dict[str, Any]:
+    """상태 전환 그래프를 만들고 프리팹에 꽂는다.
+
+    파라미터 이름은 게임 코드가 부르는 이름과 같아야 한다. 정의되지 않은
+    파라미터를 조건으로 쓰는 전환은 여기서 막는다 — Unity 는 그런 전환을 조용히
+    무시해서, 통과시키면 "왜 안 바뀌는지" 를 런타임에 찾아야 한다.
+    """
+
+    gameId = _require(gameId, "gameId")
+    if not states:
+        raise tool_error(VALIDATION_ERROR, "states 가 비어 있습니다", gameId=gameId)
+
+    parameter_list = parameters or []
+    transition_list = transitions or []
+
+    try:
+        name = assembly.require_name(controllerName, "controllerName")
+        controller_path = assembly.require_asset_path(
+            f"{_animation_root()}/{name}.controller", "controllerName", suffix=".controller"
+        )
+        prefab_path = (
+            assembly.require_asset_path(targetPrefab, "targetPrefab", suffix=".prefab")
+            if str(targetPrefab).strip()
+            else ""
+        )
+
+        state_names: list[str] = []
+        state_clips: list[str] = []
+        for index, state in enumerate(states):
+            state_name = assembly.require_name(str(state.get("name") or ""), f"states[{index}].name")
+            if state_name in state_names:
+                raise tool_error(
+                    VALIDATION_ERROR, f"중복된 상태 이름입니다: {state_name}", gameId=gameId
+                )
+            clip = str(state.get("clip") or "")
+            state_clips.append(
+                assembly.require_asset_path(clip, f"states[{index}].clip", suffix=".anim")
+                if clip
+                else ""
+            )
+            state_names.append(state_name)
+
+        parameter_names: list[str] = []
+        parameter_types: list[str] = []
+        for index, parameter in enumerate(parameter_list):
+            parameter_name = assembly.require_name(
+                str(parameter.get("name") or ""), f"parameters[{index}].name"
+            )
+            parameter_type = str(parameter.get("type") or "Float")
+            if parameter_type not in assembly.PARAMETER_TYPES:
+                raise tool_error(
+                    VALIDATION_ERROR,
+                    f"parameters[{index}].type 은 {assembly.PARAMETER_TYPES} 중 하나여야 합니다",
+                    gameId=gameId,
+                )
+            parameter_names.append(parameter_name)
+            parameter_types.append(parameter_type)
+
+        default_name = str(defaultState or state_names[0])
+        if default_name not in state_names:
+            raise tool_error(
+                VALIDATION_ERROR, f"defaultState 가 states 에 없습니다: {default_name}", gameId=gameId
+            )
+
+        transition_from: list[str] = []
+        transition_to: list[str] = []
+        transition_durations: list[float] = []
+        transition_has_exit: list[bool] = []
+        condition_transition: list[int] = []
+        condition_parameters: list[str] = []
+        condition_modes: list[str] = []
+        condition_thresholds: list[float] = []
+
+        for index, transition in enumerate(transition_list):
+            source = str(transition.get("from") or "")
+            destination = str(transition.get("to") or "")
+            if source not in state_names or destination not in state_names:
+                raise tool_error(
+                    VALIDATION_ERROR,
+                    f"transitions[{index}] 이 존재하지 않는 상태를 가리킵니다",
+                    gameId=gameId,
+                )
+            transition_from.append(source)
+            transition_to.append(destination)
+            transition_durations.append(float(transition.get("duration", 0.1)))
+            transition_has_exit.append(bool(transition.get("hasExitTime", False)))
+
+            for condition in transition.get("conditions") or []:
+                condition_name = str(condition.get("parameter") or "")
+                if condition_name not in parameter_names:
+                    raise tool_error(
+                        VALIDATION_ERROR,
+                        f"transitions[{index}] 이 정의되지 않은 파라미터를 씁니다: "
+                        f"{condition_name}",
+                        gameId=gameId,
+                    )
+                mode = str(condition.get("mode") or "If")
+                if mode not in assembly.CONDITION_MODES:
+                    raise tool_error(
+                        VALIDATION_ERROR,
+                        f"조건 mode 는 {assembly.CONDITION_MODES} 중 하나여야 합니다",
+                        gameId=gameId,
+                    )
+                condition_transition.append(index)
+                condition_parameters.append(condition_name)
+                condition_modes.append(mode)
+                condition_thresholds.append(float(condition.get("threshold", 0.0)))
+    except AssemblyError as exc:
+        raise tool_error(VALIDATION_ERROR, str(exc), gameId=gameId) from exc
+
+    inner = await _run_command(
+        assembly.animator_controller_command(
+            controller_path,
+            state_names,
+            state_clips,
+            parameter_names,
+            parameter_types,
+            default_name,
+            transition_from,
+            transition_to,
+            transition_durations,
+            transition_has_exit,
+            condition_transition,
+            condition_parameters,
+            condition_modes,
+            condition_thresholds,
+            prefab_path,
+        ),
+        f"AutoGen controller {name}",
+        _assembly_timeout(),
+    )
+
+    missing = list(inner.get("missing") or [])
+    if missing:
+        raise tool_error(
+            MCP_ERROR,
+            "controller assembly could not resolve every asset",
+            gameId=gameId,
+            missing=missing,
+        )
+
+    logger.info(
+        "Animator controller created",
+        extra={
+            "game_id": gameId,
+            "controller": controller_path,
+            "states": len(state_names),
+            "bound": bool(inner.get("boundToPrefab")),
+        },
+    )
+    return {
+        "controller": controller_path,
+        "gameId": gameId,
+        "states": state_names,
+        "parameters": [
+            {"name": item, "type": kind}
+            for item, kind in zip(parameter_names, parameter_types)
+        ],
+        "defaultState": default_name,
+        "transitions": inner.get("transitions", len(transition_from)),
+        "boundToPrefab": bool(inner.get("boundToPrefab")),
+        "targetPrefab": prefab_path,
+    }
+
+
+@mcp.tool(
+    description=(
+        "Report what an Animator actually carries: controller path, states, parameters, and "
+        "per-clip frame counts. Evidence only, no verdict."
+    )
+)
+@expects_dict_return
+async def inspect_animator(gameId: str, target: str) -> dict[str, Any]:
+    """사람과 호스트가 같은 것을 보게 만드는 검사다.
+
+    컨트롤러가 없는 ``Animator`` 는 오류를 내지 않고 조용히 아무것도 하지 않는다.
+    그래서 "왜 안 움직이나" 를 눈으로 확인할 수 있는 통로가 필요하다.
+    """
+
+    gameId = _require(gameId, "gameId")
+    try:
+        if target.strip().endswith(".prefab"):
+            resolved = assembly.require_asset_path(target, "target", suffix=".prefab")
+        else:
+            resolved = assembly.require_asset_path(target, "target", suffix=".controller")
+    except AssemblyError as exc:
+        raise tool_error(VALIDATION_ERROR, str(exc), gameId=gameId) from exc
+
+    inner = await _run_command(
+        assembly.animator_inspect_command(resolved),
+        f"AutoGen inspect {resolved}",
+        _assembly_timeout(),
+    )
+
+    states = [_split_record(item, ("state", "motion")) for item in inner.get("states") or []]
+    parameters = [_split_record(item, ("name", "type")) for item in inner.get("parameters") or []]
+    clips = [_split_record(item, ("clip", "frames", "length")) for item in inner.get("clips") or []]
+
+    return {
+        "gameId": gameId,
+        "target": resolved,
+        "controller": inner.get("controller", ""),
+        "hasAnimator": bool(inner.get("hasAnimator")),
+        "hasController": bool(inner.get("success")),
+        "states": states,
+        "parameters": parameters,
+        "clips": clips,
+    }
+
+
+def _split_record(value: str, fields: tuple[str, ...]) -> dict[str, str]:
+    """``"Base/Idle:PlayerIdle"`` 처럼 콜론으로 이어 보낸 값을 되돌린다."""
+
+    parts = str(value).split(":")
+    parts += [""] * (len(fields) - len(parts))
+    return dict(zip(fields, parts))
+
 if __name__ == "__main__":
     serve(mcp)

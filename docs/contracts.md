@@ -62,8 +62,18 @@ Server: `UnityMcpServer`.
 - It then binds base color, normal, `*metallicSmoothness*`, and emission into one URP material
   beside the model and remaps the model's embedded materials to it, because the FBX importer binds
   base color and normal only. Results are reported as `texturesRepaired` and `material`.
+- `create_animation_clip` builds one clip from an ordered frame list; the order given is the play
+  order, and each frame must already be an imported Sprite. `create_animator_controller` builds the
+  state graph from host-authored states, parameters, and transitions, then binds the controller to a
+  prefab's `Animator`. A transition whose condition names an undeclared parameter is rejected before
+  Unity sees it, because Unity ignores such a transition silently. Clips and controllers are written
+  under `UNITY_ANIMATION_ROOT` (`Assets/Animations` by default).
+- `inspect_animator` returns what an Animator actually carries — controller path, states with their
+  motions, parameters with their types, and per-clip frame counts — without judging it. An `Animator`
+  with no controller raises no error at runtime, so `inspect_project_layout` reports that case as
+  layout rule `L8`.
 - Evidence: `build_project`, `run_playmode_test`, `get_compile_errors`,
-  `inspect_project_layout`, `unity_bridge_status`.
+  `inspect_project_layout`, `unity_bridge_status`, `inspect_animator`.
 - Return evidence; never declare final PASS.
 
 ## Asset MCP

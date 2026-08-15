@@ -28,6 +28,9 @@ REQUIRED_TOOLS = {
         "build_project": {"gameId"},
         "run_playmode_test": {"gameId"},
         "inspect_project_layout": set(),
+        "create_animation_clip": {"gameId", "clipName", "framePaths"},
+        "create_animator_controller": {"gameId", "controllerName", "states"},
+        "inspect_animator": {"gameId", "target"},
     },
     "asset": {
         "prepare_asset_prompt": {"assetKind"},
