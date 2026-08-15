@@ -99,6 +99,15 @@ Server: `AssetGenMcpServer`.
   preserve the host-authored subject intent and report original/composed character counts. The
   provider prompt orders subject and required structure before exclusions, and keeps the shared
   art style in PixelLab's structured controls instead of duplicating it in prose.
+- `generate_2d_animation` turns one approved prototype into an ordered frame sequence through
+  PixelLab's `animate-with-text-v3`. The approved asset is submitted as the first frame, so the
+  human gate that guards a static sprite also guards every frame derived from it. Frame counts
+  outside 2-16 are rejected before submission. Frames land under `ASSET_ROOT/assets/<game>/
+  animations/<feature>_<digest>/` with zero-padded names that sort into play order, beside an
+  `animation.json` index recording the action, first-frame asset ID, provider job ID, and usage.
+  Each frame is an ordinary manifest asset: it starts `pending` and needs the same human review
+  before `readyForImport`. A poll timeout, a failed provider job, and a rejected request are
+  distinct failures.
 - `review_asset` stores optional `preserve`, `change`, and `artStyleFeedback` fields separately
   from the free-form review note so the next host-authored revision can distinguish content fixes
   from shared style changes.
