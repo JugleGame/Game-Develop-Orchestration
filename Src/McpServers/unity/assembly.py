@@ -319,6 +319,197 @@ def prefab_command(
 
 
 # ---------------------------------------------------------------------------
+# import_asset
+# ---------------------------------------------------------------------------
+def texture_import_command(folder: str, model_path: str, max_texture_size: int) -> str:
+    """사이드카 텍스처를 올바른 타입·해상도로 읽고 URP 머티리얼에 묶는 C#.
+
+    세 가지가 기본값으로는 어긋난다. 노멀맵이 ``Default`` + sRGB 로 들어오면
+    ``_BumpMap`` 에서 면이 갈라져 보이고, 2048 짜리 맵이 그대로 WebGL 빌드에
+    들어가며, FBX 임포터는 base color 와 normal 만 연결해 metallic/smoothness 가
+    빠진다. 파일 이름이 유일한 단서라 이름으로 판정한다.
+    """
+
+    body = f"""        string folder = {_literal(folder)};
+        string modelPath = {_literal(model_path)};
+        int maxTextureSize = {int(max_texture_size)};
+        var repaired = new System.Collections.Generic.List<string>();
+
+        global::UnityEngine.Texture2D baseMap = null;
+        global::UnityEngine.Texture2D normalMap = null;
+        global::UnityEngine.Texture2D metallicMap = null;
+        global::UnityEngine.Texture2D emissionMap = null;
+
+        foreach (var guid in global::UnityEditor.AssetDatabase
+            .FindAssets("t:Texture2D", new string[] {{ folder }}))
+        {{
+            string path = global::UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
+            var importer = global::UnityEditor.AssetImporter.GetAtPath(path)
+                as global::UnityEditor.TextureImporter;
+            if (importer == null)
+            {{
+                continue;
+            }}
+            string lower = path.ToLowerInvariant();
+            bool isNormal = lower.Contains("normal");
+            bool isMetallic = lower.Contains("metallicsmoothness");
+            bool isEmission = lower.Contains("emission");
+            bool isLinear = isNormal || isMetallic || lower.Contains("metallic")
+                || lower.Contains("roughness") || lower.Contains("occlusion");
+            bool isBaseColor = !isLinear && !isEmission;
+            bool changed = false;
+
+            if (isNormal && importer.textureType != global::UnityEditor.TextureImporterType.NormalMap)
+            {{
+                importer.textureType = global::UnityEditor.TextureImporterType.NormalMap;
+                changed = true;
+            }}
+            if (isLinear && !isNormal && importer.sRGBTexture)
+            {{
+                importer.sRGBTexture = false;
+                changed = true;
+            }}
+            if (isMetallic && !importer.alphaIsTransparency)
+            {{
+                importer.alphaSource = global::UnityEditor.TextureImporterAlphaSource.FromInput;
+                changed = true;
+            }}
+
+            // Only the base color is read at full size; the rest carry lower-frequency data.
+            int budget = isBaseColor ? maxTextureSize : System.Math.Max(128, maxTextureSize / 2);
+            if (importer.maxTextureSize > budget)
+            {{
+                importer.maxTextureSize = budget;
+                changed = true;
+            }}
+            if (importer.textureCompression != global::UnityEditor.TextureImporterCompression.Compressed)
+            {{
+                importer.textureCompression = global::UnityEditor.TextureImporterCompression.Compressed;
+                changed = true;
+            }}
+            // Crunch trades import time for a much smaller download, which is what WebGL pays for.
+            if (!importer.crunchedCompression)
+            {{
+                importer.crunchedCompression = true;
+                importer.compressionQuality = 50;
+                changed = true;
+            }}
+
+            bool needsAlpha = isMetallic || isNormal || importer.DoesSourceTextureHaveAlpha();
+            var webgl = importer.GetPlatformTextureSettings("WebGL");
+            var wanted = needsAlpha
+                ? global::UnityEditor.TextureImporterFormat.DXT5Crunched
+                : global::UnityEditor.TextureImporterFormat.DXT1Crunched;
+            if (!webgl.overridden || webgl.format != wanted || webgl.maxTextureSize != budget)
+            {{
+                webgl.overridden = true;
+                webgl.format = wanted;
+                webgl.maxTextureSize = budget;
+                webgl.textureCompression = global::UnityEditor.TextureImporterCompression.Compressed;
+                webgl.crunchedCompression = true;
+                webgl.compressionQuality = 50;
+                importer.SetPlatformTextureSettings(webgl);
+                changed = true;
+            }}
+
+            if (changed)
+            {{
+                importer.SaveAndReimport();
+                repaired.Add(path);
+            }}
+
+            var texture = global::UnityEditor.AssetDatabase
+                .LoadAssetAtPath<global::UnityEngine.Texture2D>(path);
+            if (isNormal)
+            {{
+                normalMap = texture;
+            }}
+            else if (isMetallic)
+            {{
+                metallicMap = texture;
+            }}
+            else if (lower.Contains("emission"))
+            {{
+                emissionMap = texture;
+            }}
+            else if (!lower.Contains("metallic") && !lower.Contains("roughness")
+                && !lower.Contains("occlusion"))
+            {{
+                baseMap = texture;
+            }}
+        }}
+
+        string materialPath = "";
+        var modelImporter = global::UnityEditor.AssetImporter.GetAtPath(modelPath)
+            as global::UnityEditor.ModelImporter;
+        if (modelImporter != null && baseMap != null)
+        {{
+            var shader = global::UnityEngine.Shader.Find("Universal Render Pipeline/Lit");
+            if (shader == null)
+            {{
+                shader = global::UnityEngine.Shader.Find("Standard");
+            }}
+            materialPath = folder + "/" + baseMap.name + ".mat";
+            var material = global::UnityEditor.AssetDatabase
+                .LoadAssetAtPath<global::UnityEngine.Material>(materialPath);
+            if (material == null)
+            {{
+                material = new global::UnityEngine.Material(shader);
+                global::UnityEditor.AssetDatabase.CreateAsset(material, materialPath);
+            }}
+            material.shader = shader;
+            material.SetTexture("_BaseMap", baseMap);
+            material.SetTexture("_MainTex", baseMap);
+            if (normalMap != null)
+            {{
+                material.SetTexture("_BumpMap", normalMap);
+                material.EnableKeyword("_NORMALMAP");
+            }}
+            if (metallicMap != null)
+            {{
+                material.SetTexture("_MetallicGlossMap", metallicMap);
+                material.SetFloat("_Metallic", 1f);
+                material.SetFloat("_Smoothness", 1f);
+                material.SetFloat("_GlossMapScale", 1f);
+                material.EnableKeyword("_METALLICSPECGLOSSMAP");
+            }}
+            if (emissionMap != null)
+            {{
+                material.SetTexture("_EmissionMap", emissionMap);
+                material.SetColor("_EmissionColor", global::UnityEngine.Color.white);
+                material.EnableKeyword("_EMISSION");
+            }}
+            global::UnityEditor.EditorUtility.SetDirty(material);
+
+            foreach (var entry in modelImporter.GetExternalObjectMap())
+            {{
+                modelImporter.RemoveRemap(entry.Key);
+            }}
+            foreach (var asset in global::UnityEditor.AssetDatabase.LoadAllAssetsAtPath(modelPath))
+            {{
+                var embedded = asset as global::UnityEngine.Material;
+                if (embedded == null || embedded == material)
+                {{
+                    continue;
+                }}
+                modelImporter.AddRemap(
+                    new global::UnityEditor.AssetImporter.SourceAssetIdentifier(
+                        typeof(global::UnityEngine.Material), embedded.name),
+                    material);
+            }}
+            global::UnityEditor.AssetDatabase.WriteImportSettingsIfDirty(modelPath);
+            global::UnityEditor.AssetDatabase.ImportAsset(
+                modelPath, global::UnityEditor.ImportAssetOptions.ForceUpdate);
+            global::UnityEditor.AssetDatabase.SaveAssets();
+        }}
+
+        string payload = "{{\\"success\\":true,\\"repaired\\":" + JsonArray(repaired)
+            + ",\\"material\\":\\"" + materialPath + "\\"}}";
+        result.Log("{RESULT_MARKER} {{0}}", payload);"""
+    return _wrap(body)
+
+
+# ---------------------------------------------------------------------------
 # compose_scene
 # ---------------------------------------------------------------------------
 def scene_command(scene_path: str, objects: list[dict[str, object]]) -> str:

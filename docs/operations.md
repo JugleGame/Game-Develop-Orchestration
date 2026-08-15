@@ -36,6 +36,7 @@ new dependency graph or downloading isolated build dependencies.
 | `PIXELLAB_API_KEY` | Asset generation | none |
 | `MESHY_API_KEY` | Meshy 3D Asset generation | none |
 | `BLENDER_PATH` | Blender headless mesh cleanup | `blender` on `PATH` |
+| `ASSET3D_RUN_ROOT` | 3D requests, downloads, tasks, and reports | `<UNITY_PROJECT_PATH>/.asset3d-staging` |
 | `ASSET_ROOT` | Asset output; relative paths resolve from the repository root | `./var/assets` |
 | `HANDOFF_ROOT` | Planning files for execution AI | `./var/handoffs` |
 | `UNITY_SCRIPT_ROOT` | C# root | `Assets/Scripts` |
@@ -45,8 +46,22 @@ Do not use `ANTHROPIC_API_KEY`, `*_MCP_URL`, `GIT_ROOT`, or Postgres/Redis job s
 
 ### Meshy 3D provider
 
-The 3D Asset MCP uses [Meshy's REST API](https://docs.meshy.ai/en/api) for text-to-3D and
-image-to-3D tasks. Meshy was selected because it supports the repository's direct Unity
+Every 3D submission uses host-supplied, human-approved reference images with Meshy. The runtime
+does not automatically search or adopt local or third-party CC0 models.
+
+`ASSET3D_RUN_ROOT` must be an absolute directory inside the external Unity project but outside
+its `Assets/` directory. Relative paths and paths inside this orchestration repository are
+rejected. Only a Blender `gameReadyPassed` result is copied to
+`Assets/Generated3D/<featureId>/`; request metadata, source downloads, task state, and Blender
+reports remain in the external staging directory.
+
+Credit estimates follow Meshy's published API pricing for the configured operations: 20 credits
+for Meshy-6 Multi-Image-to-3D, 10 for 2K retexture, and 5 for untextured T2 smart
+topology image generation. The task record keeps the pricing source URL, balances before/after,
+and provider-reported or balance-derived actual consumption.
+
+The 3D Asset MCP uses [Meshy's REST API](https://docs.meshy.ai/en/api) only for Image-to-3D,
+Multi-Image-to-3D, and Retexture tasks. Meshy was selected because it supports the repository's direct Unity
 interchange formats (GLB and FBX), API-key authentication, task polling, and explicit
 credit errors. Text tasks require a Meshy preview followed by refine; image tasks require
 an HTTPS reference image owned or licensed by the caller.

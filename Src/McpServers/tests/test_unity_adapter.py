@@ -335,3 +335,28 @@ async def test_import_asset_dedupes_same_basename_by_feature_id(tmp_path, monkey
     generated_dir = tmp_path / "Assets" / "Generated"
     assert (generated_dir / "theme-a_wang_0.png").exists()
     assert (generated_dir / "theme-b_wang_0.png").exists()
+
+
+@pytest.mark.asyncio
+async def test_import_asset_repairs_model_texture_types(tmp_path, monkeypatch):
+    """생성 FBX 의 노멀맵이 ``Default`` 로 들어오면 셰이딩이 깨진다."""
+
+    _record_calls(monkeypatch)
+    monkeypatch.setattr(unity_server, "PROJECT_PATH", str(tmp_path))
+    commands: list[str] = []
+
+    async def fake_run_command(code, title, timeout):
+        commands.append(code)
+        return {"success": True, "repaired": ["Assets/Generated/f-1_chest.fbm/albedo_normal.png"]}
+
+    monkeypatch.setattr(unity_server, "_run_command", fake_run_command)
+    source = tmp_path / "chest.fbx"
+    source.write_bytes(b"Kaydara FBX Binary  ")
+
+    result = await unity_server.import_asset(featureId="f-1", assetPath=str(source))
+
+    assert result["texturesRepaired"] == [
+        "Assets/Generated/f-1_chest.fbm/albedo_normal.png"
+    ]
+    assert 'string folder = "Assets/Generated";' in commands[0]
+    assert "TextureImporterType.NormalMap" in commands[0]

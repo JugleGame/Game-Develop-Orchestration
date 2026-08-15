@@ -4,8 +4,8 @@
 
 The host agent writes an `assetSpec` that captures the game's intent. Without making
 model-driven decisions, `Asset3DGenMcpServer` applies the specification to deterministic
-templates, composes and validates provider-neutral prompts, and preserves the request
-package. External 3D providers and Unity integration are outside this contract.
+templates, composes and validates provider-neutral prompts, submits approved references to Meshy,
+and preserves provenance through Blender validation and Unity import.
 
 ```mermaid
 flowchart TD
@@ -16,8 +16,10 @@ flowchart TD
     S --> P["prepare_3d_asset_request"]
     G --> P
     Q --> P
-    P --> H["Request package under var/assets/3d/requests"]
-    H -->|"Separate work after provider approval"| E["External 3D generation"]
+    P --> H["Request package under external ASSET3D_RUN_ROOT"]
+    H --> E["Meshy generation"]
+    E --> B["Blender GameReady gate"]
+    B -->|"pass only"| U["Unity Assets/Generated3D"]
 ```
 
 ## Specification
@@ -39,7 +41,10 @@ required only when `animation.required` is `true`. The optional lists `materials
 
 Supported `assetType` values are `character`, `slime`, `monster`, `prop`,
 `environment`, `building`, and `interactive`. Supported `method` values are
-`image_to_3d`, `text_to_3d`, `manual_blender`, `procedural`, and `existing_asset`.
+`image_to_3d`, `manual_blender`, `procedural`, and `existing_asset`.
+
+`text_to_3d` is deliberately unsupported. Meshy generation must start from one to four
+host-created, human-approved reference images.
 
 `design.form` prevents a recognizable silhouette from hiding an unusable object. It requires
 `silhouette`, `primaryVolumes`, `partRelationships`, `surfaceFeatures`, and `bevelPolicy`.
@@ -201,18 +206,33 @@ to produce prompts and a request package with a new SHA-256 digest.
 1. compose_3d_asset_prompts(assetSpec)
 2. Optionally validate_3d_asset_prompts(assetSpec, generationPrompt, referenceSearchPrompt)
 3. prepare_3d_asset_request(featureId, assetSpec, gameId)
+4. The host creates 1-4 consistent reference images from the user's prompt (GPT image API is
+   allowed at the host layer), shows them to the user, and records approval.
+5. submit_3d_asset_generation(featureId, assetSpec, gameId, referenceImageUrls,
+   referenceProvenance)
+6. get_3d_asset_generation(taskId), then inspect the geometry preview.
+7. refine_3d_asset_generation(taskId, geometryReviewApproved, geometryReviewNote?)
+8. get_3d_asset_generation(taskId), then inspect the textured/final visual output.
+9. finalize_3d_asset_generation(taskId, finalVisualReviewApproved, finalVisualReviewNote?)
 ```
 
 `prepare_3d_asset_request` recomposes and validates the prompts before saving them to:
 
 ```text
-var/assets/3d/requests/<gameId>/<assetId>__<spec-hash>.json
+<ASSET3D_RUN_ROOT>/3d/requests/<gameId>/<assetId>__<spec-hash>.json
 ```
 
 The package preserves the original specification, both derived prompts, their SHA-256
-digests, game and feature IDs, and the creation timestamp. Because no provider is approved,
-the status is `provider_unconfigured`, and neither an `assetPath` nor a 2D placeholder is
-returned.
+digests, game and feature IDs, and the creation timestamp. The status is `prepared`; Meshy
+submission requires one to four approved PNG/JPEG HTTPS
+URLs or data URIs. `referenceProvenance.source` identifies the host-side source such as
+`gpt_image_api`, `humanApproved` must be true, and `sourcePromptSha256` may preserve prompt
+lineage. The MCP does not generate the reference image itself.
+
+Text-to-3D is rejected by the asset contract. Refine/retexture is blocked until geometry review
+approval, and completed output remains in external staging as `AWAITING_FINAL_REVIEW`. A separate final
+visual approval is required before Blender GameReady and before the final model is copied into
+Unity `Assets/`.
 
 Run locally:
 

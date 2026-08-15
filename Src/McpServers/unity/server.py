@@ -153,6 +153,15 @@ def _assembly_timeout() -> float:
     return float(os.getenv("UNITY_ASSEMBLY_TIMEOUT", "300"))
 
 
+def _max_texture_size() -> int:
+    """WebGL 빌드가 감당할 수 있는 텍스처 한 변의 상한."""
+
+    configured = os.getenv("UNITY_MAX_TEXTURE_SIZE", "").strip()
+    if not configured.isdigit() or int(configured) < 32:
+        return 1024
+    return int(configured)
+
+
 #: 컴파일러가 낸 오류. ``error CS0234`` 처럼 코드가 붙는다.
 _COMPILER_ERROR = re.compile(r"\berror\s+CS\d+\b")
 
@@ -419,7 +428,27 @@ async def import_asset(featureId: str, assetPath: str) -> dict[str, Any]:
         {"Action": "Import", "Path": unity_path, "GeneratePreview": False},
         timeout=120,
     )
-    return {"imported": unity_path, "featureId": featureId, "unity": payload}
+
+    repaired: list[str] = []
+    material = ""
+    if unity_path.lower().endswith(".fbx") and "/" in unity_path:
+        inner = await _run_command(
+            assembly.texture_import_command(
+                unity_path.rsplit("/", 1)[0], unity_path, _max_texture_size()
+            ),
+            f"AutoGen texture import {unity_path}",
+            _assembly_timeout(),
+        )
+        repaired = inner.get("repaired", [])
+        material = inner.get("material", "")
+
+    return {
+        "imported": unity_path,
+        "featureId": featureId,
+        "unity": payload,
+        "texturesRepaired": repaired,
+        "material": material,
+    }
 
 
 # ---------------------------------------------------------------------------

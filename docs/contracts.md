@@ -53,6 +53,15 @@ Server: `UnityMcpServer`.
   `define_assemblies`, `import_asset`.
 - `create_prefab.model` accepts an imported Unity `GameObject` asset such as FBX and saves a
   model-backed prefab; `compose_scene` then instantiates that prefab.
+- `import_asset` repairs generated texture import settings after importing an FBX: maps named
+  `*normal*` become `NormalMap` and `*metallic*`, `*roughness*`, `*occlusion*` lose sRGB.
+- The same step applies the WebGL texture budget. Base color is capped at
+  `UNITY_MAX_TEXTURE_SIZE` (1024 by default) and every other map at half that, all maps are
+  crunch-compressed, and a WebGL platform override pins `DXT1Crunched`, or `DXT5Crunched` when the
+  map needs alpha. Crunch trades import time for download size, which is the cost WebGL pays.
+- It then binds base color, normal, `*metallicSmoothness*`, and emission into one URP material
+  beside the model and remaps the model's embedded materials to it, because the FBX importer binds
+  base color and normal only. Results are reported as `texturesRepaired` and `material`.
 - Evidence: `build_project`, `run_playmode_test`, `get_compile_errors`,
   `inspect_project_layout`, `unity_bridge_status`.
 - Return evidence; never declare final PASS.
@@ -103,14 +112,63 @@ Server: `Asset3DGenMcpServer` (`asset3d.server`).
 
 - `compose_3d_asset_prompts` deterministically derives provider-neutral generation, search, and per-view reference prompts from a host-authored asset specification.
 - `validate_3d_asset_prompts` rejects prompts that differ from the current specification's deterministic derivation.
-- `prepare_3d_asset_request` composes and stores the validated package beneath `ASSET_ROOT/3d/requests`; it records SHA-256 provenance for the specification and both prompt artifacts.
-- Meshy is the single configured provider boundary. `submit_3d_asset_generation` accepts only `text_to_3d` and `image_to_3d` specifications; text generation is explicitly `preview` then `refine`, while image generation accepts a host-supplied HTTPS image or data URI.
-- Image generation creates an untextured smart-topology mesh directly at the final triangle ceiling. Reference prompts move repeated and non-silhouette microdetail to flat color or normal-map information instead of geometry.
-- `refine_3d_asset_generation` runs Blender headless cleanup per imported mesh, preserves part separation, applies conservative planar cleanup only for explicit hard-surface normals, triangulates and ground-centers the result, and rejects triangle-budget, loose-vertex, or zero-area failures using the Blender quality report.
+- `prepare_3d_asset_request` composes and stores the validated package beneath external
+  `ASSET3D_RUN_ROOT/3d/requests`; it records SHA-256 provenance for the specification and both
+  prompt artifacts. The root must be absolute, inside the external Unity workspace, outside
+  `Assets/`, and outside this repository.
+- `submit_3d_asset_generation` sends only host-supplied, human-approved reference images to
+  Meshy. It does not automatically search or adopt third-party assets.
+- Meshy remains the only paid generation boundary. The host may use the GPT image API to turn the
+  user's prompt into reference images, but the MCP server never calls GPT or another model. The
+  host passes one to four user-approved references plus `referenceProvenance` to the MCP.
+- One reference uses Meshy Image-to-3D and two to four consistent views use Multi-Image-to-3D.
+  Both create an untextured mesh at the requested triangle ceiling. `text_to_3d` is rejected by
+  the asset specification contract and cannot be used as a fallback for any asset type.
+- `referenceProvenance` requires a non-empty source (for example `gpt_image_api`) and
+  `humanApproved: true`; an optional `sourcePromptSha256` records the user-prompt lineage without
+  storing the prompt itself. Reference prompts move repeated and non-silhouette microdetail to
+  flat color or normal-map information instead of geometry.
+- `refine_3d_asset_generation` requires explicit human geometry-preview approval before any paid
+  refine/retexture. Completed output is staged as `AWAITING_FINAL_REVIEW`.
+- Retexture always submits FBX. Meshy returns GLB geometry, so Blender converts the cleaned GLB to
+  FBX before submission and the task requests an FBX result. `finalize_3d_asset_generation` still
+  converts to `assetSpec.output.format` when the specification asks for GLB.
+- Geometry is rebuilt once, during refine. Every later Blender pass runs in preserve mode: it keeps
+  vertices, planar faces, and UVs untouched and only re-applies transforms, triangulates, grounds,
+  and exports. Merging or dissolving a textured mesh would destroy the UV layout the maps were
+  baked against.
+- FBX exports write their maps into a sidecar `<model>.fbm` folder, and the Unity copy keeps that
+  folder name so the relative references resolve. Unity cannot extract embedded FBX media on its
+  own, so embedding is not used. Separate metallic and roughness maps are packed into one
+  `*_metallicSmoothness.png` (metallic in RGB, inverted roughness in alpha) for URP, and the two
+  consumed inputs are deleted. An emission map whose brightest pixel is at or below
+  `EMPTY_MAP_THRESHOLD` carries no light and is dropped rather than shipped.
+- Each asset lands in its own folder, `Assets/Generated3D/<featureId>/<assetId>-<sha12>/`, holding
+  the model and its texture sidecar. The Unity import step treats everything in that folder as
+  belonging to that one model.
+- `assetSpec.geometry.maxTriangles` must stay at or below the WebGL per-asset triangle ceiling,
+  15000 by default and overridable with `ASSET3D_WEBGL_MAX_TRIANGLES`. The ceiling is enforced at
+  specification validation, Meshy requests the same number as `target_polycount`, Blender decimates
+  anything above it, and the GameReady gate rejects a report whose `triangleBudgetPassed` is false.
+- `finalize_3d_asset_generation` requires explicit human final-visual approval, then runs Blender
+  headless cleanup, preserves part separation, applies conservative planar cleanup only for
+  explicit hard-surface normals, triangulates and ground-centers the result, and rejects
+  triangle-budget, loose-vertex, or zero-area failures using the Blender quality report. Only then
+  can it copy the asset into Unity.
 - The Blender report also exposes disconnected-component and BVH self-intersection candidates. `gameReadyPassed` covers static Unity render readiness; `topologyStrictPassed` additionally requires a manifold, intersection-free mesh for workflows such as deformation, destructive baking, or 3D printing. Exact Union and voxel remesh are not automatic defaults because they can visibly destroy valid generated surfaces.
 - `material_only` is allowed only for an explicitly uniform palette: numeric `texture.material`, no `texture.surfaceDetails`, and at most one declared design color and material. Blender converts the sRGB base color to scene-linear values and applies it to every mesh; the GameReady gate rejects missing material slots. Multiple appearance regions select `generated_texture` instead of flattening visual structure into one material.
-- Text preview submits a Meshy-specific geometry prompt within the provider's 600-character limit; refine submits texture requirements separately. Runtime-bound output requests triangle remeshing.
-- `get_3d_asset_generation` returns a Meshy task state and downloads only a completed GLB or FBX beneath `ASSET_ROOT/3d/models`. Geometry-only previews do not require textures; GLB inspection reports vertices, triangles, and whether the requested triangle budget passed. GLTF is rejected because the selected provider does not return it directly.
+- Image generation preserves the complete host-authored specification and submits texture
+  requirements separately during retexture. Runtime-bound output requests triangle remeshing.
+- `get_3d_asset_generation` resumes a Meshy task by provider task ID. Meshy I/O is async with a
+  bounded retry/backoff policy; authentication, insufficient credit, rate, queue, provider, and
+  expired-download failures are distinct. `cancel_3d_asset_generation` cancels a resumable task,
+  and identical specification submissions are deduplicated before another paid task is created.
+- Balance evidence and estimated/actual consumed credits are preserved with task provenance.
+- Completed GLB or FBX source files remain beneath the external staging root. Meshy outputs pass
+  the Blender GameReady gate, and only passing files are copied beneath Unity
+  `Assets/Generated3D/<featureId>/`. Geometry-only previews do not require textures; GLB
+  inspection reports vertices, triangles, and whether the requested triangle budget passed.
+  GLTF is rejected because the selected provider does not return it directly.
 - `MESHY_API_KEY` is read only from the environment. A missing key, insufficient credits, or provider failure is an explicit MCP error; the server never falls back to a 2D placeholder.
 - Meshy is an external-provider boundary only. It must not call a model to author prompts or hide provider failures.
 - Prompt fields and the Slime example are defined in [3D asset prompt contract](3d-asset-prompts.md).

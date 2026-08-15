@@ -51,6 +51,7 @@ REQUIRED_TOOLS = {
         "submit_3d_asset_generation": {"featureId", "assetSpec"},
         "refine_3d_asset_generation": {"taskId"},
         "get_3d_asset_generation": {"taskId"},
+        "cancel_3d_asset_generation": {"taskId"},
     },
 }
 FORBIDDEN_IMPORTS = {"anthropic", "openai", "fastapi", "langgraph", "git"}

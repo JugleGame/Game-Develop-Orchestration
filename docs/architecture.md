@@ -11,16 +11,16 @@ flowchart TB
     H --> R["Research MCP: evidence, draft/spec storage, dependency lint"]
     H --> N["Unity MCP: apply, assemble, build, PlayMode, validation"]
     H --> A["Asset MCP: 2D asset requests and review metadata"]
-    H --> A3["3D Asset MCP: Meshy generation and Blender GameReady cleanup"]
+    H --> A3["3D Asset MCP: Meshy generation, Blender GameReady"]
     R --> DB["Research DB"]
     R -->|"published only"| HO["var/handoffs: hashed versioned files"] --> H
     N --> UE["Unity Editor"]
     A --> PX["Configured asset providers"]
     A --> V["var/assets"]
-    A3 --> R3["var/assets/3d/requests"]
+    A3 --> R3["External Unity workspace staging"]
     A3 --> M3["Meshy API"]
     A3 --> B3["Blender headless cleanup"]
-    A3 --> V3["var/assets/3d/models"] --> N
+    A3 --> V3["GameReady files in Unity Assets"] --> N
     N --> E["Validation evidence"] --> H
     H -->|"after user approval"| G["Native Git"]
 ```
@@ -54,8 +54,10 @@ flowchart TB
 ### 3D Asset MCP
 
 - Deterministically compose and validate provider-neutral 3D prompts from host-authored specifications.
-- Submit validated text-to-3D or image-to-3D work to Meshy and store request provenance under `var/assets/3d/requests`.
-- Run Blender headless cleanup and GameReady quality gates before returning FBX or GLB output under `var/assets/3d/models`.
+- Submit validated single- or multi-image Image-to-3D work to Meshy from human-approved references.
+  Reject Text-to-3D and store reference/provider provenance in external staging.
+- Run Blender headless cleanup and GameReady quality gates. Keep 3D runtime state in an absolute staging directory in
+  the external Unity workspace and copy only passing FBX or GLB output into Unity `Assets/`.
 - Hand a validated model path to Unity MCP for import, model-backed prefab creation, and scene composition.
 
 ## Deliberately absent
