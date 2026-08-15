@@ -1,10 +1,10 @@
 # Unity Functional Test Contract Template
 
-이 파일을 feature spec 또는 작업 기록에 복사한다. `<required>`가 하나라도 남아 있으면
-계약은 미완성이며 QA status는 `INCOMPLETE`다. 실행 규칙과 status 정의는
-[`unity-functional-qa.md`](unity-functional-qa.md)를 따른다.
+Copy this file into the feature spec or work record. If any `<required>` token remains, the
+contract is incomplete and its QA status is `INCOMPLETE`. Follow
+[`unity-functional-qa.md`](unity-functional-qa.md) for execution and status rules.
 
-## 식별
+## Identity
 
 - Contract ID: `<required: feature-id/ac-id>`
 - Issue: `<required: #number>`
@@ -13,7 +13,7 @@
 - Source revision: `<required: commit SHA or worktree identifier>`
 - Owner: `<required: host agent or person>`
 
-## 테스트 선택
+## Test selection
 
 - Focal mode: `<required: EditMode | PlayMode>`
 - Focal test names:
@@ -25,27 +25,27 @@
 
 ## Given
 
-- Scene/prefab: `<required>`
+- Scene or prefab: `<required>`
 - Initial state: `<required>`
-- Test data/fixture: `<required>`
-- Determinism controls (seed, clock, frame/physics step): `<required>`
+- Test data or fixture: `<required>`
+- Determinism controls (seed, clock, frame or physics step): `<required>`
 
 ## When
 
 1. `<required: exact input or method call>`
-2. `<required: count, order, and wait/frame limit>`
+2. `<required: count, order, and wait or frame limit>`
 
 ## Then / Test Oracle
 
-| ID | Observable outcome | Expected value/state | Tolerance or deadline | Evidence field |
+| ID | Observable outcome | Expected value or state | Tolerance or deadline | Evidence field |
 |---|---|---|---|---|
-| T1 | `<required>` | `<required>` | `<required>` | `<required: Assert/result field>` |
+| T1 | `<required>` | `<required>` | `<required>` | `<required: assertion or result field>` |
 
-금지되는 부작용:
+Forbidden side effects:
 
 - `<required: error, duplicate event, extra state transition, or none>`
 
-## 실행 기록
+## Execution record
 
 ### Compile
 
@@ -80,19 +80,19 @@
 - Artifact path: `<required>`
 - `totalErrors`: `<required>`
 
-## 판정
+## Decision
 
 - QA status: `<required: PASS | PRODUCT_FAIL | TEST_FAIL | INFRA_ERROR | FLAKY | INCOMPLETE>`
 - Evidence-based reason: `<required>`
 - Retry count for the same failure: `<required: 0..3>`
 - Next action: `<required>`
 
-## 완료 checklist
+## Completion checklist
 
-- [ ] 모든 `<required>` 값을 채웠다.
-- [ ] 모든 focal requested name이 실제 results에서 1회 이상 확인되었다.
-- [ ] focal test 실행 개수는 1 이상이고 failure는 0이다.
-- [ ] PlayMode console error는 0이다.
-- [ ] 영향 범위 regression과 additional gate를 실행했다.
-- [ ] final build는 앞선 gate가 통과한 뒤 마지막에 실행했다.
-- [ ] QA status는 policy의 우선순위로 정확히 하나만 선택했다.
+- [ ] Every `<required>` value is complete.
+- [ ] Every focal requested name appears at least once in the actual results.
+- [ ] The focal run executed at least one test and reported zero failures.
+- [ ] PlayMode reported zero console errors.
+- [ ] Impacted regression tests and additional gates ran.
+- [ ] The final build ran last, after every preceding gate passed.
+- [ ] Exactly one QA status was selected using the policy priority order.
