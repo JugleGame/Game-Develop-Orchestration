@@ -428,14 +428,16 @@ def test_create_animation_posts_the_first_frame_and_returns_ordered_frames(monke
     frames, usage, job_id = pixellab_client.create_animation(
         first_frame=Image.new("RGBA", (64, 64), (1, 2, 3, 255)),
         action="walk cycle",
-        frame_count=2,
+        frame_count=4,
         poll_seconds=0,
     )
 
     assert captured["url"] == "https://api.pixellab.ai/v2/animate-with-text-v3"
     assert captured["payload"]["action"] == "walk cycle"
-    assert captured["payload"]["frame_count"] == 2
+    assert captured["payload"]["frame_count"] == 4
     assert captured["payload"]["first_frame"]["type"] == "base64"
+    # Without this the provider paints every frame onto an opaque plate.
+    assert captured["payload"]["no_background"] is True
     assert "description" not in captured["payload"]
     assert len(frames) == 2
     assert usage["generations"] == 2.0
@@ -473,12 +475,15 @@ def test_create_animation_times_out_instead_of_hanging(monkeypatch):
         )
 
 
-def test_create_animation_rejects_an_impossible_frame_count(monkeypatch):
+@pytest.mark.parametrize("frame_count", [1, 5, 18])
+def test_create_animation_rejects_a_frame_count_the_provider_refuses(monkeypatch, frame_count):
+    """PixelLab answers 422 for odd counts; spend nothing to learn that."""
+
     monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
 
     with pytest.raises(pixellab_client.PixelLabUnavailable, match="frame_count"):
         pixellab_client.create_animation(
             first_frame=Image.new("RGBA", (32, 32), (1, 2, 3, 255)),
             action="walk cycle",
-            frame_count=1,
+            frame_count=frame_count,
         )
