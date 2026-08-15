@@ -53,6 +53,12 @@ Server: `UnityMcpServer`.
   `define_assemblies`, `import_asset`.
 - `create_prefab.model` accepts an imported Unity `GameObject` asset such as FBX and saves a
   model-backed prefab; `compose_scene` then instantiates that prefab.
+- `create_prefab` also accepts `colliderSize`, `colliderOffset`, and `spritePivot`. The body
+  size a script assumes and the collider on the prefab are one decision, so they are set in one
+  call: a collider left at Unity's 1x1 default under a 2x4 sprite is a defect that nothing else
+  in the pipeline reports. Asking for a collider measurement without a `Collider2D` component,
+  or a pivot without a sprite, is rejected with code `1000`. Omitting them keeps the previous
+  behaviour, and the applied values come back as evidence.
 - `import_asset` repairs generated texture import settings after importing an FBX: maps named
   `*normal*` become `NormalMap` and `*metallic*`, `*roughness*`, `*occlusion*` lose sRGB.
 - The same step applies the WebGL texture budget. Base color is capped at
