@@ -476,6 +476,9 @@ async def create_prefab(
     sprite: str = "",
     model: str = "",
     prefabPath: str = "",
+    colliderSize: list[float] | None = None,
+    colliderOffset: list[float] | None = None,
+    spritePivot: list[float] | None = None,
 ) -> dict[str, Any]:
     """``design_architecture`` 의 ``prefabs[]`` 한 항목을 그대로 받는다.
 
@@ -506,8 +509,26 @@ async def create_prefab(
     except AssemblyError as exc:
         raise tool_error(VALIDATION_ERROR, str(exc), gameId=gameId) from exc
 
+    size = _pair(colliderSize, "colliderSize", gameId)
+    offset = _pair(colliderOffset, "colliderOffset", gameId)
+    pivot = _pair(spritePivot, "spritePivot", gameId)
+
+    # The body size a script assumes and the collider on the prefab are the same
+    # decision; asking for one without the component that carries it is a mistake
+    # worth reporting before Unity runs.
+    if (size or offset) and not any(item.endswith("Collider2D") for item in types):
+        raise tool_error(
+            VALIDATION_ERROR,
+            "colliderSize/colliderOffset need a Collider2D in components",
+            gameId=gameId,
+        )
+    if pivot and not image:
+        raise tool_error(VALIDATION_ERROR, "spritePivot needs a sprite", gameId=gameId)
+
     inner = await _run_command(
-        assembly.prefab_command(name, path, types, image, model_path),
+        assembly.prefab_command(
+            name, path, types, image, model_path, size, offset, pivot
+        ),
         f"AutoGen prefab {name}",
         _assembly_timeout(),
     )
@@ -521,7 +542,24 @@ async def create_prefab(
         "gameId": gameId,
         "attached": inner.get("attached", []),
         "missing": inner.get("missing", []),
+        "collider": inner.get("collider", ""),
+        "colliderSize": list(size) if size else None,
+        "colliderOffset": list(offset) if offset else None,
+        "spritePivot": list(pivot) if pivot else None,
     }
+
+
+def _pair(value: list[float] | None, field: str, game_id: str) -> tuple[float, float] | None:
+    """Accept ``[x, y]`` or nothing; anything else is a mistake worth naming."""
+
+    if value is None:
+        return None
+    if len(value) != 2:
+        raise tool_error(VALIDATION_ERROR, f"{field} must be [x, y]", gameId=game_id)
+    try:
+        return float(value[0]), float(value[1])
+    except (TypeError, ValueError) as exc:
+        raise tool_error(VALIDATION_ERROR, f"{field} must be two numbers", gameId=game_id) from exc
 
 
 @mcp.tool(
