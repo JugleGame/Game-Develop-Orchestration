@@ -1,0 +1,38 @@
+name: Unity session verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      unity_project_path:
+        description: 'Self-hosted runner의 Unity 프로젝트 절대 경로'
+        required: true
+        type: string
+
+jobs:
+  playmode:
+    name: 실제 Unity PlayMode 테스트 (빌드 없음)
+    runs-on: [self-hosted, windows, unity]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require configured Unity Editor
+        shell: pwsh
+        env:
+          UNITY_EDITOR_PATH: ${{ vars.UNITY_EDITOR_PATH }}
+        run: |
+          if (-not $env:UNITY_EDITOR_PATH -or -not (Test-Path -LiteralPath $env:UNITY_EDITOR_PATH)) {
+            throw 'Repository variable UNITY_EDITOR_PATH must point to Unity.exe on this self-hosted runner.'
+          }
+      - name: Run PlayMode tests and collect NUnit XML
+        shell: pwsh
+        env:
+          UNITY_EDITOR_PATH: ${{ vars.UNITY_EDITOR_PATH }}
+          UNITY_PROJECT_PATH: ${{ inputs.unity_project_path }}
+        run: |
+          $results = Join-Path $env:RUNNER_TEMP 'unity-playmode-results.xml'
+          & $env:UNITY_EDITOR_PATH -batchmode -nographics -quit -projectPath $env:UNITY_PROJECT_PATH -runTests -testPlatform PlayMode -testResults $results
+          if (-not (Test-Path -LiteralPath $results)) { throw 'Unity did not produce NUnit XML.' }
+      - name: Upload NUnit XML
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-playmode-nunit
+          path: ${{ runner.temp }}/unity-playmode-results.xml

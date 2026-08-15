@@ -131,6 +131,22 @@ following in the open Unity project before retrying:
 Do not disable process validation or auto-approve connections as a workaround. Approve the
 specific pending client in the same settings page when Unity requests approval.
 
+### Windows Unity session CI (no build)
+
+The normal `tests.yml` Windows job checks named-pipe discovery and a non-ASCII temporary path;
+it does **not** start an Editor. To collect real PlayMode evidence without a player or WebGL
+build, register a protected runner with the labels `self-hosted`, `windows`, and `unity`, then:
+
+1. Set the repository Actions variable `UNITY_EDITOR_PATH` to that runner's `Unity.exe` path.
+2. Keep a disposable Unity project on the runner, including at least one PlayMode test assembly.
+3. Run **Unity session verification** manually and supply its absolute project path. The path may
+   contain non-ASCII characters; the workflow passes it as one PowerShell argument rather than
+   constructing a shell command.
+4. Download the `unity-playmode-nunit` artifact. No XML, or a zero-test XML, is a failed test
+   setup and must not be reported as gameplay verification.
+
+This workflow uses `-runTests -testPlatform PlayMode` only; it does not produce a game build.
+
 Verify an exported hand-off before an execution agent consumes it:
 
 ```powershell

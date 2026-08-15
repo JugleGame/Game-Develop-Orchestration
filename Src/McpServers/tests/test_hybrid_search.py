@@ -48,6 +48,8 @@ def _row(card_id: str, score: float, matched_by: str) -> dict[str, Any]:
         "genres": [],
         "confidence": "high",
         "updated": "2026-07-29",
+        "file_path": "cards/GAME-001.md",
+        "body_hash": "a" * 64,
         "score": score,
         "matched_by": matched_by,
     }

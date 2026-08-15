@@ -166,6 +166,47 @@ def _save_manifest(manifest: dict[str, Any]) -> None:
         raise
 
 
+def _prototype_claim_path(asset_id: str) -> Path:
+    return _root_path("submissions", f"{asset_id}.json")
+
+
+def _claim_paid_prototype(asset_id: str) -> dict[str, Any] | None:
+    """Atomically reserve an idempotent 2D prototype request before payment."""
+
+    path = _prototype_claim_path(asset_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    except FileExistsError:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"status": "submission_state_unreadable"}
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        json.dump({"assetId": asset_id, "status": "SUBMITTING", "createdAt": _now()}, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return None
+
+
+def _save_prototype_claim(asset_id: str, value: dict[str, Any]) -> None:
+    path = _prototype_claim_path(asset_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", text=True
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def _require(value: str, field: str) -> str:
     """Validation errors carry code 1000, not the generic 3000."""
 
@@ -458,6 +499,29 @@ def _generate_prototype(
     prompt_plan = prompting.compose(prompt, kind)
     width, height = _size_for(style, kind)
     seed = render.rng_for(style, feature_id, prompt).getrandbits(32)
+    prompt_digest = hashlib.sha256(prompt.encode()).hexdigest()[:8]
+    asset_id = f"{resolved_game}__{feature_id}__{kind}__{prompt_digest}"
+    if not pixellab_client.is_configured():
+        raise tool_error(MCP_ERROR, "PIXELLAB_API_KEY is not set", featureId=feature_id)
+    existing_claim = _claim_paid_prototype(asset_id)
+    if existing_claim is not None:
+        if existing_claim.get("status") == "COMPLETED":
+            return {
+                "assetPath": existing_claim.get("assetPath"),
+                "assetId": asset_id,
+                "kind": kind,
+                "gameId": resolved_game,
+                "status": PENDING,
+                "duplicateBlocked": True,
+                "workflowStage": "prototype",
+                "styleSeed": style.seed,
+            }
+        return {
+            "assetId": asset_id,
+            "gameId": resolved_game,
+            "status": "duplicate_blocked",
+            "recoveryRequired": existing_claim.get("status") != "COMPLETED",
+        }
     palette_rgb = _pixellab_palette(style, kind, prompt)
     palette = [f"#{red:02x}{green:02x}{blue:02x}" for red, green, blue in palette_rgb or []]
 
@@ -481,8 +545,6 @@ def _generate_prototype(
     if image.size != target_size:
         image = image.resize(target_size, Image.NEAREST)
 
-    prompt_digest = hashlib.sha256(prompt.encode()).hexdigest()[:8]
-    asset_id = f"{resolved_game}__{feature_id}__{kind}__{prompt_digest}"
     out_path = _asset_path(resolved_game, feature_id, kind, prompt_digest)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(out_path)
@@ -513,6 +575,15 @@ def _generate_prototype(
         "provenance": provenance,
     }
     _save_manifest(manifest)
+    _save_prototype_claim(
+        asset_id,
+        {
+            "assetId": asset_id,
+            "status": "COMPLETED",
+            "assetPath": str(out_path),
+            "completedAt": _now(),
+        },
+    )
     result = {
         "assetPath": str(out_path),
         "assetId": asset_id,
