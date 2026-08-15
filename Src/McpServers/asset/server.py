@@ -820,8 +820,12 @@ def generate_2d_animation(
     feature_id = _require_identifier(featureId, "featureId")
     first_frame_id = _require(firstFrameAssetId, "firstFrameAssetId")
     motion = _require(action, "action")
-    if not 2 <= frameCount <= 16:
-        raise tool_error(VALIDATION_ERROR, "frameCount must be between 2 and 16")
+    if frameCount not in pixellab_client.ANIMATION_FRAME_COUNTS:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "frameCount must be one of "
+            f"{list(pixellab_client.ANIMATION_FRAME_COUNTS)}",
+        )
 
     source_game = first_frame_id.split("__", 1)[0]
     resolved_game = _resolve_game_id(gameId) if gameId else source_game
@@ -872,11 +876,17 @@ def generate_2d_animation(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     records: list[dict[str, Any]] = []
+    failures: set[str] = set()
     for index, frame in enumerate(frames):
         asset_id = f"{sequence_id}__{index:02d}"
         # Zero-padded so the play order survives any directory listing.
         path = out_dir / f"{index:02d}_{motion_digest}.png"
         frame.save(path)
+        # Frames are inspected here, not only on demand: a sequence that comes
+        # back on an opaque plate is unusable as a sprite, and finding that out
+        # after it is imported and bound costs a whole round trip.
+        inspection = quality.inspect(frame, kind, frame.size)
+        failures.update(inspection["failures"])
         manifest["assets"][asset_id] = {
             "asset_id": asset_id,
             "feature_id": feature_id,
@@ -909,6 +919,8 @@ def generate_2d_animation(
                 "assetPath": str(path),
                 "frameIndex": index,
                 "status": PENDING,
+                "technicalStatus": inspection["technicalStatus"],
+                "failures": inspection["failures"],
             }
         )
 
@@ -923,6 +935,8 @@ def generate_2d_animation(
                 "frameCount": len(records),
                 "jobId": job_id,
                 "usage": usage,
+                "technicalStatus": "fail" if failures else "pass",
+                "technicalFailures": sorted(failures),
                 "frames": records,
             },
             indent=2,
@@ -944,6 +958,8 @@ def generate_2d_animation(
         "frameCount": len(records),
         "jobId": job_id,
         "usage": usage,
+        "technicalStatus": "fail" if failures else "pass",
+        "technicalFailures": sorted(failures),
     }
 
 

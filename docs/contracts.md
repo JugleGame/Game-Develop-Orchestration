@@ -108,8 +108,14 @@ Server: `AssetGenMcpServer`.
   art style in PixelLab's structured controls instead of duplicating it in prose.
 - `generate_2d_animation` turns one approved prototype into an ordered frame sequence through
   PixelLab's `animate-with-text-v3`. The approved asset is submitted as the first frame, so the
-  human gate that guards a static sprite also guards every frame derived from it. Frame counts
-  outside 2-16 are rejected before submission. Frames land under `ASSET_ROOT/assets/<game>/
+  human gate that guards a static sprite also guards every frame derived from it. The endpoint
+  accepts only an even frame count of 4 to 16 and answers 422 otherwise, so any other value is
+  rejected before a request is spent. It returns one image more than requested, because the first
+  frame is echoed at the head of the sequence. The request always sets
+  `no_background`: the endpoint defaults it to false and then returns every frame on an opaque
+  plate, which cannot be used as a sprite. Each frame is inspected as it is saved, so a sequence
+  that still comes back opaque is reported as `technicalStatus: fail` with
+  `transparent_background_missing` instead of waiting for a later `inspect_asset` call. Frames land under `ASSET_ROOT/assets/<game>/
   animations/<feature>_<digest>/` with zero-padded names that sort into play order, beside an
   `animation.json` index recording the action, first-frame asset ID, provider job ID, and usage.
   Each frame is an ordinary manifest asset: it starts `pending` and needs the same human review
