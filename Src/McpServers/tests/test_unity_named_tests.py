@@ -69,6 +69,32 @@ async def test_named_run_reports_each_test(monkeypatch):
     assert "TestMode.PlayMode" in calls[0]
 
 
+async def test_named_run_accepts_unity_full_test_names(monkeypatch):
+    calls: list[str] = []
+    full_name = "Game.Gameplay.Tests.GameFlowPlayModeTests.Test_Flow_SingleActiveState"
+    _runner(
+        monkeypatch,
+        [
+            {
+                "success": True,
+                "status": "completed",
+                "count": 1,
+                "results": [{"name": full_name, "status": "Passed", "message": ""}],
+            }
+        ],
+        calls,
+    )
+
+    result = await unity_server.run_named_tests(
+        gameId="sanabi",
+        testNames=[full_name],
+        mode="PlayMode",
+    )
+
+    assert result["passed"] is True
+    assert full_name in calls[0]
+
+
 async def test_a_failing_test_is_reported_with_its_message(monkeypatch):
     _runner(
         monkeypatch,

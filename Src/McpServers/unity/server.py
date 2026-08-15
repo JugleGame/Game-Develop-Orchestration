@@ -1489,7 +1489,7 @@ async def run_named_tests(
 
     try:
         names = [
-            assembly.require_name(item, f"testNames[{index}]")
+            assembly.require_type_name(item, f"testNames[{index}]")
             for index, item in enumerate(testNames or [])
         ]
     except AssemblyError as exc:
