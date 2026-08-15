@@ -23,9 +23,13 @@ def _activate(obj: bpy.types.Object) -> None:
     bpy.context.view_layer.objects.active = obj
 
 
-def _cleanup(obj: bpy.types.Object) -> None:
+def _cleanup(obj: bpy.types.Object, preserve_uv: bool = False) -> None:
     _activate(obj)
     bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+    if preserve_uv:
+        # Merging vertices collapses the duplicated UV-seam vertices a textured mesh
+        # depends on, so a textured pass only re-applies the transform.
+        return
     bm = bmesh.new()
     bm.from_mesh(obj.data)
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.00001)
@@ -119,6 +123,7 @@ def main() -> None:
     source, destination, target = Path(args[0]), Path(args[1]), int(args[2])
     material_values = json.loads(args[3]) if len(args) > 3 else None
     normal_policy = args[4] if len(args) > 4 else "mixed"
+    preserve_uv = args[5] == "preserve_uv" if len(args) > 5 else False
     bpy.ops.wm.read_factory_settings(use_empty=True)
     if source.suffix.lower() == ".glb":
         bpy.ops.import_scene.gltf(filepath=str(source))
@@ -129,9 +134,9 @@ def main() -> None:
     if not meshes:
         raise RuntimeError("no mesh objects found")
     for obj in meshes:
-        _cleanup(obj)
+        _cleanup(obj, preserve_uv)
 
-    if normal_policy == "explicit_hard":
+    if normal_policy == "explicit_hard" and not preserve_uv:
         for obj in meshes:
             _activate(obj)
             modifier = obj.modifiers.new("PlanarCleanup", "DECIMATE")
@@ -156,7 +161,7 @@ def main() -> None:
             obj.data.materials.append(material)
 
     count = sum(_triangles(obj) for obj in meshes)
-    if count > target:
+    if count > target and not preserve_uv:
         ratio = target / count
         for obj in meshes:
             _activate(obj)
@@ -192,6 +197,16 @@ def main() -> None:
             filepath=str(destination), export_format="GLB", export_apply=True, use_selection=True
         )
     else:
+        # Provider FBX media arrives packed with a filepath that no longer exists, so the
+        # exporter cannot copy it. Write each map into the sidecar folder Unity reads.
+        textures = destination.with_name(f"{destination.stem}.fbm")
+        for image in bpy.data.images:
+            if not image.packed_file or not image.size[0]:
+                continue
+            textures.mkdir(parents=True, exist_ok=True)
+            image.filepath_raw = str(textures / Path(image.filepath).name)
+            image.save()
+            image.unpack(method="REMOVE")
         bpy.ops.export_scene.fbx(
             filepath=str(destination),
             use_selection=True,
@@ -200,6 +215,7 @@ def main() -> None:
             axis_up="Y",
             use_triangles=True,
             add_leaf_bones=False,
+            path_mode="COPY",
         )
     Path(f"{destination}.report.json").write_text(
         json.dumps(_inspection(meshes, target, bool(material_values)), indent=2), encoding="utf-8"

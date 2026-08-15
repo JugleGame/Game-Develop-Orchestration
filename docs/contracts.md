@@ -53,6 +53,15 @@ Server: `UnityMcpServer`.
   `define_assemblies`, `import_asset`.
 - `create_prefab.model` accepts an imported Unity `GameObject` asset such as FBX and saves a
   model-backed prefab; `compose_scene` then instantiates that prefab.
+- `import_asset` repairs generated texture import settings after importing an FBX: maps named
+  `*normal*` become `NormalMap` and `*metallic*`, `*roughness*`, `*occlusion*` lose sRGB.
+- The same step applies the WebGL texture budget. Base color is capped at
+  `UNITY_MAX_TEXTURE_SIZE` (1024 by default) and every other map at half that, all maps are
+  crunch-compressed, and a WebGL platform override pins `DXT1Crunched`, or `DXT5Crunched` when the
+  map needs alpha. Crunch trades import time for download size, which is the cost WebGL pays.
+- It then binds base color, normal, `*metallicSmoothness*`, and emission into one URP material
+  beside the model and remaps the model's embedded materials to it, because the FBX importer binds
+  base color and normal only. Results are reported as `texturesRepaired` and `material`.
 - Evidence: `build_project`, `run_playmode_test`, `get_compile_errors`,
   `inspect_project_layout`, `unity_bridge_status`.
 - Return evidence; never declare final PASS.
@@ -121,6 +130,26 @@ Server: `Asset3DGenMcpServer` (`asset3d.server`).
   flat color or normal-map information instead of geometry.
 - `refine_3d_asset_generation` requires explicit human geometry-preview approval before any paid
   refine/retexture. Completed output is staged as `AWAITING_FINAL_REVIEW`.
+- Retexture always submits FBX. Meshy returns GLB geometry, so Blender converts the cleaned GLB to
+  FBX before submission and the task requests an FBX result. `finalize_3d_asset_generation` still
+  converts to `assetSpec.output.format` when the specification asks for GLB.
+- Geometry is rebuilt once, during refine. Every later Blender pass runs in preserve mode: it keeps
+  vertices, planar faces, and UVs untouched and only re-applies transforms, triangulates, grounds,
+  and exports. Merging or dissolving a textured mesh would destroy the UV layout the maps were
+  baked against.
+- FBX exports write their maps into a sidecar `<model>.fbm` folder, and the Unity copy keeps that
+  folder name so the relative references resolve. Unity cannot extract embedded FBX media on its
+  own, so embedding is not used. Separate metallic and roughness maps are packed into one
+  `*_metallicSmoothness.png` (metallic in RGB, inverted roughness in alpha) for URP, and the two
+  consumed inputs are deleted. An emission map whose brightest pixel is at or below
+  `EMPTY_MAP_THRESHOLD` carries no light and is dropped rather than shipped.
+- Each asset lands in its own folder, `Assets/Generated3D/<featureId>/<assetId>-<sha12>/`, holding
+  the model and its texture sidecar. The Unity import step treats everything in that folder as
+  belonging to that one model.
+- `assetSpec.geometry.maxTriangles` must stay at or below the WebGL per-asset triangle ceiling,
+  15000 by default and overridable with `ASSET3D_WEBGL_MAX_TRIANGLES`. The ceiling is enforced at
+  specification validation, Meshy requests the same number as `target_polycount`, Blender decimates
+  anything above it, and the GameReady gate rejects a report whose `triangleBudgetPassed` is false.
 - `finalize_3d_asset_generation` requires explicit human final-visual approval, then runs Blender
   headless cleanup, preserves part separation, applies conservative planar cleanup only for
   explicit hard-surface normals, triangulates and ground-centers the result, and rejects

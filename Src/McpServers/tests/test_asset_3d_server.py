@@ -36,6 +36,21 @@ def _glb(*, textured: bool = True) -> bytes:
     return struct.pack("<IIIII", 0x46546C67, 2, 20 + len(document), len(document), 0x4E4F534A) + document
 
 
+def _fbx(source: bytes) -> bytes:
+    return b"Kaydara FBX Binary  \x00" + source
+
+
+def _fake_cleanup(
+    path, _target, _material=None, output_format=None, _normal_policy="mixed", preserve_uv=False
+):
+    """Stand in for Blender, including its GLB-to-FBX conversion step."""
+    if not output_format or path.suffix.lower() == f".{output_format}":
+        return path
+    converted = path.with_name(f"{path.stem.removesuffix('-clean')}-clean.{output_format}")
+    converted.write_bytes(_fbx(path.read_bytes()))
+    return converted
+
+
 def _asset_spec(asset_type: str = "slime", method: str = "image_to_3d") -> dict:
     animated = asset_type in {"character", "slime", "monster"}
     return {
@@ -196,6 +211,22 @@ async def test_text_to_3d_is_rejected_by_the_asset_contract():
     assert "generation.method" in "".join(
         getattr(block, "text", "") for block in result.content
     )
+
+
+async def test_triangle_budget_stays_within_the_webgl_ceiling(monkeypatch):
+    over_budget = _asset_spec("prop", "manual_blender")
+    over_budget["geometry"]["maxTriangles"] = server.WEBGL_TRIANGLE_CEILING + 1
+
+    async with session() as client:
+        rejected = await client.call_tool("compose_3d_asset_prompts", {"assetSpec": over_budget})
+        monkeypatch.setenv("ASSET3D_WEBGL_MAX_TRIANGLES", "800")
+        tightened = await client.call_tool(
+            "compose_3d_asset_prompts", {"assetSpec": _asset_spec("prop", "manual_blender")}
+        )
+
+    assert rejected.is_error is True
+    assert "WebGL budget" in "".join(getattr(block, "text", "") for block in rejected.content)
+    assert tightened.is_error is True
 
 
 async def test_character_requires_reference_views_even_for_manual_modeling():
@@ -386,7 +417,7 @@ async def test_image_generation_accepts_data_uri_and_refines_with_blender(tmp_pa
         },
     )
     monkeypatch.setattr(meshy_client, "download_model", lambda _: _glb(textured=False))
-    monkeypatch.setattr(server, "_cleanup_with_blender", lambda path, *_: path)
+    monkeypatch.setattr(server, "_cleanup_with_blender", _fake_cleanup)
     monkeypatch.setattr(
         meshy_client,
         "create_retexture_task",
@@ -421,9 +452,9 @@ async def test_image_generation_accepts_data_uri_and_refines_with_blender(tmp_pa
         2500,
     )]
     assert refined.structured_content["phase"] == "retexture"
-    assert retextured[0][0] == _glb(textured=False)
+    assert retextured[0][0] == _fbx(_glb(textured=False))
     assert retextured[0][1:] == (
-        "glb",
+        "fbx",
         "matte stylized surface with readable color separation; colors: leaf green, cream; materials: soft matte body",
     )
 
@@ -576,14 +607,12 @@ async def test_material_only_strategy_skips_meshy_retexture(tmp_path, monkeypatc
     )
     monkeypatch.setattr(meshy_client, "download_model", lambda _: _glb(textured=False))
     cleanup_args = []
-    monkeypatch.setattr(
-        server,
-        "_cleanup_with_blender",
-        lambda path, limit, material, *output_format: cleanup_args.append(
-            (limit, material, output_format[0] if output_format else None)
-        )
-        or path,
-    )
+
+    def _record_cleanup(path, limit, material, output_format=None, *_, **__):
+        cleanup_args.append((limit, material, output_format))
+        return path
+
+    monkeypatch.setattr(server, "_cleanup_with_blender", _record_cleanup)
     monkeypatch.setattr(
         meshy_client,
         "create_retexture_task",
@@ -647,7 +676,7 @@ async def test_final_review_gate_blocks_unity_and_approval_finalizes(tmp_path, m
             "provenance": {"license": "generated"},
         },
     )
-    monkeypatch.setattr(server, "_cleanup_with_blender", lambda path, *_: path)
+    monkeypatch.setattr(server, "_cleanup_with_blender", lambda path, *_, **__: path)
     monkeypatch.setattr(
         server,
         "_blender_inspection",
@@ -684,6 +713,54 @@ def test_multiple_color_or_material_regions_keep_generated_texture():
     spec = server._validate_asset_spec(asset_spec)
 
     assert server._texture_strategy(spec)["mode"] == "generated_texture"
+
+
+def test_packs_metallic_and_roughness_into_one_urp_map(tmp_path):
+    """URP reads metallic from RGB and smoothness from alpha of a single map."""
+
+    from PIL import Image
+
+    model = tmp_path / "chest-clean.fbx"
+    model.write_bytes(b"Kaydara FBX Binary  ")
+    sidecar = tmp_path / "chest-clean.fbm"
+    sidecar.mkdir()
+    Image.new("L", (4, 4), 200).save(sidecar / "texture_0_metallic.png")
+    Image.new("L", (4, 4), 30).save(sidecar / "texture_0_roughness.png")
+
+    packed = server._pack_metallic_smoothness(model)
+
+    assert packed == sidecar / "texture_0_metallicSmoothness.png"
+    with Image.open(packed) as image:
+        assert image.mode == "RGBA"
+        assert image.getpixel((0, 0)) == (200, 200, 200, 225)
+    assert sorted(path.name for path in sidecar.iterdir()) == [
+        "texture_0_metallicSmoothness.png"
+    ]
+
+
+def test_drops_an_emission_map_that_emits_nothing(tmp_path):
+    from PIL import Image
+
+    model = tmp_path / "chest-clean.fbx"
+    model.write_bytes(b"Kaydara FBX Binary  ")
+    sidecar = tmp_path / "chest-clean.fbm"
+    sidecar.mkdir()
+    # Providers return near-black rather than exactly black for an unused map.
+    Image.new("RGB", (4, 4), (2, 1, 2)).save(sidecar / "texture_0_emission.png")
+    Image.new("RGB", (4, 4), (10, 0, 0)).save(sidecar / "texture_1_emission.png")
+
+    dropped = server._drop_empty_maps(model)
+
+    assert dropped == ["texture_0_emission.png"]
+    assert (sidecar / "texture_1_emission.png").is_file()
+
+
+def test_metallic_pack_is_skipped_without_both_maps(tmp_path):
+    model = tmp_path / "chest-clean.fbx"
+    model.write_bytes(b"Kaydara FBX Binary  ")
+    (tmp_path / "chest-clean.fbm").mkdir()
+
+    assert server._pack_metallic_smoothness(model) is None
 
 
 def test_reads_blender_game_ready_report(tmp_path):

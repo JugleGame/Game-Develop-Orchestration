@@ -52,6 +52,9 @@ def _every_command() -> dict[str, str]:
             "Enemy", "Assets/Prefabs/Enemy.prefab", ["EnemyBrain", "Rigidbody2D"], ""
         ),
         "compose_scene": assembly.scene_command("Assets/Scenes/Main.unity", _SCENE_OBJECTS),
+        "texture_import": assembly.texture_import_command(
+            "Assets/Generated3D/chest", "Assets/Generated3D/chest/chest.fbx", 1024
+        ),
         "bind_reference_prefab": assembly.bind_command(
             "Assets/Prefabs/Enemy.prefab", "EnemyBrain", "portrait", "Assets/Generated/e.png", ""
         ),
@@ -226,6 +229,23 @@ def test_prefab_command_instantiates_an_imported_3d_model():
 
     assert "InstantiatePrefab" in with_model
     assert "Assets/Generated/laptop.fbx" in with_model
+
+
+def test_texture_import_command_applies_the_webgl_budget():
+    """WebGL 은 다운로드 크기를 지불한다 — crunch 와 플랫폼 오버라이드가 그 값이다."""
+
+    source = assembly.texture_import_command(
+        "Assets/Generated3D/chest", "Assets/Generated3D/chest/chest.fbx", 1024
+    )
+
+    assert "int maxTextureSize = 1024;" in source
+    assert "crunchedCompression = true" in source
+    assert "GetPlatformTextureSettings(\"WebGL\")" in source
+    assert "DXT5Crunched" in source and "DXT1Crunched" in source
+    # 베이스 컬러만 전체 해상도를 쓴다.
+    assert "System.Math.Max(128, maxTextureSize / 2)" in source
+    assert "TextureImporterType.NormalMap" in source
+    assert "_MetallicGlossMap" in source
 
 
 # ---------------------------------------------------------------------------

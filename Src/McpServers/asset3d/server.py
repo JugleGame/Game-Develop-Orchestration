@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from PIL import Image, ImageChops
+
 from common.errors import MCP_ERROR, VALIDATION_ERROR, tool_error
 from common.server import build, expects_dict_return, serve
 
@@ -45,6 +47,10 @@ _ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 _HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 MESHY_FORMATS = frozenset({"glb", "fbx"})
 MESHY_PROMPT_LIMIT = 600
+RETEXTURE_FORMAT = "fbx"
+WEBGL_TRIANGLE_CEILING = 15_000
+#: Providers return an "unused" map as near-black rather than exactly black.
+EMPTY_MAP_THRESHOLD = 2
 BLENDER_SCRIPT = Path(__file__).with_name("blender_cleanup.py")
 
 
@@ -122,6 +128,19 @@ def _require_id(value: Any, field: str) -> str:
     return value
 
 
+def _webgl_triangle_ceiling() -> int:
+    """Per-asset triangle ceiling the WebGL build target accepts."""
+    configured = os.getenv("ASSET3D_WEBGL_MAX_TRIANGLES", "").strip()
+    if not configured:
+        return WEBGL_TRIANGLE_CEILING
+    if not configured.isdigit() or int(configured) < 100:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "ASSET3D_WEBGL_MAX_TRIANGLES must be an integer of at least 100",
+        )
+    return int(configured)
+
+
 def _require_object(value: Any, field: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise tool_error(VALIDATION_ERROR, f"{field} must be an object")
@@ -175,6 +194,12 @@ def _validate_asset_spec(asset_spec: dict[str, Any]) -> dict[str, Any]:
     max_triangles = geometry.get("maxTriangles")
     if not isinstance(max_triangles, int) or isinstance(max_triangles, bool) or max_triangles < 1:
         raise tool_error(VALIDATION_ERROR, "assetSpec.geometry.maxTriangles must be a positive integer")
+    ceiling = _webgl_triangle_ceiling()
+    if max_triangles > ceiling:
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"assetSpec.geometry.maxTriangles must not exceed the WebGL budget {ceiling}",
+        )
     separate_meshes = _require_text_list(
         geometry.get("separateMeshes"), "assetSpec.geometry.separateMeshes", allow_empty=True
     )
@@ -570,6 +595,7 @@ def _cleanup_with_blender(
     material: dict[str, Any] | None = None,
     output_format: str | None = None,
     normal_policy: str = "mixed",
+    preserve_uv: bool = False,
 ) -> Path:
     configured = os.getenv("BLENDER_PATH")
     executable = configured if configured and Path(configured).is_file() else shutil.which("blender")
@@ -590,7 +616,11 @@ def _cleanup_with_blender(
             str(max_triangles),
         ]
         command.extend(
-            [json.dumps(material, separators=(",", ":")), normal_policy]
+            [
+                json.dumps(material, separators=(",", ":")),
+                normal_policy,
+                "preserve_uv" if preserve_uv else "rebuild",
+            ]
         )
         process = subprocess.run(
             command,
@@ -751,12 +781,61 @@ def _unity_import_path(task: dict[str, Any], model_path: Path, sha256: str) -> P
     assets = unity_root.resolve() / "Assets"
     if not assets.is_dir():
         raise tool_error(VALIDATION_ERROR, f"Unity Assets directory not found: {assets}")
-    target = assets / "Generated3D" / task["featureId"] / (
-        f"{task['assetId']}-{sha256[:12]}{model_path.suffix.lower()}"
-    )
+    # One folder per asset: the Unity side treats everything beside the model as its own,
+    # which the sidecar texture folder relies on.
+    stem = f"{task['assetId']}-{sha256[:12]}"
+    target = assets / "Generated3D" / task["featureId"] / stem / f"{stem}{model_path.suffix.lower()}"
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(model_path, target)
+    # The FBX references its maps relative to its own folder, so the sidecar keeps its name.
+    textures = model_path.with_name(f"{model_path.stem}.fbm")
+    if textures.is_dir():
+        shutil.copytree(textures, target.parent / textures.name, dirs_exist_ok=True)
     return target
+
+
+def _pack_metallic_smoothness(model_path: Path) -> Path | None:
+    """URP reads metallic from RGB and smoothness from alpha of a single map.
+
+    Providers deliver metallic and roughness as separate greyscale files, which Unity
+    cannot bind to `_MetallicGlossMap` as they are. The two inputs are consumed: leaving
+    them behind ships two more 1K textures that nothing samples.
+    """
+    sidecar = model_path.with_name(f"{model_path.stem}.fbm")
+    if not sidecar.is_dir():
+        return None
+    metallic = next(iter(sorted(sidecar.glob("*_metallic.png"))), None)
+    roughness = next(iter(sorted(sidecar.glob("*_roughness.png"))), None)
+    if metallic is None or roughness is None:
+        return None
+    with Image.open(metallic) as metallic_image, Image.open(roughness) as roughness_image:
+        metal = metallic_image.convert("L")
+        smoothness = ImageChops.invert(roughness_image.convert("L").resize(metal.size))
+        packed = Image.merge("RGBA", (metal, metal, metal, smoothness))
+    target = sidecar / f"{metallic.stem.removesuffix('_metallic')}_metallicSmoothness.png"
+    packed.save(target)
+    metallic.unlink()
+    roughness.unlink()
+    return target
+
+
+def _drop_empty_maps(model_path: Path) -> list[str]:
+    """Remove maps that carry no information.
+
+    Providers emit a full-resolution emission map even when nothing emits light. Unity
+    imports it, binds it, and pays for it in memory and download size for nothing.
+    """
+    sidecar = model_path.with_name(f"{model_path.stem}.fbm")
+    if not sidecar.is_dir():
+        return []
+    dropped = []
+    for candidate in sorted(sidecar.glob("*_emission.png")):
+        with Image.open(candidate) as image:
+            brightest = image.convert("L").getextrema()[1]
+        if brightest <= EMPTY_MAP_THRESHOLD:
+            candidate.unlink()
+            dropped.append(candidate.name)
+    return dropped
 
 
 def _game_ready_result(
@@ -768,18 +847,22 @@ def _game_ready_result(
 ) -> dict[str, Any]:
     material = task.get("textureMaterial") if task["textureStrategy"]["mode"] == "material_only" else None
     output_format = task.get("outputFormat", task["modelFormat"])
+    # Geometry was already rebuilt during refine; this pass must not disturb the textured UVs.
     clean_path = _cleanup_with_blender(
         source_path,
         task["maxTriangles"],
         material,
         output_format if source_path.suffix[1:].lower() != output_format else None,
         task["normalPolicy"],
+        preserve_uv=True,
     )
     inspection = _blender_inspection(clean_path)
     if not inspection or not inspection.get("triangleBudgetPassed"):
         raise tool_error(MCP_ERROR, "Blender output exceeds triangle budget", provider="blender", status="quality_rejected")
     if not inspection.get("gameReadyPassed"):
         raise tool_error(MCP_ERROR, "Blender output failed the GameReady quality gate", provider="blender", status="quality_rejected")
+    packed_map = _pack_metallic_smoothness(clean_path)
+    dropped_maps = _drop_empty_maps(clean_path)
     content_hash = hashlib.sha256(clean_path.read_bytes()).hexdigest()
     unity_path = _unity_import_path(task, clean_path, content_hash)
     completed = {
@@ -801,6 +884,8 @@ def _game_ready_result(
         "unityAssetPath": str(unity_path),
         "modelFormat": output_format,
         "inspection": inspection,
+        "metallicSmoothnessMap": str(packed_map) if packed_map else "",
+        "droppedMaps": dropped_maps,
         "provenance": completed["provenance"],
     }
 
@@ -1098,6 +1183,7 @@ async def refine_3d_asset_generation(
                 material,
                 task["outputFormat"],
                 task["normalPolicy"],
+                preserve_uv=True,
             )
             inspection = _blender_inspection(final_path) or inspection
         final_hash = hashlib.sha256(final_path.read_bytes()).hexdigest()
@@ -1140,11 +1226,25 @@ async def refine_3d_asset_generation(
             "provenance": provenance,
             "nextStep": "Inspect the staged asset, then call finalize_3d_asset_generation.",
         }
+    # Meshy generation always returns GLB, but retexture runs on FBX so the
+    # textured result imports into Unity with its material slots intact.
+    retexture_path = (
+        clean_path
+        if clean_path.suffix.lower() == f".{RETEXTURE_FORMAT}"
+        else _cleanup_with_blender(
+            clean_path,
+            task["maxTriangles"],
+            material,
+            RETEXTURE_FORMAT,
+            task["normalPolicy"],
+            preserve_uv=True,
+        )
+    )
     try:
         balance_before = await _await_result(meshy_client.get_balance())
         refine_task_id = await _await_result(meshy_client.create_retexture_task(
-            clean_model,
-            task.get("outputFormat", task["modelFormat"]),
+            retexture_path.read_bytes(),
+            RETEXTURE_FORMAT,
             task["texturePrompt"],
         ))
     except meshy_client.MeshyUnavailable as exc:
@@ -1154,10 +1254,10 @@ async def refine_3d_asset_generation(
         "taskId": refine_task_id,
         "method": "retexture",
         "providerMethod": "retexture",
-        "modelFormat": task.get("outputFormat", task["modelFormat"]),
+        "modelFormat": RETEXTURE_FORMAT,
         "phase": "retexture",
         "sourceTaskId": task_id,
-        "postprocessedPath": str(clean_path),
+        "postprocessedPath": str(retexture_path),
         "postprocessInspection": inspection,
         "balanceBefore": balance_before,
         "estimatedCredits": meshy_client.estimate_credits("retexture_2k")["credits"],
