@@ -937,7 +937,7 @@ async def test_art_style_argument_reaches_the_palette():
 # --------------------------------------------------------------------------
 
 
-def _stub_animation(monkeypatch, calls):
+def _stub_animation(monkeypatch, calls, opaque: bool = False):
     """Return frames that differ per index so ordering is observable."""
 
     def _fake_animation(*, first_frame, action, frame_count, description=None, **kwargs):
@@ -949,10 +949,19 @@ def _stub_animation(monkeypatch, calls):
                 "description": description,
             }
         )
-        frames = [
-            Image.new("RGBA", first_frame.size, (10 * index, 20, 30, 255))
-            for index in range(frame_count)
-        ]
+        frames = []
+        for index in range(frame_count):
+            frame = Image.new("RGBA", first_frame.size, (10 * index, 20, 30, 255 if opaque else 0))
+            if not opaque:
+                # A subject on transparent ground, the shape a sprite needs.
+                box = (
+                    first_frame.width // 4,
+                    first_frame.height // 4,
+                    first_frame.width * 3 // 4,
+                    first_frame.height * 3 // 4,
+                )
+                frame.paste((10 * index, 20, 30, 255), box)
+            frames.append(frame)
         return frames, {"type": "generations", "generations": float(frame_count)}, "job-anim"
 
     monkeypatch.setattr(pixellab_client, "create_animation", _fake_animation)
@@ -1046,7 +1055,7 @@ async def test_animation_saves_frames_in_play_order(monkeypatch):
     assert inspected.structured_content["humanReviewStatus"] == "pending"
 
 
-async def test_animation_rejects_a_frame_count_outside_the_range(monkeypatch):
+async def test_animation_rejects_a_frame_count_the_provider_refuses(monkeypatch):
     calls: list[dict] = []
     _stub_animation(monkeypatch, calls)
 
@@ -1059,10 +1068,57 @@ async def test_animation_rejects_a_frame_count_outside_the_range(monkeypatch):
                 "firstFrameAssetId": first_frame_id,
                 "action": "walk cycle",
                 "gameId": "t-anim-range",
-                "frameCount": 40,
+                "frameCount": 5,
             },
         )
 
     assert result.is_error is True
     assert "frameCount" in "".join(getattr(block, "text", "") for block in result.content)
     assert calls == []
+
+
+async def test_animation_reports_frames_that_come_back_on_a_plate(monkeypatch):
+    """An opaque sequence cannot be used as a sprite; say so at generation time."""
+
+    calls: list[dict] = []
+    _stub_animation(monkeypatch, calls, opaque=True)
+
+    async with session() as client:
+        first_frame_id = await _approved_prototype(client, "t-anim-opaque", "f-anim-source")
+        result = await client.call_tool(
+            "generate_2d_animation",
+            {
+                "featureId": "f-anim",
+                "firstFrameAssetId": first_frame_id,
+                "action": "walk cycle",
+                "gameId": "t-anim-opaque",
+                "frameCount": 4,
+            },
+        )
+
+    body = result.structured_content
+    assert body["technicalStatus"] == "fail"
+    assert "transparent_background_missing" in body["technicalFailures"]
+    assert all(frame["technicalStatus"] == "fail" for frame in body["frames"])
+
+
+async def test_animation_passes_inspection_when_frames_carry_alpha(monkeypatch):
+    calls: list[dict] = []
+    _stub_animation(monkeypatch, calls)
+
+    async with session() as client:
+        first_frame_id = await _approved_prototype(client, "t-anim-alpha", "f-anim-source")
+        result = await client.call_tool(
+            "generate_2d_animation",
+            {
+                "featureId": "f-anim",
+                "firstFrameAssetId": first_frame_id,
+                "action": "walk cycle",
+                "gameId": "t-anim-alpha",
+                "frameCount": 4,
+            },
+        )
+
+    body = result.structured_content
+    assert body["technicalStatus"] == "pass"
+    assert body["technicalFailures"] == []
