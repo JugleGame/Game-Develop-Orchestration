@@ -191,7 +191,7 @@ public sealed class AnimationDebugWindow : EditorWindow
             }
         }
 
-        foreach (var animator in Object.FindObjectsByType<Animator>(FindObjectsSortMode.None))
+        foreach (var animator in Object.FindObjectsByType<Animator>(FindObjectsInactive.Include))
         {
             if (animator.runtimeAnimatorController == null)
             {
