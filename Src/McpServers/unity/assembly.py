@@ -114,6 +114,17 @@ def require_object_path(value: str, label: str) -> str:
     return text
 
 
+def require_vector3(value: object, label: str, default: tuple[float, float, float]) -> tuple[float, float, float]:
+    """Validate a deterministic scene transform vector."""
+    if value is None:
+        return default
+    if not isinstance(value, list) or len(value) != 3 or any(
+        not isinstance(item, (int, float)) or isinstance(item, bool) for item in value
+    ):
+        raise AssemblyError(f"{label} 은 숫자 3개짜리 배열이어야 합니다")
+    return tuple(float(item) for item in value)
+
+
 def order_objects(objects: list[dict[str, object]]) -> list[dict[str, object]]:
     """부모가 자식보다 먼저 오도록 정렬한다.
 
@@ -605,12 +616,21 @@ def scene_command(scene_path: str, objects: list[dict[str, object]]) -> str:
     component_sets = [
         ";".join(str(item) for item in entry.get("components") or []) for entry in objects
     ]
+    positions = [require_vector3(entry.get("position"), "position", (0.0, 0.0, 0.0)) for entry in objects]
+    rotations = [require_vector3(entry.get("rotation"), "rotation", (0.0, 0.0, 0.0)) for entry in objects]
+    scales = [require_vector3(entry.get("scale"), "scale", (1.0, 1.0, 1.0)) for entry in objects]
+    vector_literals = lambda values: ", ".join(
+        f"new global::UnityEngine.Vector3({x}f, {y}f, {z}f)" for x, y, z in values
+    )
 
     body = f"""        string scenePath = {_literal(scene_path)};
         string[] names = new string[] {{ {_string_array(names)} }};
         string[] parents = new string[] {{ {_string_array(parents)} }};
         string[] prefabs = new string[] {{ {_string_array(prefabs)} }};
         string[] componentSets = new string[] {{ {_string_array(component_sets)} }};
+        global::UnityEngine.Vector3[] positions = new global::UnityEngine.Vector3[] {{ {vector_literals(positions)} }};
+        global::UnityEngine.Vector3[] rotations = new global::UnityEngine.Vector3[] {{ {vector_literals(rotations)} }};
+        global::UnityEngine.Vector3[] scales = new global::UnityEngine.Vector3[] {{ {vector_literals(scales)} }};
 
         var created = new System.Collections.Generic.Dictionary<string, global::UnityEngine.GameObject>();
         var attached = new System.Collections.Generic.List<string>();
@@ -641,6 +661,9 @@ def scene_command(scene_path: str, objects: list[dict[str, object]]) -> str:
             }}
 
             go.name = names[i];
+            go.transform.position = positions[i];
+            go.transform.rotation = global::UnityEngine.Quaternion.Euler(rotations[i]);
+            go.transform.localScale = scales[i];
             created[names[i]] = go;
 
             if (parents[i].Length > 0 && created.ContainsKey(parents[i]))

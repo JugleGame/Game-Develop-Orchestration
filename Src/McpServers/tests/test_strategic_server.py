@@ -14,6 +14,7 @@ os.environ.setdefault("RESEARCH_DSN", "postgresql://unused/unused")
 
 from strategic.research_repo import COUNTEREXAMPLE_MISSING, Card, ResearchEvidence  # noqa: E402
 from strategic.server import (  # noqa: E402
+    _unity_project_setup_guidance,
     _next_spec_id,
     _publication_state,
     _to_feature_prompt,
@@ -23,6 +24,14 @@ from strategic.server import (  # noqa: E402
 from strategic.specs import SpecDocument, dependency_errors, dependency_order, lint_spec  # noqa: E402
 
 KNOWN = {"ELEM-003", "GAME-013", "GENRE-006"}
+
+
+def test_unity_project_setup_guidance_routes_2d_and_3d_without_mixing_templates():
+    assert _unity_project_setup_guidance("2D")["unityHubTemplate"] == "Universal 2D"
+    assert _unity_project_setup_guidance("3D")["unityHubTemplate"] == "Universal 3D"
+
+    with pytest.raises(Exception, match="requires visualDimension"):
+        _unity_project_setup_guidance("hybrid")
 
 
 def _spec(**overrides) -> SpecDocument:

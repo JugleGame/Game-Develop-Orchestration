@@ -16,6 +16,7 @@ Server: `ResearchMcpServer`.
 | Tool | Responsibility |
 |---|---|
 | `research_idea` | Retrieve evidence, counterexamples, and architecture cards |
+| `get_unity_project_setup_guidance` | Return the Unity Hub project template and initial settings for an explicit `2D` or `3D` visual dimension |
 | `propose_concept` | Store an evidence-backed proposal for review |
 | `list_pending_concepts`, `get_concept` | Read concept review state |
 | `decide_concept` | Record approve, revise, or reject |
@@ -89,7 +90,15 @@ Server: `UnityMcpServer`.
   acceptable evidence only when it completed, executed at least one requested test, and reports no
   failure. `run_playmode_test` is console-smoke evidence only. Neither it nor a successful build can
   replace a named functional test, and the MCP never assigns the final QA status.
-- Evidence: `build_project`, `run_playmode_test`, `run_named_tests`, `get_compile_errors`,
+- `run_playmode_smoke` only detects runtime console errors during a bounded PlayMode
+  session. `run_playmode_test` remains a deprecated compatibility alias; neither tool
+  proves gameplay behavior. `run_playmode_function_tests` runs the installed Unity Test
+  Framework's PlayMode tests and returns per-test evidence plus the produced NUnit XML path;
+  zero discovered cases are a configuration error.
+- `unity_bridge_status` reports the local Editor and Test Framework versions found in the
+  configured project even when the relay is disconnected.
+- Evidence: `build_project`, `run_playmode_smoke`, `run_playmode_test`,
+  `run_playmode_function_tests`, `run_named_tests`, `get_compile_errors`,
   `inspect_project_layout`, `unity_bridge_status`, `inspect_animator`.
 - Return evidence; never declare final PASS.
 
@@ -168,28 +177,44 @@ Server: `Asset3DGenMcpServer` (`asset3d.server`).
   `Assets/`, and outside this repository.
 - `submit_3d_asset_generation` sends only host-supplied, human-approved reference images to
   Meshy. It does not automatically search or adopt third-party assets.
+- The current 3D provider path supports static models only. Asset specifications with
+  `animation.required: true` are rejected until an approved rigging and clip-generation path
+  can create and verify the requested output.
 - Meshy remains the only paid generation boundary. The host may use the GPT image API to turn the
   user's prompt into reference images, but the MCP server never calls GPT or another model. The
   host passes one to four user-approved references plus `referenceProvenance` to the MCP.
-- One reference uses Meshy Image-to-3D and two to four consistent views use Multi-Image-to-3D.
-  Both create an untextured mesh at the requested triangle ceiling. `text_to_3d` is rejected by
-  the asset specification contract and cannot be used as a fallback for any asset type.
-- `referenceProvenance` requires a non-empty source (for example `gpt_image_api`) and
-  `humanApproved: true`; an optional `sourcePromptSha256` records the user-prompt lineage without
-  storing the prompt itself. Reference prompts move repeated and non-silhouette microdetail to
-  flat color or normal-map information instead of geometry.
+- Every 3D request defaults to a single GPT-generated, consistent front/side/back contact sheet,
+  followed by human approval and Meshy Multi-Image-to-3D. `referenceContactSheetUrl` must contain
+  three equal-width left-to-right panels (allowing a one-pixel rounding difference) of that one
+  generation; independently generated images stitched together are invalid. The server splits the
+  sheet into three PNG inputs before
+  submission. Single-image submission is disabled;
+  `text_to_3d` is rejected by the asset specification contract and cannot be used as a fallback.
+- The reference-generation plan exposes a required visual review checklist. It checks one-object
+  consistency, declared-palette-only appearance, absent undeclared details, plus every explicit
+  `design.preserve` and `design.exclude` constraint. The same checklist is retained with the
+  staged final preview; failed checks must not be finalized into Unity.
+- `referenceProvenance` requires a non-empty source (for example `gpt_image_api`),
+  `humanApproved: true`, and `captureMode: single_generation_contact_sheet`; an optional
+  `sourcePromptSha256` records the user-prompt lineage without storing the prompt itself.
+  Reference prompts move repeated and non-silhouette microdetail to flat color or normal-map
+  information instead of geometry.
 - `refine_3d_asset_generation` requires explicit human geometry-preview approval before any paid
   refine/retexture. Completed output is staged as `AWAITING_FINAL_REVIEW`.
 - Retexture always submits FBX. Meshy returns GLB geometry, so Blender converts the cleaned GLB to
   FBX before submission and the task requests an FBX result. `finalize_3d_asset_generation` still
   converts to `assetSpec.output.format` when the specification asks for GLB.
+- A Unity-targeted asset specification should request `output.format: fbx`; the stock Unity
+  importer does not load GLB as a prefab-ready `GameObject` without an additional importer.
 - Geometry is rebuilt once, during refine. Every later Blender pass runs in preserve mode: it keeps
   vertices, planar faces, and UVs untouched and only re-applies transforms, triangulates, grounds,
   and exports. Merging or dissolving a textured mesh would destroy the UV layout the maps were
   baked against.
 - FBX exports write their maps into a sidecar `<model>.fbm` folder, and the Unity copy keeps that
   folder name so the relative references resolve. Unity cannot extract embedded FBX media on its
-  own, so embedding is not used. Separate metallic and roughness maps are packed into one
+  own, so embedding is not used. A `generated_texture` result with no image in that sidecar is
+  rejected before the FBX is copied; Unity must not accept a silently white material. Separate
+  metallic and roughness maps are packed into one
   `*_metallicSmoothness.png` (metallic in RGB, inverted roughness in alpha) for URP, and the two
   consumed inputs are deleted. An emission map whose brightest pixel is at or below
   `EMPTY_MAP_THRESHOLD` carries no light and is dropped rather than shipped.
@@ -208,7 +233,11 @@ Server: `Asset3DGenMcpServer` (`asset3d.server`).
 - The Blender report also exposes disconnected-component and BVH self-intersection candidates. `gameReadyPassed` covers static Unity render readiness; `topologyStrictPassed` additionally requires a manifold, intersection-free mesh for workflows such as deformation, destructive baking, or 3D printing. Exact Union and voxel remesh are not automatic defaults because they can visibly destroy valid generated surfaces.
 - `material_only` is allowed only for an explicitly uniform palette: numeric `texture.material`, no `texture.surfaceDetails`, and at most one declared design color and material. Blender converts the sRGB base color to scene-linear values and applies it to every mesh; the GameReady gate rejects missing material slots. Multiple appearance regions select `generated_texture` instead of flattening visual structure into one material.
 - Image generation preserves the complete host-authored specification and submits texture
-  requirements separately during retexture. Runtime-bound output requests triangle remeshing.
+  requirements separately during retexture. The texture prompt restricts the provider to the
+  declared palette and material, preserves explicit design constraints, and prohibits invented
+  colors, patterns, text, logos, symbols, and accessories. Runtime-bound output requests triangle remeshing.
+- A successful geometry poll persists Meshy's thumbnail URLs with its provider evidence, so a
+  later approval gate can render the same preview without parsing provider-specific evidence.
 - `get_3d_asset_generation` resumes a Meshy task by provider task ID. Meshy I/O is async with a
   bounded retry/backoff policy; authentication, insufficient credit, rate, queue, provider, and
   expired-download failures are distinct. `cancel_3d_asset_generation` cancels a resumable task,

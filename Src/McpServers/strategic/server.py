@@ -113,6 +113,46 @@ def _visual_dimension(blueprint: dict[str, Any]) -> str:
     return value
 
 
+def _unity_project_setup_guidance(visual_dimension: str) -> dict[str, Any]:
+    """Return the Unity Hub template guidance for a validated visual dimension.
+
+    Project creation remains an operator action; the planning boundary only
+    supplies a deterministic template choice and the first safe setup steps.
+    """
+
+    dimension = _visual_dimension({"visualDimension": visual_dimension})
+    if dimension not in {"2d", "3d"}:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "Unity project template guidance requires visualDimension 2D or 3D",
+        )
+    if dimension == "2d":
+        return {
+            "visualDimension": "2D",
+            "unityHubTemplate": "Universal 2D",
+            "initialSetup": [
+                "Create a Universal 2D project in Unity Hub.",
+                "Keep the 2D Renderer and configure sorting layers before importing sprites.",
+                "Use 2D physics components for player and gameplay collisions.",
+            ],
+        }
+    return {
+        "visualDimension": "3D",
+        "unityHubTemplate": "Universal 3D",
+        "initialSetup": [
+            "Create a Universal 3D project in Unity Hub.",
+            "Keep URP, configure the camera and lighting, then import low-poly models.",
+            "Use 3D colliders and physics components for player and gameplay collisions.",
+        ],
+    }
+
+
+@mcp.tool(description="Return the Unity project template and initial setup for a 2D or 3D game.")
+@expects_dict_return
+def get_unity_project_setup_guidance(visualDimension: str) -> dict[str, Any]:
+    return _unity_project_setup_guidance(visualDimension)
+
+
 def _blueprint_document(blueprint: dict[str, Any], specs: list[SpecDocument]) -> dict[str, Any]:
     """Store game-level data plus a spec ID list, never duplicate spec bodies."""
 

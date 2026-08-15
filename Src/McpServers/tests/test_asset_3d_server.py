@@ -1,17 +1,21 @@
 """Contract tests for the isolated, provider-neutral 3D asset boundary."""
 
+import base64
 import json
 import struct
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 from mcp import Client, ClientSession
+from PIL import Image
 
 from asset3d import cc0_client, meshy_client, server
 
 REAL_CC0_ACQUIRE = cc0_client.acquire
+REAL_UNITY_IMPORT_PATH = server._unity_import_path
 
 
 @pytest.fixture(autouse=True)
@@ -51,8 +55,70 @@ def _fake_cleanup(
     return converted
 
 
+def test_unity_import_rejects_generated_texture_model_without_sidecar(tmp_path, monkeypatch):
+    unity_project = tmp_path / "UnityProject"
+    (unity_project / "Assets").mkdir(parents=True)
+    model = tmp_path / "adventurer-clean.fbx"
+    model.write_bytes(_fbx(_glb(textured=True)))
+    monkeypatch.setenv("UNITY_PROJECT_PATH", str(unity_project))
+    monkeypatch.setattr(server, "REPOSITORY_ROOT", tmp_path / "orchestration")
+
+    with pytest.raises(Exception, match="missing its FBX .fbm texture sidecar"):
+        REAL_UNITY_IMPORT_PATH(
+            {"assetId": "adventurer", "featureId": "slice", "textureStrategy": {"mode": "generated_texture"}},
+            model,
+            "a" * 64,
+        )
+
+
+def test_unity_import_copies_generated_texture_sidecar(tmp_path, monkeypatch):
+    unity_project = tmp_path / "UnityProject"
+    (unity_project / "Assets").mkdir(parents=True)
+    model = tmp_path / "adventurer-clean.fbx"
+    model.write_bytes(_fbx(_glb(textured=True)))
+    sidecar = tmp_path / "adventurer-clean.fbm"
+    sidecar.mkdir()
+    Image.new("RGB", (2, 2), (40, 80, 120)).save(sidecar / "texture_basecolor.png")
+    monkeypatch.setenv("UNITY_PROJECT_PATH", str(unity_project))
+    monkeypatch.setattr(server, "REPOSITORY_ROOT", tmp_path / "orchestration")
+
+    imported = REAL_UNITY_IMPORT_PATH(
+        {"assetId": "adventurer", "featureId": "slice", "textureStrategy": {"mode": "generated_texture"}},
+        model,
+        "b" * 64,
+    )
+
+    assert imported.is_file()
+    assert (imported.parent / "adventurer-clean.fbm" / "texture_basecolor.png").is_file()
+
+
+def test_3d_task_state_write_keeps_the_previous_file_if_replacement_fails(tmp_path, monkeypatch):
+    path = tmp_path / "task.json"
+    path.write_text('{"old": true}', encoding="utf-8")
+    real_replace = server.os.replace
+
+    def fail_replace(source, destination):
+        if Path(destination) == path:
+            raise OSError("simulated replacement failure")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(server.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="simulated"):
+        server._write_json(path, {"new": True})
+    assert json.loads(path.read_text(encoding="utf-8")) == {"old": True}
+
+
+def test_paid_submission_claim_is_atomic_and_preserves_recovery_state(tmp_path):
+    path = tmp_path / "submission.json"
+
+    assert server._claim_submission(path, "request-1") is None
+    existing = server._claim_submission(path, "request-1")
+    assert existing["requestId"] == "request-1"
+    assert existing["status"] == "SUBMITTING"
+    assert existing["createdAt"]
+
+
 def _asset_spec(asset_type: str = "slime", method: str = "image_to_3d") -> dict:
-    animated = asset_type in {"character", "slime", "monster"}
     return {
         "assetId": f"{asset_type}-green",
         "assetName": f"Green {asset_type}",
@@ -102,9 +168,9 @@ def _asset_spec(asset_type: str = "slime", method: str = "image_to_3d") -> dict:
             "maps": ["base color"],
         },
         "animation": {
-            "required": animated,
-            "rigType": "simple deform rig" if animated else "",
-            "clips": ["idle", "move"] if animated else [],
+            "required": False,
+            "rigType": "",
+            "clips": [],
         },
         "generation": {"method": method},
         "validation": {
@@ -174,7 +240,6 @@ async def test_generation_prompt_follows_the_documented_order_and_content():
         "neutral pose",
         "2500 triangles",
         "export glb",
-        "simple deform rig",
         "Preserve: round silhouette",
         "Exclude: text, weapons",
     ]
@@ -198,6 +263,8 @@ async def test_image_to_3d_composes_consistent_front_side_and_back_views():
         assert "neutral pose" in prompt
         assert "consistent lighting" in prompt
         assert "minimal perspective distortion" in prompt
+        assert "preserve round silhouette" in prompt
+        assert "do not include text, weapons" in prompt
 
 
 async def test_text_to_3d_is_rejected_by_the_asset_contract():
@@ -236,9 +303,9 @@ async def test_character_requires_reference_views_even_for_manual_modeling():
     assert reference["requiredViews"] == ["front", "side", "back"]
 
 
-async def test_animation_fields_are_required_only_for_animated_assets():
+async def test_animation_required_is_rejected_until_the_provider_path_supports_it():
     animated = _asset_spec()
-    animated["animation"]["rigType"] = ""
+    animated["animation"] = {"required": True, "rigType": "simple deform rig", "clips": ["idle"]}
     static = _asset_spec("prop", "image_to_3d")
     static["animation"] = {"required": False}
 
@@ -247,7 +314,7 @@ async def test_animation_fields_are_required_only_for_animated_assets():
         valid = await client.call_tool("compose_3d_asset_prompts", {"assetSpec": static})
 
     assert invalid.is_error is True
-    assert '"errorCode": 1000' in "".join(
+    assert "unsupported" in "".join(
         getattr(block, "text", "") for block in invalid.content
     )
     assert valid.is_error is False
@@ -342,6 +409,8 @@ async def test_request_composes_and_preserves_prompts_without_a_placeholder(tmp_
     assert package["referenceSearchPrompt"]["sourceSpecSha256"] == package["provenance"][
         "sourceSpecSha256"
     ]
+    assert package["referenceGenerationPlan"]["visualReviewChecklist"]
+    assert "Only the declared palette" in package["referenceGenerationPlan"]["visualReviewChecklist"][1]
     assert len(package["provenance"]["sourceSpecSha256"]) == 64
 
 
@@ -414,6 +483,7 @@ async def test_image_generation_accepts_data_uri_and_refines_with_blender(tmp_pa
         lambda *_: {
             "status": "SUCCEEDED",
             "model_urls": {"glb": "https://assets.meshy.ai/model.glb"},
+            "thumbnail_url": "https://assets.meshy.ai/thumbnail.png",
         },
     )
     monkeypatch.setattr(meshy_client, "download_model", lambda _: _glb(textured=False))
@@ -452,10 +522,15 @@ async def test_image_generation_accepts_data_uri_and_refines_with_blender(tmp_pa
         2500,
     )]
     assert refined.structured_content["phase"] == "retexture"
+    assert server._read_task(result.structured_content["taskId"])["thumbnailUrl"] == (
+        "https://assets.meshy.ai/thumbnail.png"
+    )
     assert retextured[0][0] == _fbx(_glb(textured=False))
     assert retextured[0][1:] == (
         "fbx",
-        "matte stylized surface with readable color separation; colors: leaf green, cream; materials: soft matte body",
+        "matte stylized surface with readable color separation; use only these colors: leaf green, cream; "
+        "materials: soft matte body; keep color regions clean and flat; do not invent extra colors, "
+        "patterns, text, logos, symbols, or accessories; preserve: round silhouette; exclude: text, weapons",
     )
 
 
@@ -553,6 +628,70 @@ async def test_multiple_approved_references_use_multi_image(tmp_path, monkeypatc
     assert task["referenceImageCount"] == 3
     assert task["referenceProvenance"] == provenance
     assert task["estimatedCredits"] == 20
+
+
+async def test_approved_three_view_contact_sheet_is_split_for_multi_image(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("MESHY_API_KEY", "test-key")
+    submitted = []
+    monkeypatch.setattr(
+        meshy_client,
+        "create_multi_image_task",
+        lambda *args: submitted.append(args) or "task-contact-sheet",
+    )
+    sheet = Image.new("RGB", (302, 100))
+    for index, color in enumerate(((255, 0, 0), (0, 255, 0), (0, 0, 255))):
+        for x in range(round(index * 302 / 3), round((index + 1) * 302 / 3)):
+            for y in range(100):
+                sheet.putpixel((x, y), color)
+    buffer = BytesIO()
+    sheet.save(buffer, format="PNG")
+    contact_sheet = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    async with session() as client:
+        result = await client.call_tool(
+            "submit_3d_asset_generation",
+            {
+                "featureId": "prop-art",
+                "assetSpec": _asset_spec("prop", "image_to_3d"),
+                "referenceContactSheetUrl": contact_sheet,
+                "referenceProvenance": {"source": "gpt_image_api", "humanApproved": True, "captureMode": "single_generation_contact_sheet"},
+            },
+        )
+
+    assert result.is_error is False
+    assert len(submitted) == 1
+    assert len(submitted[0][0]) == 3
+    assert all(reference.startswith("data:image/png;base64,") for reference in submitted[0][0])
+    task = server._read_task("task-contact-sheet")
+    assert task["referenceInputMode"] == "three_view_contact_sheet"
+    assert task["referenceProvenance"]["captureMode"] == "single_generation_contact_sheet"
+
+
+async def test_contact_sheet_rejects_stitched_reference_provenance(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    sheet = Image.new("RGB", (300, 100))
+    for index, color in enumerate(((255, 0, 0), (0, 255, 0), (0, 0, 255))):
+        for x in range(index * 100, (index + 1) * 100):
+            for y in range(100):
+                sheet.putpixel((x, y), color)
+    buffer = BytesIO()
+    sheet.save(buffer, format="PNG")
+    contact_sheet = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    async with session() as client:
+        result = await client.call_tool(
+            "submit_3d_asset_generation",
+            {
+                "featureId": "prop-art",
+                "assetSpec": _asset_spec("prop", "image_to_3d"),
+                "referenceContactSheetUrl": contact_sheet,
+                "referenceProvenance": {"source": "gpt_image_api", "humanApproved": True},
+            },
+        )
+
+    assert result.is_error is True
+    assert "single_generation_contact_sheet" in result.content[0].text
 
 
 async def test_geometry_review_gate_blocks_refine(tmp_path, monkeypatch):
@@ -1017,7 +1156,7 @@ async def test_duplicate_spec_blocks_second_paid_submission(tmp_path, monkeypatc
     monkeypatch.setenv("MESHY_API_KEY", "test-key")
     monkeypatch.setattr(
         meshy_client,
-        "create_image_task",
+        "create_multi_image_task",
         lambda *_args: calls.append("submitted") or "task-image",
     )
 
@@ -1025,7 +1164,11 @@ async def test_duplicate_spec_blocks_second_paid_submission(tmp_path, monkeypatc
         "featureId": "slime-art",
         "gameId": "slime-ranch",
         "assetSpec": _asset_spec("slime", "image_to_3d"),
-        "referenceImageUrl": "data:image/png;base64,aW1hZ2U=",
+        "referenceImageUrls": [
+            "data:image/png;base64,ZnJvbnQ=",
+            "data:image/png;base64,c2lkZQ==",
+            "data:image/png;base64,YmFjaw==",
+        ],
         "referenceProvenance": {
             "source": "gpt_image_api",
             "humanApproved": True,

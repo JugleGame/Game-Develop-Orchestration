@@ -32,3 +32,26 @@ jobs:
         run: node --test .github/scripts/issue-metadata.test.js
       - name: Verify MCP contracts
         run: python Src/McpServers/verify_contract.py
+
+  windows:
+    name: Windows path and MCP contract check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install locked dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.lock
+          python -m pip install --no-deps --no-build-isolation ./Src/McpServers
+      - name: Verify Windows named-pipe discovery and non-ASCII temporary paths
+        shell: pwsh
+        run: python -m pytest Src/McpServers/tests/test_unity_adapter.py
+      - name: Verify MCP contracts
+        shell: pwsh
+        run: python Src/McpServers/verify_contract.py

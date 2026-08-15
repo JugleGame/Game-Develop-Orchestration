@@ -11,6 +11,8 @@ import re
 import shutil
 import struct
 import subprocess
+import tempfile
+from io import BytesIO
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -68,7 +70,47 @@ def _digest(value: Any) -> str:
 
 def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", text=True
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, indent=2, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _claim_submission(path: Path, request_id: str) -> dict[str, Any] | None:
+    """Atomically reserve one paid-provider submission key.
+
+    A plain ``is_file`` check leaves two MCP processes free to pay for the same
+    request.  The reservation is deliberately retained after an interrupted
+    provider call: without a provider idempotency key it is safer to require
+    recovery than to risk charging for a second task.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    except FileExistsError:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"status": "submission_state_unreadable"}
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        json.dump(
+            {"requestId": request_id, "status": "SUBMITTING", "createdAt": _now()},
+            stream,
+            ensure_ascii=False,
+        )
+        stream.flush()
+        os.fsync(stream.fileno())
+    return None
 
 
 def _is_within(path: Path, parent: Path) -> bool:
@@ -297,6 +339,11 @@ def _validate_asset_spec(asset_spec: dict[str, Any]) -> dict[str, Any]:
     animation_required = animation.get("required")
     if not isinstance(animation_required, bool):
         raise tool_error(VALIDATION_ERROR, "assetSpec.animation.required must be a boolean")
+    if animation_required:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "assetSpec.animation.required=true is unsupported: the current 3D provider path does not create or verify rigs and animation clips",
+        )
     rig_type = ""
     clips: list[str] = []
     if animation_required:
@@ -407,6 +454,11 @@ def _compose_prompts(asset_spec: dict[str, Any]) -> dict[str, Any]:
     spec_digest = _digest(asset_spec)
     references_required = spec["method"] == "image_to_3d" or spec["assetType"] == "character"
     views = list(REFERENCE_VIEWS) if references_required else []
+    reference_constraints = []
+    if spec["preserve"]:
+        reference_constraints.append(f"preserve {', '.join(spec['preserve'])}")
+    if spec["exclude"]:
+        reference_constraints.append(f"do not include {', '.join(spec['exclude'])}")
     reference_base = (
         f"{spec['assetName']}, {spec['description']} {spec['style']} style, "
         f"{spec['proportions']} proportions, colors {', '.join(spec['colors'])}. "
@@ -414,6 +466,8 @@ def _compose_prompts(asset_spec: dict[str, Any]) -> dict[str, Any]:
         "primary volumes; represent repeated or tiny non-silhouette details as flat color or "
         "normal-map information instead of raised geometry"
     )
+    if reference_constraints:
+        reference_base += ". " + "; ".join(reference_constraints)
     return {
         "textureStrategy": _texture_strategy(spec),
         "generationPrompt": {
@@ -481,6 +535,16 @@ def _request_package(
     )
     request_id = f"{provenance['assetId']}__{provenance['sourceSpecSha256'][:12]}"
     request_path = ROOT / "3d" / "requests" / game_id / f"{request_id}.json"
+    spec = _validate_asset_spec(asset_spec)
+    visual_review_checklist = [
+        "The asset is the same object across all three views and its silhouette matches the specification.",
+        f"Only the declared palette is present: {', '.join(spec['colors'])}.",
+        "No undeclared patterns, text, logos, symbols, or accessories are present.",
+    ]
+    if spec["preserve"]:
+        visual_review_checklist.append(f"Preserved: {', '.join(spec['preserve'])}.")
+    if spec["exclude"]:
+        visual_review_checklist.append(f"Absent: {', '.join(spec['exclude'])}.")
     return request_path, {
         "requestId": request_id,
         "gameId": game_id,
@@ -488,6 +552,14 @@ def _request_package(
         "createdAt": _now(),
         "assetSpec": asset_spec,
         **prompts,
+        "referenceGenerationPlan": {
+            "provider": "gpt_image_api",
+            "requiredViews": list(REFERENCE_VIEWS),
+            "approvalRequired": True,
+            "captureMode": "single_generation_contact_sheet",
+            "visualReviewChecklist": visual_review_checklist,
+            "nextStep": "Generate one left-to-right front, side, and back contact sheet of the same object in one GPT image generation; do not stitch independently generated images. Obtain human approval before Multi-Image-to-3D submission.",
+        },
         "provenance": provenance,
     }, provenance
 
@@ -514,13 +586,17 @@ def _meshy_triangle_limit(asset_spec: dict[str, Any], method: str) -> int:
 
 
 def _meshy_texture_prompt(spec: dict[str, Any]) -> str:
-    texture = "; ".join(
-        [
-            spec["textureDescription"],
-            f"colors: {', '.join(spec['colors'])}",
-            f"materials: {', '.join(spec['materials'])}",
-        ]
-    )
+    clauses = [
+        spec["textureDescription"],
+        f"use only these colors: {', '.join(spec['colors'])}",
+        f"materials: {', '.join(spec['materials'])}",
+        "keep color regions clean and flat; do not invent extra colors, patterns, text, logos, symbols, or accessories",
+    ]
+    if spec["preserve"]:
+        clauses.append(f"preserve: {', '.join(spec['preserve'])}")
+    if spec["exclude"]:
+        clauses.append(f"exclude: {', '.join(spec['exclude'])}")
+    texture = "; ".join(clauses)
     if len(texture) > MESHY_PROMPT_LIMIT:
         raise tool_error(
             VALIDATION_ERROR,
@@ -544,18 +620,66 @@ def _require_reference_image(value: str, field: str) -> str:
     return url
 
 
+def _split_reference_contact_sheet(value: str) -> list[str]:
+    """Turn an approved left-to-right front/side/back sheet into Meshy inputs.
+
+    Meshy accepts one image, but it does not infer that three panels represent
+    three viewpoints.  Splitting keeps the review surface compact while still
+    giving Multi-Image-to-3D its required three independent images.
+    """
+    reference = _require_reference_image(value, "referenceContactSheetUrl")
+    prefix, _, encoded = reference.partition(",")
+    if not prefix.startswith("data:image/"):
+        raise tool_error(
+            VALIDATION_ERROR,
+            "referenceContactSheetUrl must be a PNG/JPEG data URI so it can be split locally",
+        )
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+        with Image.open(BytesIO(raw)) as image:
+            image.load()
+            if image.width < 3:
+                raise tool_error(
+                    VALIDATION_ERROR,
+                    "referenceContactSheetUrl must have a three-column layout (front, side, back)",
+                )
+            # GPT image outputs are not guaranteed to have a width divisible by three.
+            # Keep all pixels and distribute a one- or two-pixel remainder across
+            # the panels rather than rejecting an otherwise valid single generation.
+            boundaries = [round(index * image.width / 3) for index in range(4)]
+            panels = [
+                image.crop((boundaries[index], 0, boundaries[index + 1], image.height))
+                .convert("RGBA")
+                for index in range(3)
+            ]
+    except (OSError, ValueError) as exc:
+        raise tool_error(VALIDATION_ERROR, "referenceContactSheetUrl is not a readable image") from exc
+    references: list[str] = []
+    for panel in panels:
+        buffer = BytesIO()
+        panel.save(buffer, format="PNG")
+        references.append(f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode('ascii')}")
+    return references
+
+
 def _reference_inputs(
     reference_image_url: str,
     reference_image_urls: list[str] | None,
+    reference_contact_sheet_url: str,
     reference_provenance: dict[str, Any] | None,
-) -> tuple[list[str], dict[str, Any]]:
+) -> tuple[list[str], dict[str, Any], str]:
     values = list(reference_image_urls or [])
-    if reference_image_url:
-        if values:
-            raise tool_error(
-                VALIDATION_ERROR,
-                "use referenceImageUrls or legacy referenceImageUrl, not both",
-            )
+    supplied = sum(bool(value) for value in (reference_image_url, reference_contact_sheet_url)) + bool(values)
+    if supplied > 1:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "use referenceImageUrls, legacy referenceImageUrl, or referenceContactSheetUrl, not more than one",
+        )
+    input_mode = "individual_images"
+    if reference_contact_sheet_url:
+        values = _split_reference_contact_sheet(reference_contact_sheet_url)
+        input_mode = "three_view_contact_sheet"
+    elif reference_image_url:
         values = [reference_image_url]
     if not 1 <= len(values) <= 4:
         raise tool_error(VALIDATION_ERROR, "referenceImageUrls must contain 1 to 4 images")
@@ -574,6 +698,11 @@ def _reference_inputs(
             VALIDATION_ERROR,
             "referenceProvenance.humanApproved must be true before paid submission",
         )
+    if input_mode == "three_view_contact_sheet" and evidence.get("captureMode") != "single_generation_contact_sheet":
+        raise tool_error(
+            VALIDATION_ERROR,
+            "referenceProvenance.captureMode must be single_generation_contact_sheet; stitched independent images are not valid multi-view references",
+        )
     prompt_hash = evidence.get("sourcePromptSha256")
     if prompt_hash is not None and (
         not isinstance(prompt_hash, str) or re.fullmatch(r"[0-9a-f]{64}", prompt_hash) is None
@@ -582,11 +711,14 @@ def _reference_inputs(
             VALIDATION_ERROR,
             "referenceProvenance.sourcePromptSha256 must be a lowercase SHA-256 digest",
         )
-    return references, {
+    normalized_evidence = {
         "source": source.strip(),
         "humanApproved": True,
         **({"sourcePromptSha256": prompt_hash} if prompt_hash else {}),
     }
+    if input_mode == "three_view_contact_sheet":
+        normalized_evidence["captureMode"] = "single_generation_contact_sheet"
+    return references, normalized_evidence, input_mode
 
 
 def _cleanup_with_blender(
@@ -786,9 +918,19 @@ def _unity_import_path(task: dict[str, Any], model_path: Path, sha256: str) -> P
     stem = f"{task['assetId']}-{sha256[:12]}"
     target = assets / "Generated3D" / task["featureId"] / stem / f"{stem}{model_path.suffix.lower()}"
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(model_path, target)
     # The FBX references its maps relative to its own folder, so the sidecar keeps its name.
     textures = model_path.with_name(f"{model_path.stem}.fbm")
+    requires_generated_textures = task.get("textureStrategy", {}).get("mode") == "generated_texture"
+    if requires_generated_textures and not any(
+        candidate.is_file()
+        for pattern in ("*.png", "*.jpg", "*.jpeg", "*.tga")
+        for candidate in textures.glob(pattern)
+    ):
+        raise tool_error(
+            VALIDATION_ERROR,
+            "Generated-texture model is missing its FBX .fbm texture sidecar",
+        )
+    shutil.copy2(model_path, target)
     if textures.is_dir():
         shutil.copytree(textures, target.parent / textures.name, dirs_exist_ok=True)
     return target
@@ -937,6 +1079,8 @@ def prepare_3d_asset_request(
         "assetType": provenance["assetType"],
         "modelFormat": provenance["modelFormat"],
         "textureStrategy": package["textureStrategy"],
+        "visualReviewChecklist": package["referenceGenerationPlan"]["visualReviewChecklist"],
+        "referenceGenerationPlan": package["referenceGenerationPlan"],
         "status": package["status"],
         "providerConfigured": meshy_client.is_configured(),
     }
@@ -949,6 +1093,7 @@ async def submit_3d_asset_generation(
     assetSpec: dict[str, Any],
     referenceImageUrl: str = "",
     referenceImageUrls: list[str] | None = None,
+    referenceContactSheetUrl: str = "",
     referenceProvenance: dict[str, Any] | None = None,
     gameId: str | None = None,
 ) -> dict[str, Any]:
@@ -991,13 +1136,13 @@ async def submit_3d_asset_generation(
         "referenceImageCount": len(references),
         "createdAt": _now(),
     }
-    references, reference_evidence = _reference_inputs(
-        referenceImageUrl, referenceImageUrls, referenceProvenance
+    references, reference_evidence, reference_input_mode = _reference_inputs(
+        referenceImageUrl, referenceImageUrls, referenceContactSheetUrl, referenceProvenance
     )
-    if spec["assetType"] in {"prop", "environment", "building", "interactive"} and len(references) != 3:
+    if len(references) != 3:
         raise tool_error(
             VALIDATION_ERROR,
-            "static image_to_3d assets require exactly three approved front, side, and back references",
+            "3D assets require exactly three approved front, side, and back references generated by GPT; single-image submission is disabled",
         )
     reference_set_sha256 = _digest(
         {"images": references, "provenance": reference_evidence}
@@ -1006,6 +1151,7 @@ async def submit_3d_asset_generation(
         {
             "referenceProvenance": reference_evidence,
             "referenceImageCount": len(references),
+            "referenceInputMode": reference_input_mode,
             "referenceSetSha256": reference_set_sha256,
         }
     )
@@ -1024,11 +1170,8 @@ async def submit_3d_asset_generation(
         / "submissions"
         / f"{submission_key}.json"
     )
-    if submission_path.is_file():
-        try:
-            existing = json.loads(submission_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            existing = {}
+    existing = _claim_submission(submission_path, package["requestId"])
+    if existing is not None:
         existing_id = existing.get("taskId")
         if isinstance(existing_id, str) and existing_id:
             return {
@@ -1037,29 +1180,31 @@ async def submit_3d_asset_generation(
                 "status": "duplicate_blocked",
                 "provider": "meshy",
             }
+        return {
+            "requestId": package["requestId"],
+            "status": "submission_in_progress",
+            "provider": "meshy",
+            "recoveryRequired": True,
+        }
     texture_prompt = task["texturePrompt"]
     try:
         balance_before = await _await_result(meshy_client.get_balance())
-        if len(references) == 1:
-            credit_estimate = meshy_client.estimate_credits(
-                "image_smart_topology_untextured"
-            )
-            provider_method = "image_to_3d"
-            task_id = await _await_result(
-                meshy_client.create_image_task(references[0], model_format, max_triangles)
-            )
-        else:
-            credit_estimate = meshy_client.estimate_credits(
-                "multi_image_meshy_6_untextured"
-            )
-            provider_method = "multi_image_to_3d"
-            task_id = await _await_result(
-                meshy_client.create_multi_image_task(
-                    references, model_format, max_triangles
-                )
-            )
+        credit_estimate = meshy_client.estimate_credits("multi_image_meshy_6_untextured")
+        provider_method = "multi_image_to_3d"
+        task_id = await _await_result(
+            meshy_client.create_multi_image_task(references, model_format, max_triangles)
+        )
         phase = "generation"
     except meshy_client.MeshyUnavailable as exc:
+        _write_json(
+            submission_path,
+            {
+                "requestId": package["requestId"],
+                "status": "SUBMISSION_UNCERTAIN",
+                "createdAt": _now(),
+                "providerStatus": exc.status,
+            },
+        )
         _meshy_error(exc)
 
     task = {
@@ -1154,6 +1299,17 @@ async def refine_3d_asset_generation(
     raw_path = ROOT / "3d" / "models" / task["gameId"] / f"{task_id}.{task['modelFormat']}"
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     raw_path.write_bytes(output)
+    # Keep the reviewed geometry preview available while the separate texture
+    # task runs.  Otherwise callers have to unpack provider-specific evidence
+    # (or lose the preview altogether after a process restart).
+    task.update(
+        {
+            "thumbnailUrl": current.get("thumbnail_url", ""),
+            "thumbnailUrls": current.get("thumbnail_urls", {}),
+            "providerEvidence": current,
+        }
+    )
+    _write_json(_task_path(task_id), task)
     material = (
         task["textureMaterial"]
         if task["textureStrategy"]["mode"] == "material_only"
@@ -1290,6 +1446,7 @@ async def get_3d_asset_generation(taskId: str) -> dict[str, Any]:
             "inspection": task.get("inspection"),
             "thumbnailUrl": task.get("thumbnailUrl", ""),
             "thumbnailUrls": task.get("thumbnailUrls", {}),
+            "visualReviewChecklist": task.get("visualReviewChecklist", []),
             "nextStep": "Inspect the staged asset, then call finalize_3d_asset_generation.",
         }
     try:
@@ -1344,6 +1501,8 @@ async def get_3d_asset_generation(taskId: str) -> dict[str, Any]:
                 "assetPath": str(output_path),
                 "thumbnailUrl": current.get("thumbnail_url", ""),
                 "thumbnailUrls": current.get("thumbnail_urls", {}),
+                "textureUrls": current.get("texture_urls", []),
+                "providerEvidence": current,
                 "provenance": provenance,
                 "consumedCredits": consumed_credits,
             }
@@ -1356,6 +1515,7 @@ async def get_3d_asset_generation(taskId: str) -> dict[str, Any]:
             "modelFormat": task["modelFormat"],
             "provenance": provenance,
             "consumedCredits": consumed_credits,
+            "visualReviewChecklist": task.get("visualReviewChecklist", []),
             "nextStep": "Inspect the staged asset, then call finalize_3d_asset_generation.",
         }
     result.update(
@@ -1383,6 +1543,8 @@ async def get_3d_asset_generation(taskId: str) -> dict[str, Any]:
             "status": status,
             "consumedCredits": result.get("consumedCredits"),
             "balanceAfter": result.get("balanceAfter"),
+            "thumbnailUrl": current.get("thumbnail_url", ""),
+            "thumbnailUrls": current.get("thumbnail_urls", {}),
             "providerEvidence": current,
         }
     )
