@@ -102,7 +102,17 @@ bootstrap and repair it only when its backup is acceptable:
 ```
 
 The contract check imports no live service. For Unity integration, start the Editor and relay,
-then verify bridge status, build, PlayMode, and layout in that order.
+verify bridge status, and then follow [the functional QA policy](unity-functional-qa.md): compile,
+focal named tests, PlayMode console smoke, regression and layout checks, then the final build.
+Copy the reporter described below before calling `run_named_tests`.
+
+### Unity named test reporter
+
+Copy `templates/unity-editor/PipelineTestReporter.cs` and
+`templates/unity-editor/PipelineTestReporter.asmdef` into the target Unity project's
+`Assets/Editor/` directory. Wait for Unity compilation to finish and confirm that
+`get_compile_errors.errors` is empty. A missing reporter is `INFRA_ERROR`; it is never a zero-test
+pass. Keep individual game tests in the target Unity project, not in this orchestration repository.
 
 ### Unity MCP bridge connection
 

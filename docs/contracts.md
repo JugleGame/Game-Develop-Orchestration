@@ -85,6 +85,10 @@ Server: `UnityMcpServer`.
   reported as an error, never as a pass. Because a run crosses a domain reload, results are
   recorded by `templates/unity-editor/PipelineTestReporter.cs`, which the target project must
   carry in `Assets/Editor`; its absence is reported as such.
+- The host must apply [the Unity functional QA policy](unity-functional-qa.md). A named run is
+  acceptable evidence only when it completed, executed at least one requested test, and reports no
+  failure. `run_playmode_test` is console-smoke evidence only. Neither it nor a successful build can
+  replace a named functional test, and the MCP never assigns the final QA status.
 - Evidence: `build_project`, `run_playmode_test`, `run_named_tests`, `get_compile_errors`,
   `inspect_project_layout`, `unity_bridge_status`, `inspect_animator`.
 - Return evidence; never declare final PASS.
