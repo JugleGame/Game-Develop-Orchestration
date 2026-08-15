@@ -40,6 +40,7 @@ new dependency graph or downloading isolated build dependencies.
 | `ASSET_ROOT` | Asset output; relative paths resolve from the repository root | `./var/assets` |
 | `HANDOFF_ROOT` | Planning files for execution AI | `./var/handoffs` |
 | `UNITY_SCRIPT_ROOT` | C# root | `Assets/Scripts` |
+| `UNITY_ANIMATION_ROOT` | Generated clips and animator controllers | `Assets/Animations` |
 | `LOG_LEVEL` | Logging | `INFO` |
 
 Do not use `ANTHROPIC_API_KEY`, `*_MCP_URL`, `GIT_ROOT`, or Postgres/Redis job settings.
