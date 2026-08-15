@@ -856,6 +856,11 @@ def create_animation(
     answers 422 for an odd number ("frame_count must be an even number"), and it
     returns one image *more* than requested — the first frame is echoed back at
     the head of the sequence (measured 2026-08-15: 4 -> 5 images, 6 -> 7).
+
+    ``no_background`` defaults to **false** here, unlike the static image call.
+    Left alone it returns every frame on an opaque grey plate, which cannot be
+    used as a sprite at all (measured 2026-08-15: 100% opaque, corner pixel
+    ``(128, 128, 128, 255)``), so this always asks for the cut-out.
     """
 
     api_key = os.getenv("PIXELLAB_API_KEY")
@@ -874,6 +879,9 @@ def create_animation(
         "first_frame": {"type": "base64", "base64": _image_b64(first_frame)},
         "action": action.strip(),
         "frame_count": frame_count,
+        # Defaults to false, which returns frames painted onto a flat grey plate.
+        # A sprite needs the alpha the static endpoints already ask for.
+        "no_background": True,
     }
     if description and description.strip():
         payload["description"] = description.strip()

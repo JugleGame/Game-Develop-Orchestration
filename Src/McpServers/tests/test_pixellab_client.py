@@ -436,6 +436,8 @@ def test_create_animation_posts_the_first_frame_and_returns_ordered_frames(monke
     assert captured["payload"]["action"] == "walk cycle"
     assert captured["payload"]["frame_count"] == 4
     assert captured["payload"]["first_frame"]["type"] == "base64"
+    # Without this the provider paints every frame onto an opaque plate.
+    assert captured["payload"]["no_background"] is True
     assert "description" not in captured["payload"]
     assert len(frames) == 2
     assert usage["generations"] == 2.0
