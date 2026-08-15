@@ -65,6 +65,15 @@ REQUIRED_TOOLS = {
 FORBIDDEN_IMPORTS = {"anthropic", "openai", "fastapi", "langgraph", "git"}
 
 
+def configure_console_utf8() -> None:
+    """Keep CI diagnostics printable when Windows selects a legacy code page."""
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def is_tool(node: ast.AsyncFunctionDef | ast.FunctionDef) -> bool:
     for decorator in node.decorator_list:
         call = decorator if isinstance(decorator, ast.Call) else None
@@ -136,4 +145,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    configure_console_utf8()
     raise SystemExit(main())
