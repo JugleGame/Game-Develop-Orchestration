@@ -828,6 +828,102 @@ def _poll_json(
     raise PixelLabUnavailable(f"{url} not ready after {max_polls * poll_seconds:.0f}s")
 
 
+def create_animation(
+    *,
+    first_frame: Image.Image,
+    action: str,
+    frame_count: int,
+    description: str | None = None,
+    poll_seconds: float = 5.0,
+    max_polls: int = 60,
+) -> tuple[list[Image.Image], dict[str, Any], str]:
+    """Animate an approved first frame — returns ``(frames, usage, job_id)``.
+
+    ``/animate-with-text-v3`` takes the frame the human already approved and
+    continues the motion from it, so the approval gate that guards static
+    sprites also guards every frame that follows.
+
+    Asynchronous like the other v2/v3 endpoints: the POST answers with a
+    ``background_job_id`` and the frames arrive under ``last_response.images``.
+    PixelLab documents 30-180 seconds for a typical sequence, so the default
+    poll budget is wider than a single image needs.
+    """
+
+    api_key = os.getenv("PIXELLAB_API_KEY")
+    if not api_key:
+        raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    if not 2 <= frame_count <= 16:
+        raise PixelLabUnavailable("frame_count must be between 2 and 16")
+    if not action.strip():
+        raise PixelLabUnavailable("action must not be empty")
+    if max(first_frame.size) > 512:
+        raise PixelLabUnavailable("first frame dimensions must not exceed 512 pixels")
+
+    payload: dict[str, Any] = {
+        "first_frame": {"type": "base64", "base64": _image_b64(first_frame)},
+        "action": action.strip(),
+        "frame_count": frame_count,
+    }
+    if description and description.strip():
+        payload["description"] = description.strip()
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        with httpx.Client(timeout=_TIMEOUT_SECONDS) as client:
+            created = client.post(
+                f"{BASE_URL}/animate-with-text-v3", json=payload, headers=headers
+            )
+            if created.status_code >= 400:
+                raise PixelLabUnavailable(
+                    f"PixelLab rejected the animation request ({created.status_code}): "
+                    f"{created.text[:400]}"
+                )
+            created_data = created.json()
+            job_id = created_data.get("background_job_id")
+            if not job_id:
+                raise PixelLabUnavailable("PixelLab returned no background_job_id")
+
+            data: dict[str, Any] | None = None
+            for _ in range(max_polls):
+                candidate = _poll_json(
+                    client,
+                    f"{BASE_URL}/background-jobs/{job_id}",
+                    headers,
+                    poll_seconds=poll_seconds,
+                    max_polls=1,
+                )
+                status = candidate.get("status")
+                if status == "failed":
+                    raise PixelLabUnavailable(
+                        f"PixelLab animation job failed: {candidate.get('last_response')!r}"
+                    )
+                if status == "completed":
+                    data = candidate
+                    break
+                time.sleep(poll_seconds)
+            if data is None:
+                raise PixelLabUnavailable(
+                    f"animation job {job_id} not ready after {max_polls * poll_seconds:.0f}s"
+                )
+    except httpx.HTTPError as exc:
+        raise PixelLabUnavailable(f"PixelLab animation request failed: {exc}") from exc
+
+    response = data.get("last_response") or {}
+    response_dict = response if isinstance(response, dict) else {}
+    raw_images = response_dict.get("images")
+    encoded_frames: list[str] = []
+    if isinstance(raw_images, list):
+        for item in raw_images:
+            encoded = _encoded_image(item)
+            if encoded:
+                encoded_frames.append(encoded)
+    if not encoded_frames:
+        raise PixelLabUnavailable("malformed PixelLab animation response: no frames")
+
+    frames = [_decode(encoded) for encoded in encoded_frames]
+    usage = data.get("usage") or created_data.get("usage") or response_dict.get("usage") or {}
+    return frames, dict(usage), str(job_id)
+
 
 def create_map_object(
     *,
