@@ -59,12 +59,12 @@ rejected. Only a Blender `gameReadyPassed` result is copied to
 reports remain in the external staging directory.
 
 Credit estimates follow Meshy's published API pricing for the configured operations: 20 credits
-for Meshy-6 text preview, 10 for 2K text refine or retexture, and 5 for untextured T2 smart
+for Meshy-6 Multi-Image-to-3D, 10 for 2K retexture, and 5 for untextured T2 smart
 topology image generation. The task record keeps the pricing source URL, balances before/after,
 and provider-reported or balance-derived actual consumption.
 
-The 3D Asset MCP uses [Meshy's REST API](https://docs.meshy.ai/en/api) for text-to-3D and
-image-to-3D tasks. Meshy was selected because it supports the repository's direct Unity
+The 3D Asset MCP uses [Meshy's REST API](https://docs.meshy.ai/en/api) only for Image-to-3D,
+Multi-Image-to-3D, and Retexture tasks. Meshy was selected because it supports the repository's direct Unity
 interchange formats (GLB and FBX), API-key authentication, task polling, and explicit
 credit errors. Text tasks require a Meshy preview followed by refine; image tasks require
 an HTTPS reference image owned or licensed by the caller.

@@ -141,7 +141,7 @@ async def test_exposes_all_3d_tools_with_camel_case_inputs():
     ["character", "slime", "monster", "prop", "environment", "building", "interactive"],
 )
 async def test_every_documented_asset_type_composes(asset_type):
-    prompts = await _compose(_asset_spec(asset_type, "text_to_3d"))
+    prompts = await _compose(_asset_spec(asset_type, "image_to_3d"))
 
     assert prompts["generationPrompt"]["assetId"] == f"{asset_type}-green"
     assert asset_type in prompts["generationPrompt"]["prompt"]
@@ -185,17 +185,17 @@ async def test_image_to_3d_composes_consistent_front_side_and_back_views():
         assert "minimal perspective distortion" in prompt
 
 
-async def test_text_to_3d_prop_does_not_require_reference_views():
-    reference = (await _compose(_asset_spec("prop", "text_to_3d")))["referenceSearchPrompt"]
+async def test_text_to_3d_is_rejected_by_the_asset_contract():
+    async with session() as client:
+        result = await client.call_tool(
+            "compose_3d_asset_prompts",
+            {"assetSpec": _asset_spec("prop", "text_to_3d")},
+        )
 
-    assert reference == {
-        "assetId": "prop-green",
-        "sourceSpecSha256": reference["sourceSpecSha256"],
-        "required": False,
-        "queries": [],
-        "requiredViews": [],
-        "viewPrompts": {},
-    }
+    assert result.is_error is True
+    assert "generation.method" in "".join(
+        getattr(block, "text", "") for block in result.content
+    )
 
 
 async def test_character_requires_reference_views_even_for_manual_modeling():
@@ -208,7 +208,7 @@ async def test_character_requires_reference_views_even_for_manual_modeling():
 async def test_animation_fields_are_required_only_for_animated_assets():
     animated = _asset_spec()
     animated["animation"]["rigType"] = ""
-    static = _asset_spec("prop", "text_to_3d")
+    static = _asset_spec("prop", "image_to_3d")
     static["animation"] = {"required": False}
 
     async with session() as client:
@@ -223,19 +223,19 @@ async def test_animation_fields_are_required_only_for_animated_assets():
 
 
 async def test_requires_concrete_form_texture_and_pivot_policy():
-    asset_spec = _asset_spec("prop", "text_to_3d")
+    asset_spec = _asset_spec("prop", "image_to_3d")
     del asset_spec["design"]["form"]
     async with session() as client:
         missing_form = await client.call_tool("compose_3d_asset_prompts", {"assetSpec": asset_spec})
     assert missing_form.is_error is True
 
-    asset_spec = _asset_spec("prop", "text_to_3d")
+    asset_spec = _asset_spec("prop", "image_to_3d")
     asset_spec["output"]["pivotPolicy"] = "guess"
     async with session() as client:
         bad_pivot = await client.call_tool("compose_3d_asset_prompts", {"assetSpec": asset_spec})
     assert bad_pivot.is_error is True
 
-    asset_spec = _asset_spec("prop", "text_to_3d")
+    asset_spec = _asset_spec("prop", "image_to_3d")
     asset_spec["geometry"]["shading"]["faceOrientation"] = "mixed"
     async with session() as client:
         bad_winding = await client.call_tool("compose_3d_asset_prompts", {"assetSpec": asset_spec})
@@ -243,7 +243,7 @@ async def test_requires_concrete_form_texture_and_pivot_policy():
 
 
 async def test_prompt_preserves_shape_surface_texture_and_origin_requirements():
-    prompt = (await _compose(_asset_spec("prop", "text_to_3d")))["generationPrompt"]["prompt"]
+    prompt = (await _compose(_asset_spec("prop", "image_to_3d")))["generationPrompt"]["prompt"]
     assert "Primary volumes: one rounded body" in prompt
     assert "Part relationships: eyes remain attached" in prompt
     assert "Surface features: preserve intentional recesses and protrusions" in prompt
@@ -309,34 +309,17 @@ async def test_submit_requires_a_configured_meshy_key(tmp_path, monkeypatch):
             {
                 "featureId": "slime-art",
                 "gameId": "slime-ranch",
-                "assetSpec": _asset_spec("prop", "text_to_3d"),
+                "assetSpec": _asset_spec("prop", "image_to_3d"),
+                "referenceImageUrl": "data:image/png;base64,aW1hZ2U=",
+                "referenceProvenance": {
+                    "source": "gpt_image_api",
+                    "humanApproved": True,
+                },
             },
         )
 
     assert result.is_error is True
     assert '"errorCode": 3000' in "".join(getattr(block, "text", "") for block in result.content)
-
-
-def test_meshy_preview_uses_runtime_triangle_remesh(monkeypatch):
-    created = []
-    monkeypatch.setattr(
-        meshy_client,
-        "_create",
-        lambda path, payload: created.append((path, payload)) or "task-preview",
-    )
-
-    meshy_client.create_text_preview("closed laptop", "glb", 5000)
-
-    assert created[0][1] == {
-        "mode": "preview",
-        "prompt": "closed laptop",
-        "model_type": "standard",
-        "ai_model": "meshy-6",
-        "should_remesh": True,
-        "topology": "triangle",
-        "target_polycount": 5000,
-        "target_formats": ["glb"],
-    }
 
 
 def test_meshy_multi_image_uses_official_endpoint(monkeypatch):
@@ -362,88 +345,6 @@ def test_meshy_multi_image_uses_official_endpoint(monkeypatch):
                 "target_formats": ["glb"],
             },
         )
-    ]
-
-
-async def test_submit_and_download_meshy_text_generation(tmp_path, monkeypatch):
-    monkeypatch.setattr(server, "ROOT", tmp_path)
-    monkeypatch.setenv("MESHY_API_KEY", "test-key")
-    submitted_args = []
-    monkeypatch.setattr(
-        meshy_client,
-        "create_text_preview",
-        lambda *args: submitted_args.append(args) or "task-preview",
-    )
-    monkeypatch.setattr(
-        meshy_client,
-        "get_task",
-        lambda *_: {
-            "status": "SUCCEEDED",
-            "progress": 100,
-            "model_urls": {"glb": "https://assets.meshy.ai/model.glb"},
-        },
-    )
-    monkeypatch.setattr(meshy_client, "download_model", lambda _: _glb(textured=False))
-    asset_spec = _asset_spec("prop", "text_to_3d")
-
-    async with session() as client:
-        submitted = await client.call_tool(
-            "submit_3d_asset_generation",
-            {"featureId": "slime-art", "gameId": "slime-ranch", "assetSpec": asset_spec},
-        )
-        downloaded = await client.call_tool(
-            "get_3d_asset_generation", {"taskId": submitted.structured_content["taskId"]}
-        )
-
-    assert submitted.structured_content["phase"] == "preview"
-    assert submitted.structured_content["estimatedCredits"] == 20
-    assert downloaded.structured_content["status"] == "SUCCEEDED"
-    prompt, model_format, max_triangles = submitted_args[0]
-    assert len(prompt) <= server.MESHY_PROMPT_LIMIT
-    assert "silhouette:" in prompt and "exclude: text, weapons" in prompt
-    assert "preserve: round silhouette" in prompt
-    assert "description: A rounded prop with a clear silhouette" in prompt
-    assert (model_format, max_triangles) == ("glb", 2500)
-    assert Path(downloaded.structured_content["assetPath"]).read_bytes() == _glb(textured=False)
-    assert downloaded.structured_content["inspection"] == {
-        "meshes": 1,
-        "textures": 0,
-        "rigs": 0,
-        "vertices": 100,
-        "triangles": 100,
-        "triangleBudgetPassed": True,
-    }
-
-
-async def test_refine_passes_the_texture_prompt(tmp_path, monkeypatch):
-    monkeypatch.setattr(server, "ROOT", tmp_path)
-    monkeypatch.setenv("MESHY_API_KEY", "test-key")
-    monkeypatch.setattr(meshy_client, "create_text_preview", lambda *_: "task-preview")
-    monkeypatch.setattr(meshy_client, "get_task", lambda *_: {"status": "SUCCEEDED"})
-    refined_args = []
-    monkeypatch.setattr(
-        meshy_client,
-        "create_text_refine",
-        lambda *args: refined_args.append(args) or "task-refine",
-    )
-
-    async with session() as client:
-        submitted = await client.call_tool(
-            "submit_3d_asset_generation",
-            {"featureId": "slime-art", "assetSpec": _asset_spec("prop", "text_to_3d")},
-        )
-        refined = await client.call_tool(
-            "refine_3d_asset_generation",
-            {
-                "taskId": submitted.structured_content["taskId"],
-                "geometryReviewApproved": True,
-            },
-        )
-
-    assert refined.structured_content["phase"] == "refine"
-    assert refined.structured_content["estimatedCredits"] == 10
-    assert refined_args == [
-        ("task-preview", "glb", "matte stylized surface with readable color separation; colors: leaf green, cream; materials: soft matte body")
     ]
 
 
@@ -574,12 +475,12 @@ async def test_multiple_approved_references_use_multi_image(tmp_path, monkeypatc
 async def test_geometry_review_gate_blocks_refine(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "ROOT", tmp_path)
     server._write_json(
-        server._task_path("task-preview"),
+        server._task_path("task-image"),
         {
             "provider": "meshy",
-            "taskId": "task-preview",
-            "method": "text_to_3d",
-            "phase": "preview",
+            "taskId": "task-image",
+            "method": "image_to_3d",
+            "phase": "generation",
         },
     )
     monkeypatch.setattr(
@@ -590,7 +491,7 @@ async def test_geometry_review_gate_blocks_refine(tmp_path, monkeypatch):
 
     async with session() as client:
         result = await client.call_tool(
-            "refine_3d_asset_generation", {"taskId": "task-preview"}
+            "refine_3d_asset_generation", {"taskId": "task-image"}
         )
 
     assert result.is_error is True
@@ -776,7 +677,7 @@ def test_local_cc0_manifest_verifies_license_and_hash(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("CC0_MANIFEST_PATHS", str(manifest))
 
-    result = cc0_client.search_local(_asset_spec("prop", "text_to_3d"))
+    result = cc0_client.search_local(_asset_spec("prop", "image_to_3d"))
 
     assert result["status"] == "found"
     assert result["provenance"]["license"] == "CC0-1.0"
@@ -843,7 +744,7 @@ async def test_poly_haven_fake_response_found_and_not_found(monkeypatch):
 
 
 def test_cc0_candidate_requires_an_explicit_identity_word():
-    spec = _asset_spec("prop", "text_to_3d")
+    spec = _asset_spec("prop", "image_to_3d")
     spec["assetId"] = "memory-chest"
     spec["assetName"] = "Memory Fragment Chest"
     spec["design"]["description"] = "A compact weathered chest with a large lid"
@@ -856,7 +757,7 @@ def test_cc0_candidate_requires_an_explicit_identity_word():
 
 
 def test_cc0_candidate_requires_primary_noun_when_only_one_identity_word_matches():
-    spec = _asset_spec("environment", "text_to_3d")
+    spec = _asset_spec("environment", "image_to_3d")
     spec["assetId"] = "bus-stop-shelter"
     spec["assetName"] = "Abandoned Bus Stop Shelter"
 
@@ -947,7 +848,6 @@ async def test_cc0_found_never_calls_meshy(tmp_path, monkeypatch):
             }
         ),
     )
-    monkeypatch.setattr(meshy_client, "create_text_preview", lambda *_: pytest.fail("Meshy must not be called"))
     monkeypatch.setattr(server, "_cleanup_with_blender", lambda path, *_: path)
     monkeypatch.setattr(
         server,
@@ -958,7 +858,7 @@ async def test_cc0_found_never_calls_meshy(tmp_path, monkeypatch):
     async with session() as client:
         result = await client.call_tool(
             "submit_3d_asset_generation",
-            {"featureId": "slime-art", "gameId": "slime-ranch", "assetSpec": _asset_spec("prop", "text_to_3d")},
+            {"featureId": "slime-art", "gameId": "slime-ranch", "assetSpec": _asset_spec("prop", "image_to_3d")},
         )
 
     assert result.structured_content["cc0Status"] == "found"
@@ -976,12 +876,11 @@ async def test_cc0_provider_failure_does_not_fall_back_to_meshy(tmp_path, monkey
         "acquire",
         lambda _spec: _async_value({"status": "provider_failed", "provider": "poly_haven", "reason": "offline"}),
     )
-    monkeypatch.setattr(meshy_client, "create_text_preview", lambda *_: pytest.fail("Meshy must not be called"))
 
     async with session() as client:
         result = await client.call_tool(
             "submit_3d_asset_generation",
-            {"featureId": "slime-art", "assetSpec": _asset_spec("prop", "text_to_3d")},
+            {"featureId": "slime-art", "assetSpec": _asset_spec("prop", "image_to_3d")},
         )
 
     assert result.structured_content["status"] == "provider_failed"
@@ -1039,14 +938,19 @@ async def test_duplicate_spec_blocks_second_paid_submission(tmp_path, monkeypatc
     monkeypatch.setenv("MESHY_API_KEY", "test-key")
     monkeypatch.setattr(
         meshy_client,
-        "create_text_preview",
-        lambda *_args: calls.append("submitted") or "task-preview",
+        "create_image_task",
+        lambda *_args: calls.append("submitted") or "task-image",
     )
 
     arguments = {
         "featureId": "slime-art",
         "gameId": "slime-ranch",
-        "assetSpec": _asset_spec("prop", "text_to_3d"),
+        "assetSpec": _asset_spec("prop", "image_to_3d"),
+        "referenceImageUrl": "data:image/png;base64,aW1hZ2U=",
+        "referenceProvenance": {
+            "source": "gpt_image_api",
+            "humanApproved": True,
+        },
     }
     async with session() as client:
         first = await client.call_tool("submit_3d_asset_generation", arguments)
@@ -1060,18 +964,18 @@ async def test_duplicate_spec_blocks_second_paid_submission(tmp_path, monkeypatc
 async def test_cancel_persists_terminal_task_state(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "ROOT", tmp_path)
     server._write_json(
-        server._task_path("task-preview"),
-        {"provider": "meshy", "taskId": "task-preview", "method": "text_to_3d"},
+        server._task_path("task-image"),
+        {"provider": "meshy", "taskId": "task-image", "method": "image_to_3d"},
     )
     monkeypatch.setattr(meshy_client, "cancel_task", lambda *_args: {"result": "ok"})
 
     async with session() as client:
         result = await client.call_tool(
-            "cancel_3d_asset_generation", {"taskId": "task-preview"}
+            "cancel_3d_asset_generation", {"taskId": "task-image"}
         )
 
     assert result.structured_content["status"] == "CANCELED"
-    assert server._read_task("task-preview")["status"] == "CANCELED"
+    assert server._read_task("task-image")["status"] == "CANCELED"
 
 
 def test_runtime_root_rejects_relative_and_repository_paths(monkeypatch):

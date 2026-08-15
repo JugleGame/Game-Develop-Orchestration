@@ -55,8 +55,8 @@ flowchart TB
 ### 3D Asset MCP
 
 - Deterministically compose and validate provider-neutral 3D prompts from host-authored specifications.
-- Search local CC0 manifests and Poly Haven before submitting validated text-to-3D or
-  image-to-3D work to Meshy, and store request/provider provenance in external staging.
+- Search local CC0 manifests and Poly Haven before submitting validated single- or multi-image
+  Image-to-3D work to Meshy. Reject Text-to-3D and store reference/provider provenance in external staging.
 - Search verified CC0 sources first, use Meshy only after `not_found`, then run Blender headless
   cleanup and GameReady quality gates. Keep 3D runtime state in an absolute staging directory in
   the external Unity workspace and copy only passing FBX or GLB output into Unity `Assets/`.

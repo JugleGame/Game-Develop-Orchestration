@@ -37,7 +37,7 @@ ASSET_TYPES = frozenset(
     {"character", "slime", "monster", "prop", "environment", "building", "interactive"}
 )
 GENERATION_METHODS = frozenset(
-    {"image_to_3d", "text_to_3d", "manual_blender", "procedural", "existing_asset"}
+    {"image_to_3d", "manual_blender", "procedural", "existing_asset"}
 )
 MODEL_FORMATS = frozenset({"fbx", "glb", "gltf"})
 REFERENCE_VIEWS = ("front", "side", "back")
@@ -504,34 +504,6 @@ def _meshy_texture_prompt(spec: dict[str, Any]) -> str:
     return texture
 
 
-def _meshy_prompts(asset_spec: dict[str, Any]) -> tuple[str, str]:
-    spec = _validate_asset_spec(asset_spec)
-    required = [
-        f"{spec['assetName']}, {spec['assetType']}",
-        f"description: {spec['description']}",
-        f"style: {spec['style']}, {spec['proportions']}",
-        f"preserve: {', '.join(spec['preserve'])}",
-        f"silhouette: {spec['silhouette']}",
-        f"volumes: {', '.join(spec['primaryVolumes'])}",
-        f"parts: {', '.join(spec['partRelationships'])}",
-        f"exclude: {', '.join(spec['exclude'])}",
-    ]
-    geometry = "; ".join(required)
-    if len(geometry) > MESHY_PROMPT_LIMIT:
-        raise tool_error(
-            VALIDATION_ERROR,
-            f"Meshy geometry prompt exceeds {MESHY_PROMPT_LIMIT} characters ({len(geometry)})",
-        )
-    for detail in (
-        f"features: {', '.join(spec['surfaceFeatures'])}",
-        f"bevels: {', '.join(spec['bevelPolicy'])}",
-    ):
-        candidate = f"{geometry}; {detail}"
-        if len(candidate) <= MESHY_PROMPT_LIMIT:
-            geometry = candidate
-    return geometry, _meshy_texture_prompt(spec)
-
-
 def _require_reference_image(value: str, field: str) -> str:
     url = _require_text(value, field)
     parsed = urlsplit(url)
@@ -932,10 +904,13 @@ async def submit_3d_asset_generation(
     game_id = _require_id(gameId or os.getenv("ASSET_DEFAULT_GAME_ID", "default"), "gameId")
     request_path, package, provenance = _request_package(feature_id, game_id, assetSpec)
     method = package["generationPrompt"]["method"]
-    if method not in {"text_to_3d", "image_to_3d"}:
-        raise tool_error(VALIDATION_ERROR, f"Meshy does not submit generation.method={method}")
+    if method != "image_to_3d":
+        raise tool_error(
+            VALIDATION_ERROR,
+            "Meshy submission requires generation.method=image_to_3d; text_to_3d is disabled",
+        )
     output_format = _meshy_format(provenance)
-    model_format = "glb" if method == "image_to_3d" else output_format
+    model_format = "glb"
     max_triangles = _meshy_triangle_limit(assetSpec, method)
     spec = _validate_asset_spec(assetSpec)
     references: list[str] = []
@@ -979,25 +954,19 @@ async def submit_3d_asset_generation(
             "provider": cc0_result.get("provider"),
             "reason": cc0_result.get("reason", ""),
         }
-    if method == "text_to_3d" and spec["assetType"] != "prop":
-        raise tool_error(
-            VALIDATION_ERROR,
-            "text_to_3d is restricted to simple props; use approved reference images for this asset type",
-        )
-    if method == "image_to_3d":
-        references, reference_evidence = _reference_inputs(
-            referenceImageUrl, referenceImageUrls, referenceProvenance
-        )
-        reference_set_sha256 = _digest(
-            {"images": references, "provenance": reference_evidence}
-        )
-        task.update(
-            {
-                "referenceProvenance": reference_evidence,
-                "referenceImageCount": len(references),
-                "referenceSetSha256": reference_set_sha256,
-            }
-        )
+    references, reference_evidence = _reference_inputs(
+        referenceImageUrl, referenceImageUrls, referenceProvenance
+    )
+    reference_set_sha256 = _digest(
+        {"images": references, "provenance": reference_evidence}
+    )
+    task.update(
+        {
+            "referenceProvenance": reference_evidence,
+            "referenceImageCount": len(references),
+            "referenceSetSha256": reference_set_sha256,
+        }
+    )
     if not meshy_client.is_configured():
         raise tool_error(
             MCP_ERROR,
@@ -1007,8 +976,7 @@ async def submit_3d_asset_generation(
             cc0Status="not_found",
         )
     submission_key = package["requestId"]
-    if method == "image_to_3d":
-        submission_key = f"{submission_key}__{task['referenceSetSha256'][:16]}"
+    submission_key = f"{submission_key}__{task['referenceSetSha256'][:16]}"
     submission_path = (
         _require_external_runtime_root()
         / "3d"
@@ -1029,38 +997,28 @@ async def submit_3d_asset_generation(
                 "cc0Status": "not_found",
                 "provider": "meshy",
             }
-    meshy_prompt = ""
     texture_prompt = task["texturePrompt"]
     try:
         balance_before = await _await_result(meshy_client.get_balance())
-        if method == "image_to_3d":
-            if len(references) == 1:
-                credit_estimate = meshy_client.estimate_credits(
-                    "image_smart_topology_untextured"
-                )
-                provider_method = "image_to_3d"
-                task_id = await _await_result(
-                    meshy_client.create_image_task(references[0], model_format, max_triangles)
-                )
-            else:
-                credit_estimate = meshy_client.estimate_credits(
-                    "multi_image_meshy_6_untextured"
-                )
-                provider_method = "multi_image_to_3d"
-                task_id = await _await_result(
-                    meshy_client.create_multi_image_task(
-                        references, model_format, max_triangles
-                    )
-                )
-            phase = "generation"
+        if len(references) == 1:
+            credit_estimate = meshy_client.estimate_credits(
+                "image_smart_topology_untextured"
+            )
+            provider_method = "image_to_3d"
+            task_id = await _await_result(
+                meshy_client.create_image_task(references[0], model_format, max_triangles)
+            )
         else:
-            provider_method = "text_to_3d"
-            credit_estimate = meshy_client.estimate_credits("text_preview_meshy_6")
-            meshy_prompt, texture_prompt = _meshy_prompts(assetSpec)
-            task_id = await _await_result(meshy_client.create_text_preview(
-                meshy_prompt, model_format, max_triangles
-            ))
-            phase = "preview"
+            credit_estimate = meshy_client.estimate_credits(
+                "multi_image_meshy_6_untextured"
+            )
+            provider_method = "multi_image_to_3d"
+            task_id = await _await_result(
+                meshy_client.create_multi_image_task(
+                    references, model_format, max_triangles
+                )
+            )
+        phase = "generation"
     except meshy_client.MeshyUnavailable as exc:
         _meshy_error(exc)
 
@@ -1074,8 +1032,7 @@ async def submit_3d_asset_generation(
         "modelFormat": model_format,
         "outputFormat": output_format,
         "texturePrompt": texture_prompt,
-        "providerPrompt": meshy_prompt,
-        "topology": "triangle" if method == "text_to_3d" else "",
+        "topology": "triangle",
         "cc0Status": "not_found",
         "estimatedCredits": credit_estimate["credits"],
         "creditEstimate": credit_estimate,
@@ -1135,10 +1092,7 @@ async def refine_3d_asset_generation(
         "note": geometryReviewNote.strip(),
         "reviewedAt": _now(),
     }
-    if (task["method"], task["phase"]) not in {
-        ("text_to_3d", "preview"),
-        ("image_to_3d", "generation"),
-    }:
+    if (task["method"], task["phase"]) != ("image_to_3d", "generation"):
         raise tool_error(VALIDATION_ERROR, "only completed Meshy geometry can be refined")
     try:
         current = await _await_result(
@@ -1152,132 +1106,111 @@ async def refine_3d_asset_generation(
             "phase": task["phase"],
             "status": current.get("status", "UNKNOWN"),
         }
-    if (
-        task["method"] == "text_to_3d"
-        and task["textureStrategy"]["mode"] == "generated_texture"
-    ):
-        try:
-            balance_before = await _await_result(meshy_client.get_balance())
-            refine_task_id = await _await_result(meshy_client.create_text_refine(
-                task_id, task["modelFormat"], task["texturePrompt"]
-            ))
-        except meshy_client.MeshyUnavailable as exc:
-            _meshy_error(exc)
-        estimate = meshy_client.estimate_credits("text_refine_2k")
-        refined = {
-            **task,
-            "taskId": refine_task_id,
-            "phase": "refine",
-            "balanceBefore": balance_before,
-            "estimatedCredits": estimate["credits"],
-            "creditEstimate": estimate,
-            "createdAt": _now(),
-        }
-    else:
-        model_url = _require_meshy_model_url(
-            (current.get("model_urls") or {}).get(task["modelFormat"])
-        )
-        try:
-            output = await _await_result(meshy_client.download_model(model_url))
-        except meshy_client.MeshyUnavailable as exc:
-            _meshy_error(exc)
-        raw_path = ROOT / "3d" / "models" / task["gameId"] / f"{task_id}.{task['modelFormat']}"
-        raw_path.parent.mkdir(parents=True, exist_ok=True)
-        raw_path.write_bytes(output)
-        material = (
-            task["textureMaterial"]
-            if task["textureStrategy"]["mode"] == "material_only"
-            else None
-        )
-        clean_path = _cleanup_with_blender(
-            raw_path,
-            task["maxTriangles"],
-            material,
-            None,
-            task["normalPolicy"],
-        )
-        clean_model = clean_path.read_bytes()
-        inspection = _blender_inspection(clean_path) or _inspect_model(
-            clean_model, task["modelFormat"], task["animationRequired"], False, task["maxTriangles"]
-        )
-        if not inspection.get("triangleBudgetPassed"):
-            raise tool_error(MCP_ERROR, "Blender output exceeds triangle budget", provider="blender")
-        if inspection.get("gameReadyPassed") is False:
-            raise tool_error(MCP_ERROR, "Blender output failed the GameReady quality gate", provider="blender")
-        if task["textureStrategy"]["mode"] != "generated_texture":
-            final_path = clean_path
-            if task.get("outputFormat", task["modelFormat"]) != task["modelFormat"]:
-                final_path = _cleanup_with_blender(
-                    clean_path,
-                    task["maxTriangles"],
-                    material,
-                    task["outputFormat"],
-                    task["normalPolicy"],
-                )
-                inspection = _blender_inspection(final_path) or inspection
-            final_hash = hashlib.sha256(final_path.read_bytes()).hexdigest()
-            try:
-                balance_after = await _await_result(meshy_client.get_balance())
-            except meshy_client.MeshyUnavailable as exc:
-                balance_after = {"error": str(exc), "status": exc.status}
-            consumed_credits = _actual_credits(current, task.get("balanceBefore"), balance_after)
-            provenance = {
-                "license": "generated",
-                "provider": "meshy",
-                "taskId": task_id,
-                "estimatedCredits": task.get("estimatedCredits"),
-                "consumedCredits": consumed_credits,
-                "balanceBefore": task.get("balanceBefore"),
-                "balanceAfter": balance_after,
-                "downloadedAt": _now(),
-                "sha256": hashlib.sha256(output).hexdigest(),
-                "gameReadySha256": final_hash,
-            }
-            task.update(
-                {
-                    "status": "AWAITING_FINAL_REVIEW",
-                    "phase": "material_review",
-                    "assetPath": str(final_path),
-                    "inspection": inspection,
-                    "provenance": provenance,
-                }
+    model_url = _require_meshy_model_url(
+        (current.get("model_urls") or {}).get(task["modelFormat"])
+    )
+    try:
+        output = await _await_result(meshy_client.download_model(model_url))
+    except meshy_client.MeshyUnavailable as exc:
+        _meshy_error(exc)
+    raw_path = ROOT / "3d" / "models" / task["gameId"] / f"{task_id}.{task['modelFormat']}"
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_path.write_bytes(output)
+    material = (
+        task["textureMaterial"]
+        if task["textureStrategy"]["mode"] == "material_only"
+        else None
+    )
+    clean_path = _cleanup_with_blender(
+        raw_path,
+        task["maxTriangles"],
+        material,
+        None,
+        task["normalPolicy"],
+    )
+    clean_model = clean_path.read_bytes()
+    inspection = _blender_inspection(clean_path) or _inspect_model(
+        clean_model, task["modelFormat"], task["animationRequired"], False, task["maxTriangles"]
+    )
+    if not inspection.get("triangleBudgetPassed"):
+        raise tool_error(MCP_ERROR, "Blender output exceeds triangle budget", provider="blender")
+    if inspection.get("gameReadyPassed") is False:
+        raise tool_error(MCP_ERROR, "Blender output failed the GameReady quality gate", provider="blender")
+    if task["textureStrategy"]["mode"] != "generated_texture":
+        final_path = clean_path
+        if task.get("outputFormat", task["modelFormat"]) != task["modelFormat"]:
+            final_path = _cleanup_with_blender(
+                clean_path,
+                task["maxTriangles"],
+                material,
+                task["outputFormat"],
+                task["normalPolicy"],
             )
-            _write_json(_task_path(task_id), task)
-            return {
-                "taskId": task_id,
-                "phase": "material_review",
-                "provider": "blender",
-                "status": "AWAITING_FINAL_REVIEW",
-                "assetPath": str(final_path),
-                "modelFormat": task.get("outputFormat", task["modelFormat"]),
-                "inspection": inspection,
-                "textureStrategy": task["textureStrategy"],
-                "provenance": provenance,
-                "nextStep": "Inspect the staged asset, then call finalize_3d_asset_generation.",
-            }
+            inspection = _blender_inspection(final_path) or inspection
+        final_hash = hashlib.sha256(final_path.read_bytes()).hexdigest()
         try:
-            balance_before = await _await_result(meshy_client.get_balance())
-            refine_task_id = await _await_result(meshy_client.create_retexture_task(
-                clean_model,
-                task.get("outputFormat", task["modelFormat"]),
-                task["texturePrompt"],
-            ))
+            balance_after = await _await_result(meshy_client.get_balance())
         except meshy_client.MeshyUnavailable as exc:
-            _meshy_error(exc)
-        refined = {
-            **task,
-            "taskId": refine_task_id,
-            "method": "retexture",
-            "modelFormat": task.get("outputFormat", task["modelFormat"]),
-            "phase": "retexture",
-            "sourceTaskId": task_id,
-            "postprocessedPath": str(clean_path),
-            "postprocessInspection": inspection,
-            "balanceBefore": balance_before,
-            "estimatedCredits": meshy_client.estimate_credits("retexture_2k")["credits"],
-            "creditEstimate": meshy_client.estimate_credits("retexture_2k"),
-            "createdAt": _now(),
+            balance_after = {"error": str(exc), "status": exc.status}
+        consumed_credits = _actual_credits(current, task.get("balanceBefore"), balance_after)
+        provenance = {
+            "license": "generated",
+            "provider": "meshy",
+            "taskId": task_id,
+            "estimatedCredits": task.get("estimatedCredits"),
+            "consumedCredits": consumed_credits,
+            "balanceBefore": task.get("balanceBefore"),
+            "balanceAfter": balance_after,
+            "downloadedAt": _now(),
+            "sha256": hashlib.sha256(output).hexdigest(),
+            "gameReadySha256": final_hash,
         }
+        task.update(
+            {
+                "status": "AWAITING_FINAL_REVIEW",
+                "phase": "material_review",
+                "assetPath": str(final_path),
+                "inspection": inspection,
+                "provenance": provenance,
+            }
+        )
+        _write_json(_task_path(task_id), task)
+        return {
+            "taskId": task_id,
+            "phase": "material_review",
+            "provider": "blender",
+            "status": "AWAITING_FINAL_REVIEW",
+            "assetPath": str(final_path),
+            "modelFormat": task.get("outputFormat", task["modelFormat"]),
+            "inspection": inspection,
+            "textureStrategy": task["textureStrategy"],
+            "provenance": provenance,
+            "nextStep": "Inspect the staged asset, then call finalize_3d_asset_generation.",
+        }
+    try:
+        balance_before = await _await_result(meshy_client.get_balance())
+        refine_task_id = await _await_result(meshy_client.create_retexture_task(
+            clean_model,
+            task.get("outputFormat", task["modelFormat"]),
+            task["texturePrompt"],
+        ))
+    except meshy_client.MeshyUnavailable as exc:
+        _meshy_error(exc)
+    refined = {
+        **task,
+        "taskId": refine_task_id,
+        "method": "retexture",
+        "providerMethod": "retexture",
+        "modelFormat": task.get("outputFormat", task["modelFormat"]),
+        "phase": "retexture",
+        "sourceTaskId": task_id,
+        "postprocessedPath": str(clean_path),
+        "postprocessInspection": inspection,
+        "balanceBefore": balance_before,
+        "estimatedCredits": meshy_client.estimate_credits("retexture_2k")["credits"],
+        "creditEstimate": meshy_client.estimate_credits("retexture_2k"),
+        "createdAt": _now(),
+    }
     _write_json(_task_path(refine_task_id), refined)
     return {
         "taskId": refine_task_id,
@@ -1334,7 +1267,7 @@ async def get_3d_asset_generation(taskId: str) -> dict[str, Any]:
         _meshy_error(exc)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(output)
-    if task["phase"] in {"refine", "retexture"}:
+    if task["phase"] == "retexture":
         try:
             balance_after = await _await_result(meshy_client.get_balance())
         except meshy_client.MeshyUnavailable as exc:
@@ -1380,7 +1313,7 @@ async def get_3d_asset_generation(taskId: str) -> dict[str, Any]:
                 output,
                 task["modelFormat"],
                 task["animationRequired"],
-                task["phase"] in {"refine", "retexture"} and task["textureRequired"],
+                task["phase"] == "retexture" and task["textureRequired"],
                 task.get("maxTriangles"),
             ),
         }

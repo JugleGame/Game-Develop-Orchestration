@@ -43,7 +43,10 @@ required only when `animation.required` is `true`. The optional lists `materials
 
 Supported `assetType` values are `character`, `slime`, `monster`, `prop`,
 `environment`, `building`, and `interactive`. Supported `method` values are
-`image_to_3d`, `text_to_3d`, `manual_blender`, `procedural`, and `existing_asset`.
+`image_to_3d`, `manual_blender`, `procedural`, and `existing_asset`.
+
+`text_to_3d` is deliberately unsupported. Meshy generation must start from one to four
+host-created, human-approved reference images.
 
 `design.form` prevents a recognizable silhouette from hiding an unusable object. It requires
 `silhouette`, `primaryVolumes`, `partRelationships`, `surfaceFeatures`, and `bevelPolicy`.
@@ -229,8 +232,8 @@ URLs or data URIs. `referenceProvenance.source` identifies the host-side source 
 `gpt_image_api`, `humanApproved` must be true, and `sourcePromptSha256` may preserve prompt
 lineage. The MCP does not generate the reference image itself.
 
-Text-to-3D is limited to simple props. Refine/retexture is blocked until geometry review approval,
-and completed output remains in external staging as `AWAITING_FINAL_REVIEW`. A separate final
+Text-to-3D is rejected by the asset contract. Refine/retexture is blocked until geometry review
+approval, and completed output remains in external staging as `AWAITING_FINAL_REVIEW`. A separate final
 visual approval is required before Blender GameReady and before the final model is copied into
 Unity `Assets/`.
 

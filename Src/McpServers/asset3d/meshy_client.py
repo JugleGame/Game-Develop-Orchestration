@@ -16,8 +16,6 @@ TIMEOUT_SECONDS = 60.0
 MAX_ATTEMPTS = 3
 BACKOFF_SECONDS = 0.25
 CREDIT_ESTIMATES = {
-    "text_preview_meshy_6": 20,
-    "text_refine_2k": 10,
     "image_smart_topology_untextured": 5,
     "multi_image_meshy_6_untextured": 20,
     "retexture_2k": 10,
@@ -123,38 +121,6 @@ def _create(path: str, payload: dict[str, Any]) -> Coroutine[Any, Any, str]:
     return _create_async(path, payload)
 
 
-def create_text_preview(prompt: str, model_format: str, max_triangles: int) -> Any:
-    return _create(
-        "/openapi/v2/text-to-3d",
-        {
-            "mode": "preview",
-            "prompt": prompt,
-            "model_type": "standard",
-            "ai_model": "meshy-6",
-            "should_remesh": True,
-            "topology": "triangle",
-            "target_polycount": max_triangles,
-            "target_formats": [model_format],
-        },
-    )
-
-
-def create_text_refine(preview_task_id: str, model_format: str, texture_prompt: str) -> Any:
-    return _create(
-        "/openapi/v2/text-to-3d",
-        {
-            "mode": "refine",
-            "preview_task_id": preview_task_id,
-            "ai_model": "meshy-6",
-            "enable_pbr": True,
-            "texture_prompt": texture_prompt,
-            "texture_resolution": "2k",
-            "remove_lighting": True,
-            "target_formats": [model_format],
-        },
-    )
-
-
 def create_image_task(image_url: str, model_format: str, max_triangles: int) -> Any:
     return _create(
         "/openapi/v1/image-to-3d",
@@ -206,7 +172,9 @@ def get_task(method: str, task_id: str) -> Any:
         "image_to_3d": "/openapi/v1/image-to-3d",
         "multi_image_to_3d": "/openapi/v1/multi-image-to-3d",
         "retexture": "/openapi/v1/retexture",
-    }.get(method, "/openapi/v2/text-to-3d")
+    }.get(method)
+    if path is None:
+        raise MeshyUnavailable(f"unsupported Meshy task method: {method}")
     return _request("GET", f"{path}/{task_id}")
 
 
@@ -219,7 +187,9 @@ def cancel_task(method: str, task_id: str) -> Any:
         "image_to_3d": "/openapi/v1/image-to-3d",
         "multi_image_to_3d": "/openapi/v1/multi-image-to-3d",
         "retexture": "/openapi/v1/retexture",
-    }.get(method, "/openapi/v2/text-to-3d")
+    }.get(method)
+    if path is None:
+        raise MeshyUnavailable(f"unsupported Meshy task method: {method}")
     return _request("DELETE", f"{path}/{task_id}")
 
 
