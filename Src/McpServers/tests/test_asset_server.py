@@ -1046,7 +1046,7 @@ async def test_animation_saves_frames_in_play_order(monkeypatch):
     assert inspected.structured_content["humanReviewStatus"] == "pending"
 
 
-async def test_animation_rejects_a_frame_count_outside_the_range(monkeypatch):
+async def test_animation_rejects_a_frame_count_the_provider_refuses(monkeypatch):
     calls: list[dict] = []
     _stub_animation(monkeypatch, calls)
 
@@ -1059,7 +1059,7 @@ async def test_animation_rejects_a_frame_count_outside_the_range(monkeypatch):
                 "firstFrameAssetId": first_frame_id,
                 "action": "walk cycle",
                 "gameId": "t-anim-range",
-                "frameCount": 40,
+                "frameCount": 5,
             },
         )
 

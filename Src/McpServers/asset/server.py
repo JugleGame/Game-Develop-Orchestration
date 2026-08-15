@@ -820,8 +820,12 @@ def generate_2d_animation(
     feature_id = _require_identifier(featureId, "featureId")
     first_frame_id = _require(firstFrameAssetId, "firstFrameAssetId")
     motion = _require(action, "action")
-    if not 2 <= frameCount <= 16:
-        raise tool_error(VALIDATION_ERROR, "frameCount must be between 2 and 16")
+    if frameCount not in pixellab_client.ANIMATION_FRAME_COUNTS:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "frameCount must be one of "
+            f"{list(pixellab_client.ANIMATION_FRAME_COUNTS)}",
+        )
 
     source_game = first_frame_id.split("__", 1)[0]
     resolved_game = _resolve_game_id(gameId) if gameId else source_game

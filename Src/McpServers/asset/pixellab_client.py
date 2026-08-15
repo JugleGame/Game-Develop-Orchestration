@@ -42,6 +42,10 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from PIL import Image
 
+#: Frame counts ``/animate-with-text-v3`` accepts. Odd values are refused with
+#: 422 by the provider, so they are refused here before a request is spent.
+ANIMATION_FRAME_COUNTS = (4, 6, 8, 10, 12, 14, 16)
+
 BASE_URL = "https://api.pixellab.ai/v2"
 MCP_URL = "https://api.pixellab.ai/mcp"
 _GENERATE_PATH = "/create-image-pixflux"
@@ -847,13 +851,20 @@ def create_animation(
     ``background_job_id`` and the frames arrive under ``last_response.images``.
     PixelLab documents 30-180 seconds for a typical sequence, so the default
     poll budget is wider than a single image needs.
+
+    ``frame_count`` must be one of :data:`ANIMATION_FRAME_COUNTS`. The endpoint
+    answers 422 for an odd number ("frame_count must be an even number"), and it
+    returns one image *more* than requested — the first frame is echoed back at
+    the head of the sequence (measured 2026-08-15: 4 -> 5 images, 6 -> 7).
     """
 
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
         raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
-    if not 2 <= frame_count <= 16:
-        raise PixelLabUnavailable("frame_count must be between 2 and 16")
+    if frame_count not in ANIMATION_FRAME_COUNTS:
+        raise PixelLabUnavailable(
+            f"frame_count must be one of {ANIMATION_FRAME_COUNTS}"
+        )
     if not action.strip():
         raise PixelLabUnavailable("action must not be empty")
     if max(first_frame.size) > 512:
