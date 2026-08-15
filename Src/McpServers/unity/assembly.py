@@ -237,13 +237,32 @@ def prefab_command(
     components: list[str],
     sprite: str,
     model: str = "",
+    collider_size: tuple[float, float] | None = None,
+    collider_offset: tuple[float, float] | None = None,
+    sprite_pivot: tuple[float, float] | None = None,
 ) -> str:
-    """오브젝트를 만들고 컴포넌트를 붙여 ``.prefab`` 으로 저장하는 C#."""
+    """오브젝트를 만들고 컴포넌트를 붙여 ``.prefab`` 으로 저장하는 C#.
+
+    콜라이더 치수와 피벗을 함께 받는 이유는 그것들이 **코드가 가정하는 몸 크기**
+    와 같은 값이기 때문이다. 따로 두면 스프라이트 2x4 유닛에 콜라이더 1x1 이
+    붙는 상태가 아무 신호 없이 만들어진다(실제로 그렇게 됐다).
+    """
+
+    size_x, size_y = collider_size if collider_size else (0.0, 0.0)
+    offset_x, offset_y = collider_offset if collider_offset else (0.0, 0.0)
+    pivot_x, pivot_y = sprite_pivot if sprite_pivot else (0.0, 0.0)
 
     body = f"""        string prefabPath = {_literal(prefab_path)};
         string spritePath = {_literal(sprite)};
         string modelPath = {_literal(model)};
         string[] wanted = new string[] {{ {_string_array(components)} }};
+        bool hasColliderSize = {"true" if collider_size else "false"};
+        bool hasColliderOffset = {"true" if collider_offset else "false"};
+        bool hasPivot = {"true" if sprite_pivot else "false"};
+        var colliderSize = new global::UnityEngine.Vector2({float(size_x)}f, {float(size_y)}f);
+        var colliderOffset = new global::UnityEngine.Vector2({float(offset_x)}f, {float(offset_y)}f);
+        var spritePivot = new global::UnityEngine.Vector2({float(pivot_x)}f, {float(pivot_y)}f);
+        string colliderApplied = "";
 
         var attached = new System.Collections.Generic.List<string>();
         var missing = new System.Collections.Generic.List<string>();
@@ -285,6 +304,65 @@ def prefab_command(
             attached.Add(name);
         }}
 
+        if (hasColliderSize || hasColliderOffset)
+        {{
+            var collider = root.GetComponent<global::UnityEngine.Collider2D>();
+            if (collider == null)
+            {{
+                missing.Add("Collider2D");
+            }}
+            else
+            {{
+                if (hasColliderOffset)
+                {{
+                    collider.offset = colliderOffset;
+                }}
+                if (hasColliderSize)
+                {{
+                    var capsule = collider as global::UnityEngine.CapsuleCollider2D;
+                    var box = collider as global::UnityEngine.BoxCollider2D;
+                    var circle = collider as global::UnityEngine.CircleCollider2D;
+                    if (capsule != null)
+                    {{
+                        capsule.size = colliderSize;
+                    }}
+                    else if (box != null)
+                    {{
+                        box.size = colliderSize;
+                    }}
+                    else if (circle != null)
+                    {{
+                        circle.radius = colliderSize.x / 2f;
+                    }}
+                    else
+                    {{
+                        missing.Add(collider.GetType().Name);
+                    }}
+                }}
+                colliderApplied = collider.GetType().Name;
+            }}
+        }}
+
+        if (hasPivot && spritePath.Length > 0)
+        {{
+            var textureImporter = global::UnityEditor.AssetImporter.GetAtPath(spritePath)
+                as global::UnityEditor.TextureImporter;
+            if (textureImporter == null)
+            {{
+                missing.Add(spritePath);
+            }}
+            else
+            {{
+                var textureSettings = new global::UnityEditor.TextureImporterSettings();
+                textureImporter.ReadTextureSettings(textureSettings);
+                textureSettings.spriteAlignment =
+                    (int)global::UnityEngine.SpriteAlignment.Custom;
+                textureSettings.spritePivot = spritePivot;
+                textureImporter.SetTextureSettings(textureSettings);
+                textureImporter.SaveAndReimport();
+            }}
+        }}
+
         if (spritePath.Length > 0)
         {{
             var renderer = root.GetComponent<global::UnityEngine.SpriteRenderer>();
@@ -312,6 +390,7 @@ def prefab_command(
         string payload = "{{\\"success\\":" + (success ? "true" : "false")
             + ",\\"prefab\\":\\"" + prefabPath + "\\""
             + ",\\"attached\\":" + JsonArray(attached)
+            + ",\\"collider\\":\\"" + colliderApplied + "\\""
             + ",\\"missing\\":" + JsonArray(missing)
             + "}}";
         result.Log("{RESULT_MARKER} {{0}}", payload);"""

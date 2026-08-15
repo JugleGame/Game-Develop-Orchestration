@@ -273,3 +273,74 @@ def test_editor_debug_window_template_ships_with_the_repository():
     assert "SetTrigger" in source and "Application.isPlaying" in source, "PlayMode 파라미터 조작"
     # It is copied into a Unity project by hand, so it must not be installed here.
     assert not (TEMPLATE.parent.parent / "Assets").exists()
+
+
+# ---------------------------------------------------------------------------
+# create_prefab collider and pivot (Issue #36)
+# ---------------------------------------------------------------------------
+async def test_prefab_applies_collider_size_and_pivot(recorded):
+    result = await unity_server.create_prefab(
+        gameId="sanabi",
+        prefabName="Player",
+        components=["CapsuleCollider2D", "SpriteRenderer"],
+        sprite="Assets/Generated/player.png",
+        colliderSize=[1.0, 3.3],
+        colliderOffset=[0.0, 1.65],
+        spritePivot=[0.5, 0.03],
+    )
+
+    assert result["colliderSize"] == [1.0, 3.3]
+    assert result["spritePivot"] == [0.5, 0.03]
+    code = recorded[0]
+    assert "bool hasColliderSize = true;" in code
+    assert "Vector2(1.0f, 3.3f)" in code
+    assert "Vector2(0.5f, 0.03f)" in code
+
+
+async def test_prefab_without_measurements_keeps_the_old_shape(recorded):
+    result = await unity_server.create_prefab(
+        gameId="sanabi",
+        prefabName="Player",
+        components=["CapsuleCollider2D"],
+    )
+
+    assert result["colliderSize"] is None
+    code = recorded[0]
+    assert "bool hasColliderSize = false;" in code
+    assert "bool hasPivot = false;" in code
+
+
+async def test_prefab_rejects_a_collider_size_without_a_collider(recorded):
+    with pytest.raises(ToolError):
+        await unity_server.create_prefab(
+            gameId="sanabi",
+            prefabName="Player",
+            components=["SpriteRenderer"],
+            colliderSize=[1.0, 3.3],
+        )
+
+    assert recorded == [], "a mistake this obvious must not reach Unity"
+
+
+async def test_prefab_rejects_a_malformed_measurement(recorded):
+    with pytest.raises(ToolError):
+        await unity_server.create_prefab(
+            gameId="sanabi",
+            prefabName="Player",
+            components=["CapsuleCollider2D"],
+            colliderSize=[1.0],
+        )
+
+    assert recorded == []
+
+
+async def test_prefab_rejects_a_pivot_without_a_sprite(recorded):
+    with pytest.raises(ToolError):
+        await unity_server.create_prefab(
+            gameId="sanabi",
+            prefabName="Player",
+            components=["SpriteRenderer"],
+            spritePivot=[0.5, 0.03],
+        )
+
+    assert recorded == []
