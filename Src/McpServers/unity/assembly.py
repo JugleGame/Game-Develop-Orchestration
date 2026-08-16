@@ -36,6 +36,7 @@ C# 한 장으로 옮길 뿐이다. 그래서 조립이 실행마다 흔들리지
 
 from __future__ import annotations
 
+import math
 import re
 
 # ``Unity_RunCommand`` 가 요구하는 세 조건. 테스트가 이 값으로 회귀를 막는다 —
@@ -119,10 +120,34 @@ def require_vector3(value: object, label: str, default: tuple[float, float, floa
     if value is None:
         return default
     if not isinstance(value, list) or len(value) != 3 or any(
-        not isinstance(item, (int, float)) or isinstance(item, bool) for item in value
+        not isinstance(item, (int, float))
+        or isinstance(item, bool)
+        or not math.isfinite(item)
+        for item in value
     ):
-        raise AssemblyError(f"{label} 은 숫자 3개짜리 배열이어야 합니다")
+        raise AssemblyError(f"{label} 은 유한한 숫자 3개짜리 배열이어야 합니다")
     return tuple(float(item) for item in value)
+
+
+def require_transform(
+    entry: dict[str, object], label: str
+) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    """Validate one nested transform while preserving the older flat call shape."""
+
+    raw = entry.get("transform")
+    if raw is None:
+        raw = entry
+    elif not isinstance(raw, dict):
+        raise AssemblyError(f"{label} 은 객체여야 합니다")
+    if raw is not entry:
+        unknown = sorted(set(raw) - {"position", "rotation", "scale"})
+        if unknown:
+            raise AssemblyError(f"{label} 에 알 수 없는 필드가 있습니다: {unknown}")
+    return (
+        require_vector3(raw.get("position"), f"{label}.position", (0.0, 0.0, 0.0)),
+        require_vector3(raw.get("rotation"), f"{label}.rotation", (0.0, 0.0, 0.0)),
+        require_vector3(raw.get("scale"), f"{label}.scale", (1.0, 1.0, 1.0)),
+    )
 
 
 def order_objects(objects: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -616,9 +641,10 @@ def scene_command(scene_path: str, objects: list[dict[str, object]]) -> str:
     component_sets = [
         ";".join(str(item) for item in entry.get("components") or []) for entry in objects
     ]
-    positions = [require_vector3(entry.get("position"), "position", (0.0, 0.0, 0.0)) for entry in objects]
-    rotations = [require_vector3(entry.get("rotation"), "rotation", (0.0, 0.0, 0.0)) for entry in objects]
-    scales = [require_vector3(entry.get("scale"), "scale", (1.0, 1.0, 1.0)) for entry in objects]
+    transforms = [require_transform(entry, f"objects[{index}].transform") for index, entry in enumerate(objects)]
+    positions = [transform[0] for transform in transforms]
+    rotations = [transform[1] for transform in transforms]
+    scales = [transform[2] for transform in transforms]
     vector_literals = lambda values: ", ".join(
         f"new global::UnityEngine.Vector3({x}f, {y}f, {z}f)" for x, y, z in values
     )
