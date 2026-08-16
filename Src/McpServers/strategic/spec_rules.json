@@ -94,16 +94,19 @@
   ],
   "contaminationGuards": [
     {
+      "id": "chunk-streaming",
       "keywords": ["청크", "Chunk"],
       "requiresRef": ["ARCH-002", "ARCH-003"],
       "reason": "청크 스트리밍을 쓰지 않는 게임에 씬 분할 조항이 딸려 들어왔다."
     },
     {
+      "id": "commentator",
       "keywords": ["commentator", "해설자"],
       "requiresRef": ["ARCH-007"],
       "reason": "해설자 시스템이 없는 게임에 해설 로그 검사가 딸려 들어왔다."
     },
     {
+      "id": "npc-dialogue",
       "keywords": ["NPC", "대화"],
       "requiresRef": ["ARCH-005", "ARCH-006"],
       "reason": "대화 NPC 가 없는 게임에 상태머신·상호작용 조항이 딸려 들어왔다."

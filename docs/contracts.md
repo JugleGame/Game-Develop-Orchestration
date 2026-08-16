@@ -258,6 +258,13 @@ Planning defines **what** a feature does; development defines **which files and 
 it. Reject C# type names, file paths, and concrete MonoBehaviour names in specs. If code adds an
 unapproved game rule, ask whether the spec should change.
 
+S7 contamination findings remain fatal unless the host records an exact
+`contaminationAcceptance` entry with `cardId`, `guardId`, and a non-empty `reason`. The record means
+the named card text is only a cross-reference and the referenced system is absent from this game.
+It exempts only that card and guard pair; another card or another contamination guard still fails.
+The stored spec Markdown and exported feature prompt retain every acceptance record so development
+and QA can see the human judgment instead of silently dropping source guidance.
+
 ## Git
 
 Git is not an MCP contract. Resolve exact targets and use native Git only within user-approved
