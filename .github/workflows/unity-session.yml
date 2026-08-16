@@ -29,10 +29,24 @@ jobs:
           UNITY_PROJECT_PATH: ${{ inputs.unity_project_path }}
         run: |
           $results = Join-Path $env:RUNNER_TEMP 'unity-playmode-results.xml'
-          & $env:UNITY_EDITOR_PATH -batchmode -nographics -quit -projectPath $env:UNITY_PROJECT_PATH -runTests -testPlatform PlayMode -testResults $results
+          $log = Join-Path $env:RUNNER_TEMP 'unity-playmode.log'
+          & $env:UNITY_EDITOR_PATH -batchmode -nographics -projectPath $env:UNITY_PROJECT_PATH -runTests -testPlatform PlayMode -testResults $results -logFile $log
+          $unityExitCode = $LASTEXITCODE
           if (-not (Test-Path -LiteralPath $results)) { throw 'Unity did not produce NUnit XML.' }
-      - name: Upload NUnit XML
+          [xml]$report = Get-Content -LiteralPath $results -Raw
+          $run = $report.'test-run'
+          if ($null -eq $run) { throw 'Unity produced malformed NUnit XML without test-run.' }
+          if ([int]$run.total -lt 1) { throw 'Unity PlayMode run matched zero tests.' }
+          if ($unityExitCode -ne 0) { throw "Unity exited with code $unityExitCode." }
+          if ([int]$run.failed -gt 0 -or [string]$run.result -notlike 'Passed*') {
+            throw "Unity PlayMode tests failed: $($run.failed) of $($run.total)."
+          }
+      - name: Upload NUnit XML and Unity log
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: unity-playmode-nunit
-          path: ${{ runner.temp }}/unity-playmode-results.xml
+          path: |
+            ${{ runner.temp }}/unity-playmode-results.xml
+            ${{ runner.temp }}/unity-playmode.log
+          if-no-files-found: warn

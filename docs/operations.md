@@ -142,10 +142,12 @@ build, register a protected runner with the labels `self-hosted`, `windows`, and
 3. Run **Unity session verification** manually and supply its absolute project path. The path may
    contain non-ASCII characters; the workflow passes it as one PowerShell argument rather than
    constructing a shell command.
-4. Download the `unity-playmode-nunit` artifact. No XML, or a zero-test XML, is a failed test
-   setup and must not be reported as gameplay verification.
+4. Download the `unity-playmode-nunit` artifact, which contains both the NUnit XML and Unity log.
+   The workflow fails on a missing or zero-test XML, failed tests, or a nonzero Unity exit code;
+   artifacts are still uploaded for diagnosis.
 
-This workflow uses `-runTests -testPlatform PlayMode` only; it does not produce a game build.
+This workflow lets `-runTests -testPlatform PlayMode` finish and exit the Editor; adding `-quit`
+can terminate batch mode before the Test Runner writes its result. It does not produce a game build.
 
 Verify an exported hand-off before an execution agent consumes it:
 
