@@ -3,6 +3,7 @@
 ## Requirements
 
 - Python 3.12+
+- Codex CLI installed and signed in for automatic Phase Runner execution
 - Unity 6 Editor and Unity MCP relay
 - `RESEARCH_DSN` for Research
 - `PIXELLAB_API_KEY` for Asset generation
@@ -17,8 +18,97 @@ python scripts/bootstrap.py
 python scripts/bootstrap.py --check  # verify only
 ```
 
-Setup creates root `.venv`, installs MCP and test dependencies, and creates local `.env` and
-`.mcp.json` without overwriting existing files.
+Setup creates root `.venv`, installs MCP and test dependencies, and creates local `.env`,
+`.mcp.json`, and `.codex/config.toml` without overwriting existing files. Codex reads the
+project-scoped `.codex/config.toml`; `.mcp.json` remains for compatible hosts. Both default to the
+`research` profile, so a new host session loads one server's tool schemas instead of every project
+tool.
+
+Select the role for the next session and restart the host after the configuration changes:
+
+```powershell
+python scripts/bootstrap.py --repair-mcp-config --mcp-profile research
+python scripts/bootstrap.py --repair-mcp-config --mcp-profile unity
+python scripts/bootstrap.py --repair-mcp-config --mcp-profile asset2d
+python scripts/bootstrap.py --repair-mcp-config --mcp-profile asset3d
+```
+
+Use `--mcp-profile all` only for a host that cannot switch profiles between phases. The first
+replacement preserves the previous local configurations as `.mcp.json.bak` and
+`.codex/config.toml.bak`; later profile switches keep those original backups. The generated
+profiles contain these server sets:
+
+| Profile | MCP servers | Use |
+|---|---|---|
+| `research` | `research` | evidence, concepts, game design, hand-off |
+| `unity` | `unity` | implementation and Unity QA |
+| `asset2d` | `asset` | 2D sprites, UI, tiles, and review |
+| `asset3d` | `asset3d` | 3D request, generation, and finalization |
+| `all` | all four | compatibility only; largest fixed tool context |
+
+## Automatic Phase Runner
+
+The automatic path keeps approval, retry, and resume decisions in a deterministic local Python
+controller. Every phase applies one MCP profile, starts a fresh `codex exec` thread, validates its
+final response against a bounded JSON Schema, and stores only that result plus artifact paths for
+the next phase. The selected MCP is marked `required`, so a phase fails instead of silently running
+without its role boundary. Install and sign in to Codex CLI before the first real run; `codex exec`
+reuses its saved authentication. The manual profile commands above remain the fallback.
+
+Start a run from a prompt file. `start` executes planning only and then stops at the planning gate:
+
+```powershell
+.venv\Scripts\python.exe -m phase_runner start --prompt-file request.md
+.venv\Scripts\python.exe -m phase_runner status <run-id>
+```
+
+Review the planning result under `var/runs/<run-id>/phases/planning/result.json`, then approve or
+reject it. `resume` runs safe phases until it reaches the next human gate:
+
+```powershell
+.venv\Scripts\python.exe -m phase_runner approve <run-id> planning
+.venv\Scripts\python.exe -m phase_runner resume <run-id>
+
+.venv\Scripts\python.exe -m phase_runner approve <run-id> asset-generation
+.venv\Scripts\python.exe -m phase_runner resume <run-id>
+
+.venv\Scripts\python.exe -m phase_runner approve <run-id> asset-review
+.venv\Scripts\python.exe -m phase_runner resume <run-id>
+```
+
+For a plan with `assetsRequired: false`, the asset gates are `not-required` and the first resume
+after planning approval completes Unity implementation and final integration. Otherwise,
+`visualDimension` selects `asset2d`, `asset3d`, or both sequentially. Reject a pending gate with a
+reason; a rejected run is terminal:
+
+```powershell
+.venv\Scripts\python.exe -m phase_runner reject <run-id> planning --reason "기획 수정 필요"
+```
+
+`state.json` is replaced atomically. Each phase records `pending`, `running`, `completed`, or
+`failed`, its attempt count, profile, fresh Codex thread ID, bounded result path, and error. A
+process interruption can leave a phase as `running`; both `running` and `failed` require the user
+to accept possible repeated external effects by invoking the explicit retry command:
+
+```powershell
+.venv\Scripts\python.exe -m phase_runner status <run-id>
+.venv\Scripts\python.exe -m phase_runner retry <run-id>
+.venv\Scripts\python.exe -m phase_runner resume <run-id>
+```
+
+Never approve `asset-generation` until provider cost and external changes are acceptable, and
+never approve `asset-review` until the generated artifacts have been inspected. Run commands for
+one run sequentially; an OS lock rejects concurrent controller processes. Full Codex JSONL events
+and stderr remain beside each phase result for diagnosis but are not passed to later phases.
+
+Default tests use a fake executor and make no model or paid provider calls. The real CLI smoke test
+is deliberately opt-in:
+
+```powershell
+$env:GDAI_RUN_CODEX_SMOKE = "1"
+.venv\Scripts\python.exe -m pytest Src/McpServers/tests/test_phase_runner.py -k smoke
+Remove-Item Env:GDAI_RUN_CODEX_SMOKE
+```
 
 `requirements.lock` fixes the verified Python dependency set. Bootstrap installs
 that lock file first, then installs the local MCP package without resolving a
@@ -94,8 +184,8 @@ before buying credits or publishing generated assets.
 .venv\Scripts\python.exe Src/McpServers/verify_contract.py
 ```
 
-If a preserved `.mcp.json` points to another checkout, inspect the warning from
-bootstrap and repair it only when its backup is acceptable:
+If a preserved `.mcp.json` or `.codex/config.toml` points to another checkout, inspect the warning
+from bootstrap and repair it only when its backup is acceptable:
 
 ```powershell
 .venv\Scripts\python.exe scripts/bootstrap.py --repair-mcp-config
@@ -158,3 +248,31 @@ Set-Location Src/McpServers
 
 `var/` is disposable state. Commit only minimal test fixtures needed to reproduce a bug. Never
 commit user images, full generated games, or prompt experiment output.
+
+## Context budget
+
+Cache reads are expected for stable instructions and tool schemas. Optimize the absolute cached
+and fresh token counts, not the cache-read percentage by itself:
+
+- Keep shared policy and tool definitions stable at the start of the host prompt. Put the current
+  Issue, changing state, and failure excerpts last.
+- Read the Issue contract in full, but pass only relevant diff hunks and failure-adjacent console
+  lines. Keep full logs, screenshots, manifests, and generated request JSON on disk and refer to
+  their artifact paths.
+- Keep `list_assets` at its compact default and follow `nextCursor`. Request `detail=true` only for
+  the page whose prompt or provenance is needed.
+- Unity evidence tools return counts, representative failures, and artifact paths by default.
+  Repeat the call with `detail=true` only when full NUnit or raw bridge evidence is required.
+  `run_named_tests` always returns every requested focal result because functional QA requires it.
+- Do not delete `var/` as a token-cost measure. It affects prompt cost only when its contents are
+  read or pasted into the conversation.
+
+Measure 20-30 representative tasks before and after a profile or response change. Store the
+working ledger under ignored `var/`, with one row per task and these fields:
+
+```text
+task_type,mcp_profile,documents_read,tool_call_count,cache_read_tokens,fresh_input_tokens,output_tokens
+```
+
+Compare medians and totals per `task_type`. Provider usage data is the authority for token counts;
+repository file sizes cannot attribute billed cache reads to a particular document.

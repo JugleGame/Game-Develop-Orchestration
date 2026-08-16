@@ -5,6 +5,11 @@
 Agent-first is the default. Codex or Claude Code is the sole reasoning layer. There is no
 Web, FastAPI, or LangGraph orchestrator.
 
+For multi-phase local execution, a small Python Phase Controller is the deterministic control
+plane. It is not an agent and makes no design decisions. Each runnable phase starts a fresh
+non-interactive Codex thread with exactly one role's MCP profile, accepts a JSON-Schema-bounded
+result, closes that process, and persists state beneath `var/runs/` before proceeding.
+
 ```mermaid
 flowchart TB
     U["User"] --> H["Planning / execution host agent"]
@@ -24,6 +29,28 @@ flowchart TB
     N --> E["Validation evidence"] --> H
     H -->|"after user approval"| G["Native Git"]
 ```
+
+```mermaid
+flowchart LR
+    P["Planning / research"] --> G1{"Planning approved?"}
+    G1 -->|yes| U["Unity implementation"]
+    U --> D{"Assets required?"}
+    D -->|no| I["Unity integration + QA"]
+    D -->|yes| G2{"Generation approved?"}
+    G2 --> A2["2D and/or 3D asset phase"]
+    A2 --> G3{"Assets reviewed?"}
+    G3 -->|yes| I
+    I --> C["Complete"]
+```
+
+The controller uses `codex exec`, not the TypeScript Codex SDK. The CLI already supports fresh
+non-interactive threads, JSONL lifecycle events, JSON Schema output, and a final-result file while
+preserving this repository's Python-only runtime. The SDK would add Node.js solely for thread
+lifecycle APIs that this workflow deliberately does not use across phases. Agents SDK orchestration,
+Desktop UI automation, GitHub Actions, and general workflow engines were rejected here: they either
+add a second reasoning/control layer, cannot enforce these local human gates, or do not fit a local
+Unity Editor boundary. See the official [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive)
+and [Codex SDK](https://developers.openai.com/codex/sdk) documentation.
 
 ## Ownership
 

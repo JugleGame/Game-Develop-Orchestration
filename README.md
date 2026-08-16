@@ -15,6 +15,7 @@ The host agent reasons and decides; MCP servers only validate data or access ext
 
 ```text
 docs/                    Authoritative architecture, contracts, operations, backlog
+phase_runner/            Deterministic approval gates and fresh Codex phase execution
 Src/McpServers/          Research, Unity, and Asset MCP servers
 AGENTS.md                Thin Codex adapter
 CLAUDE.md                Thin Claude Code adapter
@@ -52,8 +53,27 @@ Read only what the task needs:
 python scripts/bootstrap.py
 ```
 
-Fill only the required values in `.env`, then restart the host agent. See
-[docs/operations.md](docs/operations.md) for commands.
+This creates context-efficient `research`-only MCP configurations for Codex
+(`.codex/config.toml`) and compatible hosts (`.mcp.json`) by default. Switch to the role needed
+for the next task, then restart the host agent:
+
+```powershell
+python scripts/bootstrap.py --repair-mcp-config --mcp-profile unity
+```
+
+Available profiles are `research`, `unity`, `asset2d`, `asset3d`, and the explicit compatibility
+profile `all`. Fill only the required values in `.env`; see [docs/operations.md](docs/operations.md)
+for profile and verification commands.
+
+For an approval-gated end-to-end run, use the local Python Phase Runner. It starts a fresh
+`codex exec` thread per role and persists resumable state under ignored `var/runs/`:
+
+```powershell
+.venv\Scripts\python.exe -m phase_runner start --prompt-file request.md
+```
+
+See [docs/operations.md](docs/operations.md#automatic-phase-runner) for approval, rejection,
+resume, and failure recovery commands.
 
 ## Development
 

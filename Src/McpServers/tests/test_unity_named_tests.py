@@ -97,6 +97,19 @@ async def test_a_failing_test_is_reported_with_its_message(monkeypatch):
     assert "Expected: 1 jump" in result["failures"][0]["message"]
 
 
+async def test_named_results_are_returned_by_default(monkeypatch):
+    completed = {
+        "success": True,
+        "status": "completed",
+        "count": 1,
+        "results": [{"name": "Test_Player_Move", "status": "Passed", "message": ""}],
+    }
+    _runner(monkeypatch, [completed])
+    result = await unity_server.run_named_tests(gameId="sanabi")
+
+    assert result["results"][0]["name"] == "Test_Player_Move"
+
+
 async def test_a_filter_that_matches_nothing_is_not_a_pass(monkeypatch):
     """Otherwise an acceptance criterion gets ticked with no test behind it."""
 

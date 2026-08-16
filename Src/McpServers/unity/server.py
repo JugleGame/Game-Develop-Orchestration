@@ -32,6 +32,13 @@ logger = logging.getLogger("UnityMcpServer")
 PROJECT_PATH = os.getenv("UNITY_PROJECT_PATH", "")
 _bridge = UnityBridge(project_path=PROJECT_PATH)
 _generator = ScriptGenerator()
+_EVIDENCE_SAMPLE_LIMIT = 5
+
+
+def _evidence_sample(items: list[Any], detail: bool) -> list[Any]:
+    """Keep default tool results bounded while preserving an explicit full-evidence path."""
+
+    return items if detail else items[:_EVIDENCE_SAMPLE_LIMIT]
 
 
 def _project_versions(project_path: str) -> dict[str, str | None]:
@@ -913,9 +920,14 @@ def _build_configuration(game_id: str) -> tuple[str, str]:
     return target, normalized
 
 
-@mcp.tool(description="Build the Unity project through BuildPipeline.")
+@mcp.tool(
+    description=(
+        "Build the Unity project through BuildPipeline. Returns a compact summary by default; "
+        "set detail=true only when the raw Unity payload is required."
+    )
+)
 @expects_dict_return
-async def build_project(gameId: str) -> dict[str, Any]:
+async def build_project(gameId: str, detail: bool = False) -> dict[str, Any]:
     """Unity 에는 빌드 도구가 없어 ``Unity_RunCommand`` 로 C# 을 실행한다.
 
     빌드 타깃과 출력 경로는 환경변수로 조정한다
@@ -944,7 +956,7 @@ async def build_project(gameId: str) -> dict[str, Any]:
             **{k: v for k, v in inner.items() if k != "success"},
         )
 
-    return {
+    result = {
         "buildId": f"{gameId}-{inner.get('durationSeconds', 0)}",
         "gameId": gameId,
         "artifactPath": inner.get("outputPath", output),
@@ -956,8 +968,12 @@ async def build_project(gameId: str) -> dict[str, Any]:
         "target": target,
         "totalErrors": inner.get("totalErrors", 0),
         "totalWarnings": inner.get("totalWarnings", 0),
-        "unity": payload,
+        "detail": detail,
+        "detailAvailable": True,
     }
+    if detail:
+        result["unity"] = payload
+    return result
 
 
 #: 빌드 JSON 이 실려 올 수 있는 키. ``executionLogs``/``data`` 는 ``Unity_RunCommand``
@@ -1027,9 +1043,9 @@ def _decode_embedded_json(value: str) -> dict[str, Any] | None:
     return None
 
 
-@mcp.tool(description="Run a PlayMode runtime-error smoke check.")
+@mcp.tool(description="Run a PlayMode runtime-error smoke check with bounded error evidence.")
 @expects_dict_return
-async def run_playmode_smoke(gameId: str) -> dict[str, Any]:
+async def run_playmode_smoke(gameId: str, detail: bool = False) -> dict[str, Any]:
     """Editor 를 Play 로 전환했다가 멈추고 런타임 오류만 걷어온다."""
 
     gameId = _require(gameId, "gameId")
@@ -1054,16 +1070,18 @@ async def run_playmode_smoke(gameId: str) -> dict[str, Any]:
         "passed": len(errors) == 0,
         "durationSeconds": duration,
         "errorCount": len(errors),
-        "errors": errors,
+        "errors": _evidence_sample(errors, detail),
+        "errorsTruncated": not detail and len(errors) > _EVIDENCE_SAMPLE_LIMIT,
+        "detail": detail,
     }
 
 
 @mcp.tool(description="Deprecated alias for run_playmode_smoke; it does not run functional tests.")
 @expects_dict_return
-async def run_playmode_test(gameId: str) -> dict[str, Any]:
+async def run_playmode_test(gameId: str, detail: bool = False) -> dict[str, Any]:
     """호환용 별칭. 기능 테스트는 별도 Unity Test Framework 경로를 사용한다."""
 
-    result = await run_playmode_smoke(gameId)
+    result = await run_playmode_smoke(gameId, detail=detail)
     result["deprecated"] = True
     result["replacement"] = "run_playmode_smoke"
     return result
@@ -1155,7 +1173,7 @@ def _has_playmode_test_assembly(project_path: str) -> bool:
 @mcp.tool(description="Run Unity Test Framework PlayMode functional tests and return NUnit XML evidence.")
 @expects_dict_return
 async def run_playmode_function_tests(
-    gameId: str, testFilter: str = "", timeoutSeconds: int = 180
+    gameId: str, testFilter: str = "", timeoutSeconds: int = 180, detail: bool = False
 ) -> dict[str, Any]:
     """Run actual PlayMode tests; zero discovered cases are a configuration error."""
 
@@ -1186,17 +1204,26 @@ async def run_playmode_function_tests(
         evidence = _parse_nunit_results(output)
     except ValueError as exc:
         raise tool_error(MCP_ERROR, str(exc), resultPath=relative) from exc
-    return {
+    tests = list(evidence.pop("tests"))
+    failures = [case for case in tests if case["result"] != "Passed"]
+    result = {
         "gameId": game_id,
         "verificationType": "unity_test_framework_playmode",
         "resultPath": relative,
         **evidence,
+        "failedCount": len(failures),
+        "failures": _evidence_sample(failures, detail),
+        "failuresTruncated": not detail and len(failures) > _EVIDENCE_SAMPLE_LIMIT,
+        "detail": detail,
     }
+    if detail:
+        result["tests"] = tests
+    return result
 
 
-@mcp.tool(description="Return errors from the latest compile or run.")
+@mcp.tool(description="Return a count and bounded sample of errors from the latest compile or run.")
 @expects_dict_return
-async def get_compile_errors(gameId: str) -> dict[str, Any]:
+async def get_compile_errors(gameId: str, detail: bool = False) -> dict[str, Any]:
     """호스트는 ``body["errors"]``를 ``CompileError`` 증거로 읽는다.
 
     ``CompileError`` 는 ``{file, line, message}`` 이므로 Unity 콘솔 항목을
@@ -1206,7 +1233,13 @@ async def get_compile_errors(gameId: str) -> dict[str, Any]:
     gameId = _require(gameId, "gameId")
 
     errors = [_to_compile_error(entry) for entry in await _read_error_console()]
-    return {"gameId": gameId, "errors": errors}
+    return {
+        "gameId": gameId,
+        "errorCount": len(errors),
+        "errors": _evidence_sample(errors, detail),
+        "errorsTruncated": not detail and len(errors) > _EVIDENCE_SAMPLE_LIMIT,
+        "detail": detail,
+    }
 
 
 def _to_compile_error(entry: Any) -> dict[str, Any]:

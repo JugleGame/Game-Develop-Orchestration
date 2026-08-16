@@ -19,7 +19,7 @@ current official documentation on this date.
 ## Current hand-off state
 
 - Implemented: Research, Unity, and Asset MCP boundaries; draft/published design states; dependency validation; immutable planning-file export; asset review metadata.
-- Source configuration: `.mcp.json` is intentionally not versioned. Run bootstrap to create a local configuration for the current checkout.
+- Source configuration: `.mcp.json` and `.codex/config.toml` are intentionally not versioned. Run bootstrap to create local configurations for the current checkout.
 - Local runtime integrations (Unity project and relay, Research DSN, and PixelLab key) are intentionally not recorded in versioned documentation. Check their availability through the MCP status tools before use.
 - Verified locally: Python unit tests, Python bytecode compilation, and MCP contract schemas.
 - Not verified locally: Unity C# template compilation, Editor bridge calls, build, PlayMode, scene/prefab integrity, live Research DB, and live PixelLab calls.
