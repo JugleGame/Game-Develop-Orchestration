@@ -72,8 +72,9 @@ For an approval-gated end-to-end run, use the local Python Phase Runner. It star
 .venv\Scripts\python.exe -m phase_runner start --prompt-file request.md
 ```
 
-See [docs/operations.md](docs/operations.md#automatic-phase-runner) for approval, rejection,
-resume, and failure recovery commands.
+See the [Phase Runner guide](phase_runner/README.md) for the complete CLI workflow, approval,
+rejection, resume, and failure recovery. The broader environment and manual MCP profile procedures
+remain in [docs/operations.md](docs/operations.md#automatic-phase-runner).
 
 ## Development
 
