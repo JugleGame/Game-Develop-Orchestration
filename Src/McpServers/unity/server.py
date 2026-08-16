@@ -7,6 +7,8 @@ import logging
 import os
 import re
 import time
+import uuid
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,35 @@ logger = logging.getLogger("UnityMcpServer")
 PROJECT_PATH = os.getenv("UNITY_PROJECT_PATH", "")
 _bridge = UnityBridge(project_path=PROJECT_PATH)
 _generator = ScriptGenerator()
+
+
+def _project_versions(project_path: str) -> dict[str, str | None]:
+    """Read local Unity package evidence without starting the Editor."""
+
+    root = Path(project_path)
+    editor_version = None
+    test_framework_version = None
+    try:
+        for line in (root / "ProjectSettings" / "ProjectVersion.txt").read_text(
+            encoding="utf-8"
+        ).splitlines():
+            if line.startswith("m_EditorVersion:"):
+                editor_version = line.partition(":")[2].strip() or None
+                break
+    except OSError:
+        pass
+    try:
+        packages = json.loads((root / "Packages" / "manifest.json").read_text(encoding="utf-8"))
+        dependencies = packages.get("dependencies", {})
+        if isinstance(dependencies, dict):
+            value = dependencies.get("com.unity.test-framework")
+            test_framework_version = value if isinstance(value, str) else None
+    except (OSError, ValueError):
+        pass
+    return {
+        "editorVersion": editor_version,
+        "testFrameworkVersion": test_framework_version,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -603,6 +634,9 @@ async def compose_scene(
                 )
             for position, item in enumerate(entry.get("components") or []):
                 assembly.require_type_name(str(item), f"objects[{index}].components[{position}]")
+            assembly.require_vector3(entry.get("position"), f"objects[{index}].position", (0.0, 0.0, 0.0))
+            assembly.require_vector3(entry.get("rotation"), f"objects[{index}].rotation", (0.0, 0.0, 0.0))
+            assembly.require_vector3(entry.get("scale"), f"objects[{index}].scale", (1.0, 1.0, 1.0))
     except AssemblyError as exc:
         raise tool_error(VALIDATION_ERROR, str(exc), gameId=gameId) from exc
 
@@ -993,10 +1027,10 @@ def _decode_embedded_json(value: str) -> dict[str, Any] | None:
     return None
 
 
-@mcp.tool(description="Run PlayMode and collect runtime errors.")
+@mcp.tool(description="Run a PlayMode runtime-error smoke check.")
 @expects_dict_return
-async def run_playmode_test(gameId: str) -> dict[str, Any]:
-    """Editor 를 Play 로 전환했다가 멈추고 그 사이의 콘솔을 걷어온다."""
+async def run_playmode_smoke(gameId: str) -> dict[str, Any]:
+    """Editor 를 Play 로 전환했다가 멈추고 런타임 오류만 걷어온다."""
 
     gameId = _require(gameId, "gameId")
     duration = float(os.getenv("UNITY_PLAYMODE_SECONDS", "10"))
@@ -1016,10 +1050,147 @@ async def run_playmode_test(gameId: str) -> dict[str, Any]:
     errors = await _read_error_console()
     return {
         "gameId": gameId,
+        "verificationType": "runtime_error_smoke",
         "passed": len(errors) == 0,
         "durationSeconds": duration,
         "errorCount": len(errors),
         "errors": errors,
+    }
+
+
+@mcp.tool(description="Deprecated alias for run_playmode_smoke; it does not run functional tests.")
+@expects_dict_return
+async def run_playmode_test(gameId: str) -> dict[str, Any]:
+    """호환용 별칭. 기능 테스트는 별도 Unity Test Framework 경로를 사용한다."""
+
+    result = await run_playmode_smoke(gameId)
+    result["deprecated"] = True
+    result["replacement"] = "run_playmode_smoke"
+    return result
+
+
+def _function_test_command(result_path: str, test_filter: str) -> str:
+    """Build the Unity 1.7 TestRunnerApi command without exposing raw C# to callers."""
+
+    filter_clause = (
+        f"testNames = new string[] {{ {json.dumps(test_filter)} }}" if test_filter else ""
+    )
+    return f'''using UnityEngine;
+using UnityEditor.TestTools.TestRunner.Api;
+using UnityEngine.TestTools;
+
+internal class CommandScript : IRunCommand
+{{
+    public void Execute(ExecutionResult result)
+    {{
+        var callback = new ResultCallback({json.dumps(result_path)});
+        var api = ScriptableObject.CreateInstance<TestRunnerApi>();
+        api.RegisterCallbacks(callback, 0);
+        var filter = new Filter {{ testMode = TestMode.PlayMode, {filter_clause} }};
+        api.Execute(new ExecutionSettings(filter));
+        result.Log("ASSEMBLY_RESULT {{0}}", "{{\\"success\\":true,\\"submitted\\":true}}");
+    }}
+
+    internal class ResultCallback : ICallbacks
+    {{
+        private readonly string path;
+        public ResultCallback(string value) {{ path = value; }}
+        public void RunStarted(ITestAdaptor testsToRun) {{ }}
+        public void TestStarted(ITestAdaptor test) {{ }}
+        public void TestFinished(ITestResultAdaptor result) {{ }}
+        public void RunFinished(ITestResultAdaptor result)
+        {{
+            TestRunnerApi.SaveResultToFile(result, path);
+        }}
+    }}
+}}
+'''
+
+
+def _parse_nunit_results(path: Path) -> dict[str, Any]:
+    """Return test-case evidence from Unity's NUnit XML, rejecting empty runs."""
+
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError) as exc:
+        raise ValueError(f"invalid NUnit XML: {exc}") from exc
+    cases = []
+    for item in root.iter("test-case"):
+        cases.append(
+            {
+                "name": item.get("fullname") or item.get("name") or "unknown",
+                "result": item.get("result") or "Unknown",
+                "durationSeconds": float(item.get("duration") or 0),
+                "message": (item.findtext("failure/message") or "").strip(),
+            }
+        )
+    if not cases:
+        raise ValueError("Unity Test Framework executed zero test cases")
+    passed = all(case["result"] == "Passed" for case in cases)
+    return {"passed": passed, "testCount": len(cases), "tests": cases}
+
+
+def _has_playmode_test_assembly(project_path: str) -> bool:
+    """Return whether the project contains a source-level Unity test assembly.
+
+    TestRunnerApi does not invoke callbacks (and therefore cannot emit NUnit XML) when
+    an entirely empty project has no test assembly.  Detect that deterministic case up
+    front so callers receive an explicit zero-test failure rather than a timeout.
+    """
+
+    assets = Path(project_path) / "Assets"
+    if not assets.is_dir():
+        return False
+    for definition in assets.rglob("*.asmdef"):
+        try:
+            content = definition.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "TestAssemblies" in content:
+            return True
+    return any("NUnit.Framework" in source.read_text(encoding="utf-8", errors="ignore")
+               for source in assets.rglob("*.cs"))
+
+
+@mcp.tool(description="Run Unity Test Framework PlayMode functional tests and return NUnit XML evidence.")
+@expects_dict_return
+async def run_playmode_function_tests(
+    gameId: str, testFilter: str = "", timeoutSeconds: int = 180
+) -> dict[str, Any]:
+    """Run actual PlayMode tests; zero discovered cases are a configuration error."""
+
+    game_id = _require(gameId, "gameId")
+    if timeoutSeconds < 1 or timeoutSeconds > 900:
+        raise tool_error(VALIDATION_ERROR, "timeoutSeconds must be between 1 and 900")
+    if testFilter and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", testFilter):
+        raise tool_error(VALIDATION_ERROR, "testFilter must be a dotted C# test name")
+    if not PROJECT_PATH:
+        raise tool_error(VALIDATION_ERROR, "UNITY_PROJECT_PATH is required for functional tests")
+    if not _has_playmode_test_assembly(PROJECT_PATH):
+        raise tool_error(
+            VALIDATION_ERROR,
+            "Unity Test Framework executed zero test cases: project has no test assembly",
+        )
+
+    relative = f"Temp/mcp-playmode-{uuid.uuid4().hex}.xml"
+    output = Path(PROJECT_PATH) / relative
+    await _run_command(_function_test_command(relative, testFilter), "Run PlayMode functional tests", 60)
+    import asyncio
+
+    deadline = asyncio.get_running_loop().time() + timeoutSeconds
+    while not output.is_file() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.5)
+    if not output.is_file():
+        raise tool_error(MCP_ERROR, "Unity Test Framework did not produce NUnit XML", resultPath=relative)
+    try:
+        evidence = _parse_nunit_results(output)
+    except ValueError as exc:
+        raise tool_error(MCP_ERROR, str(exc), resultPath=relative) from exc
+    return {
+        "gameId": game_id,
+        "verificationType": "unity_test_framework_playmode",
+        "resultPath": relative,
+        **evidence,
     }
 
 
@@ -1130,13 +1301,19 @@ async def unity_bridge_status() -> dict[str, Any]:
     try:
         bridge = await _ensure_bridge()
     except Exception as exc:  # noqa: BLE001
-        return {"connected": False, "projectPath": PROJECT_PATH, "error": str(exc)}
+        return {
+            "connected": False,
+            "projectPath": PROJECT_PATH,
+            "versions": _project_versions(PROJECT_PATH),
+            "error": str(exc),
+        }
     return {
         "connected": True,
         "projectPath": PROJECT_PATH,
         "relayPath": str(bridge.relay_path),
         "unityToolCount": len(bridge.tool_names),
         "unityTools": bridge.tool_names,
+        "versions": _project_versions(PROJECT_PATH),
     }
 
 

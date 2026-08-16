@@ -212,6 +212,8 @@ class Card:
     genres: list[str]
     confidence: str
     updated: str
+    source_path: str = ""
+    body_sha256: str = ""
     score: float = 0.0
     matched_by: str = ""
     # 이 카드에서 실제로 걸린 절의 ``section_key`` (예: ``failure_cases``).
@@ -234,6 +236,8 @@ class Card:
             "genres": self.genres,
             "confidence": self.confidence,
             "updated": self.updated,
+            "sourcePath": self.source_path,
+            "bodySha256": self.body_sha256,
             "score": round(self.score, 4),
             "matchedBy": self.matched_by,
             "matchedSection": self.matched_section,
@@ -352,7 +356,7 @@ def build_ssl_context(dsn: str) -> ssl.SSLContext | None:
 
 _SELECT = """
     SELECT card_id, kind, type, title, summary, tags, elements, genres,
-           confidence, updated::text AS updated
+           confidence, updated::text AS updated, file_path, body_hash
 """
 
 # --- 하이브리드 검색 ---------------------------------------------------------
@@ -412,7 +416,7 @@ _MIN_CANDIDATE_WINDOW = 40
 _HYBRID_SQL = """
     WITH scored AS (
         SELECT c.card_id, c.kind, c.type, c.title, c.summary, c.tags, c.elements,
-               c.genres, c.confidence, c.updated::text AS updated,
+               c.genres, c.confidence, c.updated::text AS updated, c.file_path, c.body_hash,
                s.section_key,
                1 - (s.embedding <=> $1::vector) AS vec_score,
                similarity(c.title || ' ' || c.summary || ' '
@@ -439,7 +443,7 @@ _HYBRID_SQL = """
         FROM fused
         ORDER BY card_id, rrf DESC, vec_score DESC NULLS LAST
     )
-    SELECT card_id, kind, type, title, summary, tags, elements, genres, confidence, updated,
+    SELECT card_id, kind, type, title, summary, tags, elements, genres, confidence, updated, file_path, body_hash,
            vec_score AS score, matched_by, section_key AS matched_section
     FROM best
     ORDER BY rrf DESC, score DESC NULLS LAST
@@ -694,6 +698,8 @@ class ResearchRepository:
             genres=list(row["genres"] or []),
             confidence=row["confidence"],
             updated=row["updated"],
+            source_path=str(row.get("file_path") or ""),
+            body_sha256=str(row.get("body_hash") or ""),
             score=float(score or 0.0),
             matched_by=matched_by,
             matched_section=matched_section or "",

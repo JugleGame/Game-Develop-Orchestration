@@ -43,8 +43,13 @@ Supported `assetType` values are `character`, `slime`, `monster`, `prop`,
 `environment`, `building`, and `interactive`. Supported `method` values are
 `image_to_3d`, `manual_blender`, `procedural`, and `existing_asset`.
 
-`text_to_3d` is deliberately unsupported. Meshy generation must start from one to four
-host-created, human-approved reference images.
+`text_to_3d` is deliberately unsupported. Meshy generation must start from exactly three
+views of the same GPT-created model, all human-approved. Create them as one GPT image generation:
+an approved PNG/JPEG data-URI contact sheet with three equal-width columns (at most one pixel
+difference from image rounding) ordered front, side, back. Do not stitch independently generated
+images into a sheet. The submission provenance
+must declare `captureMode: single_generation_contact_sheet`; the server splits the sheet into
+three PNG inputs before Meshy submission and never sends it as a single viewpoint.
 
 `design.form` prevents a recognizable silhouette from hiding an unusable object. It requires
 `silhouette`, `primaryVolumes`, `partRelationships`, `surfaceFeatures`, and `bevelPolicy`.
@@ -206,9 +211,11 @@ to produce prompts and a request package with a new SHA-256 digest.
 1. compose_3d_asset_prompts(assetSpec)
 2. Optionally validate_3d_asset_prompts(assetSpec, generationPrompt, referenceSearchPrompt)
 3. prepare_3d_asset_request(featureId, assetSpec, gameId)
-4. The host creates 1-4 consistent reference images from the user's prompt (GPT image API is
-   allowed at the host layer), shows them to the user, and records approval.
-5. submit_3d_asset_generation(featureId, assetSpec, gameId, referenceImageUrls,
+4. The host creates consistent front, side, and back reference images from the user's prompt
+   (GPT image API is allowed at the host layer), shows all three to the user, and records approval.
+   It may show and submit `referenceContactSheetUrl` as one three-column front/side/back review
+   sheet; the server splits it into the required three Meshy inputs.
+5. submit_3d_asset_generation(featureId, assetSpec, gameId, referenceImageUrls or referenceContactSheetUrl,
    referenceProvenance)
 6. get_3d_asset_generation(taskId), then inspect the geometry preview.
 7. refine_3d_asset_generation(taskId, geometryReviewApproved, geometryReviewNote?)
