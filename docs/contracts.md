@@ -54,6 +54,10 @@ Server: `UnityMcpServer`.
   `define_assemblies`, `import_asset`.
 - `create_prefab.model` accepts an imported Unity `GameObject` asset such as FBX and saves a
   model-backed prefab; `compose_scene` then instantiates that prefab.
+- `design_architecture.scene.objects[].transform` and `compose_scene.objects[].transform` accept
+  optional `position`, Euler `rotation`, and `scale` vectors. Each vector contains exactly three
+  finite numbers. Omitted transforms keep Unity defaults, and child transforms are applied in local
+  space. The older flat `position`, `rotation`, and `scale` compose arguments remain compatible.
 - `create_prefab` also accepts `colliderSize`, `colliderOffset`, and `spritePivot`. The body
   size a script assumes and the collider on the prefab are one decision, so they are set in one
   call: a collider left at Unity's 1x1 default under a 2x4 sprite is a defect that nothing else

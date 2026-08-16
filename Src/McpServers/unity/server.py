@@ -641,9 +641,7 @@ async def compose_scene(
                 )
             for position, item in enumerate(entry.get("components") or []):
                 assembly.require_type_name(str(item), f"objects[{index}].components[{position}]")
-            assembly.require_vector3(entry.get("position"), f"objects[{index}].position", (0.0, 0.0, 0.0))
-            assembly.require_vector3(entry.get("rotation"), f"objects[{index}].rotation", (0.0, 0.0, 0.0))
-            assembly.require_vector3(entry.get("scale"), f"objects[{index}].scale", (1.0, 1.0, 1.0))
+            assembly.require_transform(entry, f"objects[{index}].transform")
     except AssemblyError as exc:
         raise tool_error(VALIDATION_ERROR, str(exc), gameId=gameId) from exc
 
