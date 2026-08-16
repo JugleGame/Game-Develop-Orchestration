@@ -43,6 +43,9 @@ def test_export_handoff_writes_a_versioned_manifest_and_verifiable_inputs(tmp_pa
     for file in manifest["files"]:
         path = package / file["path"]
         assert hashlib.sha256(path.read_bytes()).hexdigest() == file["sha256"]
+    assert {file["path"] for file in manifest["files"]} == {
+        "blueprint.json", "specs/demo__spec-001.md", "README.md"
+    }
     assert verify_handoff(package)["manifestSha256"] == result["manifestSha256"]
 
 
@@ -60,6 +63,17 @@ def test_verify_handoff_rejects_manifest_and_input_tampering(tmp_path, monkeypat
     (package / "blueprint.json").write_text("{}\n", encoding="utf-8")
     with pytest.raises(HandoffError, match="file checksum"):
         verify_handoff(package)
+    export_handoff(
+        game_id="readme-demo",
+        blueprint={"title": "Demo", "status": "published"},
+        blueprint_version=1,
+        specs=[spec],
+        feature_prompts=[{"feature_id": spec.spec_id, "dependencies": []}],
+    )
+    readme_package = tmp_path / "var" / "handoffs" / "readme-demo" / "v1"
+    (readme_package / "README.md").write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(HandoffError, match="README.md"):
+        verify_handoff(readme_package)
     (package / "execution-manifest.json").write_text("{}\n", encoding="utf-8")
     with pytest.raises(HandoffError, match="manifest checksum"):
         verify_handoff(package)

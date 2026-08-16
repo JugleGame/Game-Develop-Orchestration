@@ -16,6 +16,7 @@ Server: `ResearchMcpServer`.
 | Tool | Responsibility |
 |---|---|
 | `research_idea` | Retrieve evidence, counterexamples, and architecture cards |
+| `get_unity_project_setup_guidance` | Return the Unity Hub project template and initial settings for an explicit `2D` or `3D` visual dimension |
 | `propose_concept` | Store an evidence-backed proposal for review |
 | `list_pending_concepts`, `get_concept` | Read concept review state |
 | `decide_concept` | Record approve, revise, or reject |
@@ -33,9 +34,15 @@ complete documents to `publish_game_design`, `revise_spec`, and `add_spec`.
 accepts only a fully published graph and writes versioned, SHA-256-described
 files beneath `HANDOFF_ROOT` (default `./var/handoffs`).
 
-The stored blueprint contains game-level fields and `specIds`, while each full
+The stored blueprint contains game-level fields, including the host-authored
+`visualDimension` (`2D`, `3D`, or `hybrid`), and `specIds`, while each full
 task exists only in its feature spec. The generated package includes an external
 `execution-manifest.sha256`; execution must verify it before reading the manifest.
+
+For 3D work, `unityHints.assetSpecs` carries complete host-authored 3D specifications.
+The exported feature prompt exposes them as `asset_specs`; the execution host passes
+each object unchanged to `submit_3d_asset_generation`. `assets_needed` remains the
+lightweight and backward-compatible display list.
 
 ## Unity MCP
 
@@ -45,8 +52,54 @@ Server: `UnityMcpServer`.
 - `create_script.contents` is required; run the C# gate before writing to Unity.
 - External effects: `create_scene`, `create_prefab`, `compose_scene`, `bind_reference`,
   `define_assemblies`, `import_asset`.
-- Evidence: `build_project`, `run_playmode_test`, `get_compile_errors`,
-  `inspect_project_layout`, `unity_bridge_status`.
+- `create_prefab.model` accepts an imported Unity `GameObject` asset such as FBX and saves a
+  model-backed prefab; `compose_scene` then instantiates that prefab.
+- `create_prefab` also accepts `colliderSize`, `colliderOffset`, and `spritePivot`. The body
+  size a script assumes and the collider on the prefab are one decision, so they are set in one
+  call: a collider left at Unity's 1x1 default under a 2x4 sprite is a defect that nothing else
+  in the pipeline reports. Asking for a collider measurement without a `Collider2D` component,
+  or a pivot without a sprite, is rejected with code `1000`. Omitting them keeps the previous
+  behaviour, and the applied values come back as evidence.
+- `import_asset` repairs generated texture import settings after importing an FBX: maps named
+  `*normal*` become `NormalMap` and `*metallic*`, `*roughness*`, `*occlusion*` lose sRGB.
+- The same step applies the WebGL texture budget. Base color is capped at
+  `UNITY_MAX_TEXTURE_SIZE` (1024 by default) and every other map at half that, all maps are
+  crunch-compressed, and a WebGL platform override pins `DXT1Crunched`, or `DXT5Crunched` when the
+  map needs alpha. Crunch trades import time for download size, which is the cost WebGL pays.
+- It then binds base color, normal, `*metallicSmoothness*`, and emission into one URP material
+  beside the model and remaps the model's embedded materials to it, because the FBX importer binds
+  base color and normal only. Results are reported as `texturesRepaired` and `material`.
+- `create_animation_clip` builds one clip from an ordered frame list; the order given is the play
+  order, and each frame must already be an imported Sprite. `create_animator_controller` builds the
+  state graph from host-authored states, parameters, and transitions, then binds the controller to a
+  prefab's `Animator`. A transition whose condition names an undeclared parameter is rejected before
+  Unity sees it, because Unity ignores such a transition silently. Clips and controllers are written
+  under `UNITY_ANIMATION_ROOT` (`Assets/Animations` by default).
+- `inspect_animator` returns what an Animator actually carries — controller path, states with their
+  motions, parameters with their types, and per-clip frame counts — without judging it. An `Animator`
+  with no controller raises no error at runtime, so `inspect_project_layout` reports that case as
+  layout rule `L8`.
+- `run_named_tests` runs the tests an acceptance criterion names, in EditMode or PlayMode, and
+  returns each test with its status, duration, and failure message. `run_playmode_test` only
+  collects console errors, so a defect that throws nothing passes it; a named test is what turns
+  a criterion such as `Test_Player_NoDoubleJump` into evidence. A filter that matches no test is
+  reported as an error, never as a pass. Because a run crosses a domain reload, results are
+  recorded by `templates/unity-editor/PipelineTestReporter.cs`, which the target project must
+  carry in `Assets/Editor`; its absence is reported as such.
+- The host must apply [the Unity functional QA policy](unity-functional-qa.md). A named run is
+  acceptable evidence only when it completed, executed at least one requested test, and reports no
+  failure. `run_playmode_test` is console-smoke evidence only. Neither it nor a successful build can
+  replace a named functional test, and the MCP never assigns the final QA status.
+- `run_playmode_smoke` only detects runtime console errors during a bounded PlayMode
+  session. `run_playmode_test` remains a deprecated compatibility alias; neither tool
+  proves gameplay behavior. `run_playmode_function_tests` runs the installed Unity Test
+  Framework's PlayMode tests and returns per-test evidence plus the produced NUnit XML path;
+  zero discovered cases are a configuration error.
+- `unity_bridge_status` reports the local Editor and Test Framework versions found in the
+  configured project even when the relay is disconnected.
+- Evidence: `build_project`, `run_playmode_smoke`, `run_playmode_test`,
+  `run_playmode_function_tests`, `run_named_tests`, `get_compile_errors`,
+  `inspect_project_layout`, `unity_bridge_status`, `inspect_animator`.
 - Return evidence; never declare final PASS.
 
 ## Asset MCP
@@ -72,6 +125,29 @@ Server: `AssetGenMcpServer`.
   preserve the host-authored subject intent and report original/composed character counts. The
   provider prompt orders subject and required structure before exclusions, and keeps the shared
   art style in PixelLab's structured controls instead of duplicating it in prose.
+- `generate_2d_animation` turns one approved prototype into an ordered frame sequence through
+  PixelLab's `animate-with-text-v3`. The approved asset is submitted as the first frame, so the
+  human gate that guards a static sprite also guards every frame derived from it. The endpoint
+  accepts only an even frame count of 4 to 16 and answers 422 otherwise, so any other value is
+  rejected before a request is spent. It returns one image more than requested, because the first
+  frame is echoed at the head of the sequence. The request always sets
+  `no_background`: the endpoint defaults it to false and then returns every frame on an opaque
+  plate, which cannot be used as a sprite. Each frame is inspected as it is saved, so a sequence
+  that still comes back opaque is reported as `technicalStatus: fail` with
+  `transparent_background_missing` instead of waiting for a later `inspect_asset` call.
+  The frames are also measured *as a motion*, which a per-image check cannot do: subject drift
+  between frames, subject size stability, how much of the canvas each step redraws, and how far
+  the last frame sits from the first. Those come back as `sequenceWarnings` and `sequenceMetrics`.
+  They are warnings, never failures — a sequence that legitimately crosses the canvas measures the
+  same as one that shakes in place, so the judgment stays with the host and the human.
+  Each frame also carries a `footAnchor`: the normalised pivot at the bottom centre of its own
+  subject. Unity anchors a sprite by its canvas unless told otherwise, so without it a few pixels
+  of drift per frame become on-screen shake. Frames land under `ASSET_ROOT/assets/<game>/
+  animations/<feature>_<digest>/` with zero-padded names that sort into play order, beside an
+  `animation.json` index recording the action, first-frame asset ID, provider job ID, and usage.
+  Each frame is an ordinary manifest asset: it starts `pending` and needs the same human review
+  before `readyForImport`. A poll timeout, a failed provider job, and a rejected request are
+  distinct failures.
 - `review_asset` stores optional `preserve`, `change`, and `artStyleFeedback` fields separately
   from the free-form review note so the next host-authored revision can distinguish content fixes
   from shared style changes.
@@ -95,9 +171,85 @@ Server: `Asset3DGenMcpServer` (`asset3d.server`).
 
 - `compose_3d_asset_prompts` deterministically derives provider-neutral generation, search, and per-view reference prompts from a host-authored asset specification.
 - `validate_3d_asset_prompts` rejects prompts that differ from the current specification's deterministic derivation.
-- `prepare_3d_asset_request` composes and stores the validated package beneath `ASSET_ROOT/3d/requests`; it records SHA-256 provenance for the specification and both prompt artifacts.
-- No 3D provider is configured in this repository. The server returns `provider_unconfigured`, never a model path or a 2D placeholder.
-- A future provider client may perform only external-provider access in this server. It must not call a model to author prompts or hide provider failures.
+- `prepare_3d_asset_request` composes and stores the validated package beneath external
+  `ASSET3D_RUN_ROOT/3d/requests`; it records SHA-256 provenance for the specification and both
+  prompt artifacts. The root must be absolute, inside the external Unity workspace, outside
+  `Assets/`, and outside this repository.
+- `submit_3d_asset_generation` sends only host-supplied, human-approved reference images to
+  Meshy. It does not automatically search or adopt third-party assets.
+- The current 3D provider path supports static models only. Asset specifications with
+  `animation.required: true` are rejected until an approved rigging and clip-generation path
+  can create and verify the requested output.
+- Meshy remains the only paid generation boundary. The host may use the GPT image API to turn the
+  user's prompt into reference images, but the MCP server never calls GPT or another model. The
+  host passes one to four user-approved references plus `referenceProvenance` to the MCP.
+- Every 3D request defaults to a single GPT-generated, consistent front/side/back contact sheet,
+  followed by human approval and Meshy Multi-Image-to-3D. `referenceContactSheetUrl` must contain
+  three equal-width left-to-right panels (allowing a one-pixel rounding difference) of that one
+  generation; independently generated images stitched together are invalid. The server splits the
+  sheet into three PNG inputs before
+  submission. Single-image submission is disabled;
+  `text_to_3d` is rejected by the asset specification contract and cannot be used as a fallback.
+- The reference-generation plan exposes a required visual review checklist. It checks one-object
+  consistency, declared-palette-only appearance, absent undeclared details, plus every explicit
+  `design.preserve` and `design.exclude` constraint. The same checklist is retained with the
+  staged final preview; failed checks must not be finalized into Unity.
+- `referenceProvenance` requires a non-empty source (for example `gpt_image_api`),
+  `humanApproved: true`, and `captureMode: single_generation_contact_sheet`; an optional
+  `sourcePromptSha256` records the user-prompt lineage without storing the prompt itself.
+  Reference prompts move repeated and non-silhouette microdetail to flat color or normal-map
+  information instead of geometry.
+- `refine_3d_asset_generation` requires explicit human geometry-preview approval before any paid
+  refine/retexture. Completed output is staged as `AWAITING_FINAL_REVIEW`.
+- Retexture always submits FBX. Meshy returns GLB geometry, so Blender converts the cleaned GLB to
+  FBX before submission and the task requests an FBX result. `finalize_3d_asset_generation` still
+  converts to `assetSpec.output.format` when the specification asks for GLB.
+- A Unity-targeted asset specification should request `output.format: fbx`; the stock Unity
+  importer does not load GLB as a prefab-ready `GameObject` without an additional importer.
+- Geometry is rebuilt once, during refine. Every later Blender pass runs in preserve mode: it keeps
+  vertices, planar faces, and UVs untouched and only re-applies transforms, triangulates, grounds,
+  and exports. Merging or dissolving a textured mesh would destroy the UV layout the maps were
+  baked against.
+- FBX exports write their maps into a sidecar `<model>.fbm` folder, and the Unity copy keeps that
+  folder name so the relative references resolve. Unity cannot extract embedded FBX media on its
+  own, so embedding is not used. A `generated_texture` result with no image in that sidecar is
+  rejected before the FBX is copied; Unity must not accept a silently white material. Separate
+  metallic and roughness maps are packed into one
+  `*_metallicSmoothness.png` (metallic in RGB, inverted roughness in alpha) for URP, and the two
+  consumed inputs are deleted. An emission map whose brightest pixel is at or below
+  `EMPTY_MAP_THRESHOLD` carries no light and is dropped rather than shipped.
+- Each asset lands in its own folder, `Assets/Generated3D/<featureId>/<assetId>-<sha12>/`, holding
+  the model and its texture sidecar. The Unity import step treats everything in that folder as
+  belonging to that one model.
+- `assetSpec.geometry.maxTriangles` must stay at or below the WebGL per-asset triangle ceiling,
+  15000 by default and overridable with `ASSET3D_WEBGL_MAX_TRIANGLES`. The ceiling is enforced at
+  specification validation, Meshy requests the same number as `target_polycount`, Blender decimates
+  anything above it, and the GameReady gate rejects a report whose `triangleBudgetPassed` is false.
+- `finalize_3d_asset_generation` requires explicit human final-visual approval, then runs Blender
+  headless cleanup, preserves part separation, applies conservative planar cleanup only for
+  explicit hard-surface normals, triangulates and ground-centers the result, and rejects
+  triangle-budget, loose-vertex, or zero-area failures using the Blender quality report. Only then
+  can it copy the asset into Unity.
+- The Blender report also exposes disconnected-component and BVH self-intersection candidates. `gameReadyPassed` covers static Unity render readiness; `topologyStrictPassed` additionally requires a manifold, intersection-free mesh for workflows such as deformation, destructive baking, or 3D printing. Exact Union and voxel remesh are not automatic defaults because they can visibly destroy valid generated surfaces.
+- `material_only` is allowed only for an explicitly uniform palette: numeric `texture.material`, no `texture.surfaceDetails`, and at most one declared design color and material. Blender converts the sRGB base color to scene-linear values and applies it to every mesh; the GameReady gate rejects missing material slots. Multiple appearance regions select `generated_texture` instead of flattening visual structure into one material.
+- Image generation preserves the complete host-authored specification and submits texture
+  requirements separately during retexture. The texture prompt restricts the provider to the
+  declared palette and material, preserves explicit design constraints, and prohibits invented
+  colors, patterns, text, logos, symbols, and accessories. Runtime-bound output requests triangle remeshing.
+- A successful geometry poll persists Meshy's thumbnail URLs with its provider evidence, so a
+  later approval gate can render the same preview without parsing provider-specific evidence.
+- `get_3d_asset_generation` resumes a Meshy task by provider task ID. Meshy I/O is async with a
+  bounded retry/backoff policy; authentication, insufficient credit, rate, queue, provider, and
+  expired-download failures are distinct. `cancel_3d_asset_generation` cancels a resumable task,
+  and identical specification submissions are deduplicated before another paid task is created.
+- Balance evidence and estimated/actual consumed credits are preserved with task provenance.
+- Completed GLB or FBX source files remain beneath the external staging root. Meshy outputs pass
+  the Blender GameReady gate, and only passing files are copied beneath Unity
+  `Assets/Generated3D/<featureId>/`. Geometry-only previews do not require textures; GLB
+  inspection reports vertices, triangles, and whether the requested triangle budget passed.
+  GLTF is rejected because the selected provider does not return it directly.
+- `MESHY_API_KEY` is read only from the environment. A missing key, insufficient credits, or provider failure is an explicit MCP error; the server never falls back to a 2D placeholder.
+- Meshy is an external-provider boundary only. It must not call a model to author prompts or hide provider failures.
 - Prompt fields and the Slime example are defined in [3D asset prompt contract](3d-asset-prompts.md).
 
 ## Role-boundary lint

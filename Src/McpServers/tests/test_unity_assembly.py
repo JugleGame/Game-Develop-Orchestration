@@ -52,12 +52,39 @@ def _every_command() -> dict[str, str]:
             "Enemy", "Assets/Prefabs/Enemy.prefab", ["EnemyBrain", "Rigidbody2D"], ""
         ),
         "compose_scene": assembly.scene_command("Assets/Scenes/Main.unity", _SCENE_OBJECTS),
+        "texture_import": assembly.texture_import_command(
+            "Assets/Generated3D/chest", "Assets/Generated3D/chest/chest.fbx", 1024
+        ),
         "bind_reference_prefab": assembly.bind_command(
             "Assets/Prefabs/Enemy.prefab", "EnemyBrain", "portrait", "Assets/Generated/e.png", ""
         ),
         "bind_reference_scene": assembly.bind_command(
             "WorldRoot/Grid", "", "tileSprite", "Assets/Generated/t.png", "Assets/Scenes/Main.unity"
         ),
+        "animation_clip": assembly.animation_clip_command(
+            "Assets/Animations/PlayerRun.anim",
+            ["Assets/Generated/run_00.png", "Assets/Generated/run_01.png"],
+            12.0,
+            True,
+        ),
+        "animator_controller": assembly.animator_controller_command(
+            "Assets/Animations/Player.controller",
+            ["Idle", "Run"],
+            ["Assets/Animations/PlayerIdle.anim", "Assets/Animations/PlayerRun.anim"],
+            ["Speed"],
+            ["Float"],
+            "Idle",
+            ["Idle"],
+            ["Run"],
+            [0.1],
+            [False],
+            [0],
+            ["Speed"],
+            ["Greater"],
+            [0.1],
+            "Assets/Prefabs/Player.prefab",
+        ),
+        "animator_inspect": assembly.animator_inspect_command("Assets/Prefabs/Player.prefab"),
         "build_project": unity_server._BUILD_CSHARP.replace(
             "__TARGET__", "StandaloneWindows64"
         ).replace("__OUTPUT__", "Builds/g/game.exe"),
@@ -215,6 +242,36 @@ def test_prefab_command_wires_the_sprite_when_one_is_planned():
     assert "Assets/Generated/e.png" in with_sprite
 
 
+def test_prefab_command_instantiates_an_imported_3d_model():
+    with_model = assembly.prefab_command(
+        "Laptop",
+        "Assets/Prefabs/Laptop.prefab",
+        [],
+        "",
+        "Assets/Generated/laptop.fbx",
+    )
+
+    assert "InstantiatePrefab" in with_model
+    assert "Assets/Generated/laptop.fbx" in with_model
+
+
+def test_texture_import_command_applies_the_webgl_budget():
+    """WebGL 은 다운로드 크기를 지불한다 — crunch 와 플랫폼 오버라이드가 그 값이다."""
+
+    source = assembly.texture_import_command(
+        "Assets/Generated3D/chest", "Assets/Generated3D/chest/chest.fbx", 1024
+    )
+
+    assert "int maxTextureSize = 1024;" in source
+    assert "crunchedCompression = true" in source
+    assert "GetPlatformTextureSettings(\"WebGL\")" in source
+    assert "DXT5Crunched" in source and "DXT1Crunched" in source
+    # 베이스 컬러만 전체 해상도를 쓴다.
+    assert "System.Math.Max(128, maxTextureSize / 2)" in source
+    assert "TextureImporterType.NormalMap" in source
+    assert "_MetallicGlossMap" in source
+
+
 # ---------------------------------------------------------------------------
 # Agent-first MCP 도구 경계
 # ---------------------------------------------------------------------------
@@ -224,7 +281,9 @@ def test_assembly_tools_are_exposed_with_camel_case_arguments():
     tools = {tool.name: tool for tool in unity_server.mcp._tool_manager.list_tools()}
 
     assert {"create_prefab", "compose_scene", "bind_reference"} <= set(tools)
-    assert {"gameId", "prefabName"} <= set(tools["create_prefab"].parameters["properties"])
+    assert {"gameId", "prefabName", "model"} <= set(
+        tools["create_prefab"].parameters["properties"]
+    )
     assert {"gameId", "sceneName"} <= set(tools["compose_scene"].parameters["properties"])
     assert {"gameId", "target", "field", "value"} <= set(
         tools["bind_reference"].parameters["properties"]
@@ -242,3 +301,63 @@ def test_command_result_is_read_from_the_same_place_as_the_build_result():
 
     assert unity_server._extract_command_result(payload)["success"] is True
     assert unity_server._extract_build_result is unity_server._extract_command_result
+
+
+# ---------------------------------------------------------------------------
+# 애니메이션 (Issue #28)
+# ---------------------------------------------------------------------------
+def test_animation_clip_keeps_frame_order_and_frame_rate():
+    """프레임 순서가 곧 재생 순서다 — 섞이면 걸음이 뒤로 걷는다."""
+
+    source = assembly.animation_clip_command(
+        "Assets/Animations/PlayerRun.anim",
+        ["Assets/Generated/run_00.png", "Assets/Generated/run_01.png"],
+        10.0,
+        False,
+    )
+
+    first = source.index("Assets/Generated/run_00.png")
+    second = source.index("Assets/Generated/run_01.png")
+    assert first < second
+    assert "float fps = 10.0f;" in source
+    assert "bool loop = false;" in source
+    assert "SetObjectReferenceCurve" in source
+
+
+def test_animator_controller_carries_conditions_with_their_transition():
+    """조건은 전환 인덱스로 묶인다 — 엉뚱한 전환에 붙으면 상태가 안 바뀐다."""
+
+    source = assembly.animator_controller_command(
+        "Assets/Animations/Player.controller",
+        ["Idle", "Run"],
+        ["", ""],
+        ["Speed", "Attack"],
+        ["Float", "Trigger"],
+        "Idle",
+        ["Idle", "Run"],
+        ["Run", "Idle"],
+        [0.1, 0.2],
+        [False, True],
+        [0, 1],
+        ["Speed", "Speed"],
+        ["Greater", "Less"],
+        [0.1, 0.1],
+        "",
+    )
+
+    assert "int[] conditionOwner = new int[] { 0, 1 };" in source
+    assert 'string[] conditionModes = new string[] { "Greater", "Less" };' in source
+    assert "float[] durations = new float[] { 0.1f, 0.2f };" in source
+    assert "bool[] hasExitTime = new bool[] { false, true };" in source
+    # No prefab was named, so the command must not try to open one.
+    assert 'string prefabPath = "";' in source
+
+
+def test_animator_inspect_reports_without_deciding():
+    """검사는 증거만 돌려준다 — 통과 판정은 호스트 몫이다."""
+
+    source = assembly.animator_inspect_command("Assets/Animations/Player.controller")
+
+    assert "GetObjectReferenceCurve" in source
+    assert "hasAnimator" in source
+    assert "PASS" not in source

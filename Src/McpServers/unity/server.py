@@ -6,9 +6,13 @@ import json
 import logging
 import os
 import re
+import time
+import uuid
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+import anyio
 from mcp.types import CallToolResult, TextContent
 
 from common.errors import MCP_ERROR, UNITY_BUILD_ERROR, VALIDATION_ERROR, tool_error
@@ -28,6 +32,35 @@ logger = logging.getLogger("UnityMcpServer")
 PROJECT_PATH = os.getenv("UNITY_PROJECT_PATH", "")
 _bridge = UnityBridge(project_path=PROJECT_PATH)
 _generator = ScriptGenerator()
+
+
+def _project_versions(project_path: str) -> dict[str, str | None]:
+    """Read local Unity package evidence without starting the Editor."""
+
+    root = Path(project_path)
+    editor_version = None
+    test_framework_version = None
+    try:
+        for line in (root / "ProjectSettings" / "ProjectVersion.txt").read_text(
+            encoding="utf-8"
+        ).splitlines():
+            if line.startswith("m_EditorVersion:"):
+                editor_version = line.partition(":")[2].strip() or None
+                break
+    except OSError:
+        pass
+    try:
+        packages = json.loads((root / "Packages" / "manifest.json").read_text(encoding="utf-8"))
+        dependencies = packages.get("dependencies", {})
+        if isinstance(dependencies, dict):
+            value = dependencies.get("com.unity.test-framework")
+            test_framework_version = value if isinstance(value, str) else None
+    except (OSError, ValueError):
+        pass
+    return {
+        "editorVersion": editor_version,
+        "testFrameworkVersion": test_framework_version,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +184,15 @@ async def _run_command(code: str, title: str, timeout: float) -> dict[str, Any]:
 
 def _assembly_timeout() -> float:
     return float(os.getenv("UNITY_ASSEMBLY_TIMEOUT", "300"))
+
+
+def _max_texture_size() -> int:
+    """WebGL 빌드가 감당할 수 있는 텍스처 한 변의 상한."""
+
+    configured = os.getenv("UNITY_MAX_TEXTURE_SIZE", "").strip()
+    if not configured.isdigit() or int(configured) < 32:
+        return 1024
+    return int(configured)
 
 
 #: 컴파일러가 낸 오류. ``error CS0234`` 처럼 코드가 붙는다.
@@ -419,7 +461,27 @@ async def import_asset(featureId: str, assetPath: str) -> dict[str, Any]:
         {"Action": "Import", "Path": unity_path, "GeneratePreview": False},
         timeout=120,
     )
-    return {"imported": unity_path, "featureId": featureId, "unity": payload}
+
+    repaired: list[str] = []
+    material = ""
+    if unity_path.lower().endswith(".fbx") and "/" in unity_path:
+        inner = await _run_command(
+            assembly.texture_import_command(
+                unity_path.rsplit("/", 1)[0], unity_path, _max_texture_size()
+            ),
+            f"AutoGen texture import {unity_path}",
+            _assembly_timeout(),
+        )
+        repaired = inner.get("repaired", [])
+        material = inner.get("material", "")
+
+    return {
+        "imported": unity_path,
+        "featureId": featureId,
+        "unity": payload,
+        "texturesRepaired": repaired,
+        "material": material,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +507,11 @@ async def create_prefab(
     prefabName: str,
     components: list[str] | None = None,
     sprite: str = "",
+    model: str = "",
     prefabPath: str = "",
+    colliderSize: list[float] | None = None,
+    colliderOffset: list[float] | None = None,
+    spritePivot: list[float] | None = None,
 ) -> dict[str, Any]:
     """``design_architecture`` 의 ``prefabs[]`` 한 항목을 그대로 받는다.
 
@@ -472,11 +538,30 @@ async def create_prefab(
             for index, item in enumerate(components or [])
         ]
         image = assembly.require_asset_path(sprite, "sprite") if str(sprite).strip() else ""
+        model_path = assembly.require_asset_path(model, "model") if str(model).strip() else ""
     except AssemblyError as exc:
         raise tool_error(VALIDATION_ERROR, str(exc), gameId=gameId) from exc
 
+    size = _pair(colliderSize, "colliderSize", gameId)
+    offset = _pair(colliderOffset, "colliderOffset", gameId)
+    pivot = _pair(spritePivot, "spritePivot", gameId)
+
+    # The body size a script assumes and the collider on the prefab are the same
+    # decision; asking for one without the component that carries it is a mistake
+    # worth reporting before Unity runs.
+    if (size or offset) and not any(item.endswith("Collider2D") for item in types):
+        raise tool_error(
+            VALIDATION_ERROR,
+            "colliderSize/colliderOffset need a Collider2D in components",
+            gameId=gameId,
+        )
+    if pivot and not image:
+        raise tool_error(VALIDATION_ERROR, "spritePivot needs a sprite", gameId=gameId)
+
     inner = await _run_command(
-        assembly.prefab_command(name, path, types, image),
+        assembly.prefab_command(
+            name, path, types, image, model_path, size, offset, pivot
+        ),
         f"AutoGen prefab {name}",
         _assembly_timeout(),
     )
@@ -490,7 +575,24 @@ async def create_prefab(
         "gameId": gameId,
         "attached": inner.get("attached", []),
         "missing": inner.get("missing", []),
+        "collider": inner.get("collider", ""),
+        "colliderSize": list(size) if size else None,
+        "colliderOffset": list(offset) if offset else None,
+        "spritePivot": list(pivot) if pivot else None,
     }
+
+
+def _pair(value: list[float] | None, field: str, game_id: str) -> tuple[float, float] | None:
+    """Accept ``[x, y]`` or nothing; anything else is a mistake worth naming."""
+
+    if value is None:
+        return None
+    if len(value) != 2:
+        raise tool_error(VALIDATION_ERROR, f"{field} must be [x, y]", gameId=game_id)
+    try:
+        return float(value[0]), float(value[1])
+    except (TypeError, ValueError) as exc:
+        raise tool_error(VALIDATION_ERROR, f"{field} must be two numbers", gameId=game_id) from exc
 
 
 @mcp.tool(
@@ -532,6 +634,9 @@ async def compose_scene(
                 )
             for position, item in enumerate(entry.get("components") or []):
                 assembly.require_type_name(str(item), f"objects[{index}].components[{position}]")
+            assembly.require_vector3(entry.get("position"), f"objects[{index}].position", (0.0, 0.0, 0.0))
+            assembly.require_vector3(entry.get("rotation"), f"objects[{index}].rotation", (0.0, 0.0, 0.0))
+            assembly.require_vector3(entry.get("scale"), f"objects[{index}].scale", (1.0, 1.0, 1.0))
     except AssemblyError as exc:
         raise tool_error(VALIDATION_ERROR, str(exc), gameId=gameId) from exc
 
@@ -922,10 +1027,10 @@ def _decode_embedded_json(value: str) -> dict[str, Any] | None:
     return None
 
 
-@mcp.tool(description="Run PlayMode and collect runtime errors.")
+@mcp.tool(description="Run a PlayMode runtime-error smoke check.")
 @expects_dict_return
-async def run_playmode_test(gameId: str) -> dict[str, Any]:
-    """Editor 를 Play 로 전환했다가 멈추고 그 사이의 콘솔을 걷어온다."""
+async def run_playmode_smoke(gameId: str) -> dict[str, Any]:
+    """Editor 를 Play 로 전환했다가 멈추고 런타임 오류만 걷어온다."""
 
     gameId = _require(gameId, "gameId")
     duration = float(os.getenv("UNITY_PLAYMODE_SECONDS", "10"))
@@ -945,10 +1050,147 @@ async def run_playmode_test(gameId: str) -> dict[str, Any]:
     errors = await _read_error_console()
     return {
         "gameId": gameId,
+        "verificationType": "runtime_error_smoke",
         "passed": len(errors) == 0,
         "durationSeconds": duration,
         "errorCount": len(errors),
         "errors": errors,
+    }
+
+
+@mcp.tool(description="Deprecated alias for run_playmode_smoke; it does not run functional tests.")
+@expects_dict_return
+async def run_playmode_test(gameId: str) -> dict[str, Any]:
+    """호환용 별칭. 기능 테스트는 별도 Unity Test Framework 경로를 사용한다."""
+
+    result = await run_playmode_smoke(gameId)
+    result["deprecated"] = True
+    result["replacement"] = "run_playmode_smoke"
+    return result
+
+
+def _function_test_command(result_path: str, test_filter: str) -> str:
+    """Build the Unity 1.7 TestRunnerApi command without exposing raw C# to callers."""
+
+    filter_clause = (
+        f"testNames = new string[] {{ {json.dumps(test_filter)} }}" if test_filter else ""
+    )
+    return f'''using UnityEngine;
+using UnityEditor.TestTools.TestRunner.Api;
+using UnityEngine.TestTools;
+
+internal class CommandScript : IRunCommand
+{{
+    public void Execute(ExecutionResult result)
+    {{
+        var callback = new ResultCallback({json.dumps(result_path)});
+        var api = ScriptableObject.CreateInstance<TestRunnerApi>();
+        api.RegisterCallbacks(callback, 0);
+        var filter = new Filter {{ testMode = TestMode.PlayMode, {filter_clause} }};
+        api.Execute(new ExecutionSettings(filter));
+        result.Log("ASSEMBLY_RESULT {{0}}", "{{\\"success\\":true,\\"submitted\\":true}}");
+    }}
+
+    internal class ResultCallback : ICallbacks
+    {{
+        private readonly string path;
+        public ResultCallback(string value) {{ path = value; }}
+        public void RunStarted(ITestAdaptor testsToRun) {{ }}
+        public void TestStarted(ITestAdaptor test) {{ }}
+        public void TestFinished(ITestResultAdaptor result) {{ }}
+        public void RunFinished(ITestResultAdaptor result)
+        {{
+            TestRunnerApi.SaveResultToFile(result, path);
+        }}
+    }}
+}}
+'''
+
+
+def _parse_nunit_results(path: Path) -> dict[str, Any]:
+    """Return test-case evidence from Unity's NUnit XML, rejecting empty runs."""
+
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError) as exc:
+        raise ValueError(f"invalid NUnit XML: {exc}") from exc
+    cases = []
+    for item in root.iter("test-case"):
+        cases.append(
+            {
+                "name": item.get("fullname") or item.get("name") or "unknown",
+                "result": item.get("result") or "Unknown",
+                "durationSeconds": float(item.get("duration") or 0),
+                "message": (item.findtext("failure/message") or "").strip(),
+            }
+        )
+    if not cases:
+        raise ValueError("Unity Test Framework executed zero test cases")
+    passed = all(case["result"] == "Passed" for case in cases)
+    return {"passed": passed, "testCount": len(cases), "tests": cases}
+
+
+def _has_playmode_test_assembly(project_path: str) -> bool:
+    """Return whether the project contains a source-level Unity test assembly.
+
+    TestRunnerApi does not invoke callbacks (and therefore cannot emit NUnit XML) when
+    an entirely empty project has no test assembly.  Detect that deterministic case up
+    front so callers receive an explicit zero-test failure rather than a timeout.
+    """
+
+    assets = Path(project_path) / "Assets"
+    if not assets.is_dir():
+        return False
+    for definition in assets.rglob("*.asmdef"):
+        try:
+            content = definition.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "TestAssemblies" in content:
+            return True
+    return any("NUnit.Framework" in source.read_text(encoding="utf-8", errors="ignore")
+               for source in assets.rglob("*.cs"))
+
+
+@mcp.tool(description="Run Unity Test Framework PlayMode functional tests and return NUnit XML evidence.")
+@expects_dict_return
+async def run_playmode_function_tests(
+    gameId: str, testFilter: str = "", timeoutSeconds: int = 180
+) -> dict[str, Any]:
+    """Run actual PlayMode tests; zero discovered cases are a configuration error."""
+
+    game_id = _require(gameId, "gameId")
+    if timeoutSeconds < 1 or timeoutSeconds > 900:
+        raise tool_error(VALIDATION_ERROR, "timeoutSeconds must be between 1 and 900")
+    if testFilter and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", testFilter):
+        raise tool_error(VALIDATION_ERROR, "testFilter must be a dotted C# test name")
+    if not PROJECT_PATH:
+        raise tool_error(VALIDATION_ERROR, "UNITY_PROJECT_PATH is required for functional tests")
+    if not _has_playmode_test_assembly(PROJECT_PATH):
+        raise tool_error(
+            VALIDATION_ERROR,
+            "Unity Test Framework executed zero test cases: project has no test assembly",
+        )
+
+    relative = f"Temp/mcp-playmode-{uuid.uuid4().hex}.xml"
+    output = Path(PROJECT_PATH) / relative
+    await _run_command(_function_test_command(relative, testFilter), "Run PlayMode functional tests", 60)
+    import asyncio
+
+    deadline = asyncio.get_running_loop().time() + timeoutSeconds
+    while not output.is_file() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.5)
+    if not output.is_file():
+        raise tool_error(MCP_ERROR, "Unity Test Framework did not produce NUnit XML", resultPath=relative)
+    try:
+        evidence = _parse_nunit_results(output)
+    except ValueError as exc:
+        raise tool_error(MCP_ERROR, str(exc), resultPath=relative) from exc
+    return {
+        "gameId": game_id,
+        "verificationType": "unity_test_framework_playmode",
+        "resultPath": relative,
+        **evidence,
     }
 
 
@@ -1059,15 +1301,436 @@ async def unity_bridge_status() -> dict[str, Any]:
     try:
         bridge = await _ensure_bridge()
     except Exception as exc:  # noqa: BLE001
-        return {"connected": False, "projectPath": PROJECT_PATH, "error": str(exc)}
+        return {
+            "connected": False,
+            "projectPath": PROJECT_PATH,
+            "versions": _project_versions(PROJECT_PATH),
+            "error": str(exc),
+        }
     return {
         "connected": True,
         "projectPath": PROJECT_PATH,
         "relayPath": str(bridge.relay_path),
         "unityToolCount": len(bridge.tool_names),
         "unityTools": bridge.tool_names,
+        "versions": _project_versions(PROJECT_PATH),
     }
 
+
+# ---------------------------------------------------------------------------
+# 애니메이션 — 프레임을 클립으로, 클립을 상태 전환 그래프로
+# ---------------------------------------------------------------------------
+def _animation_root() -> str:
+    return os.getenv("UNITY_ANIMATION_ROOT", "Assets/Animations").rstrip("/")
+
+
+@mcp.tool(
+    description=(
+        "Build one AnimationClip from an ordered list of sprite frames. "
+        "Frame order is the play order."
+    )
+)
+@expects_dict_return
+async def create_animation_clip(
+    gameId: str,
+    clipName: str,
+    framePaths: list[str],
+    framesPerSecond: float = 12.0,
+    loop: bool = True,
+) -> dict[str, Any]:
+    """생성된 프레임을 실제로 **움직이게** 만드는 단계다.
+
+    ``import_asset`` 은 그림을 프로젝트에 넣을 뿐이고, 프레임이 순서대로 재생되려면
+    클립이 있어야 한다. 클립이 없으면 게임 코드가 애니메이터 파라미터를 아무리
+    구동해도 화면은 정지 스프라이트 그대로다 — 오류가 없어서 검증도 통과한다.
+    """
+
+    gameId = _require(gameId, "gameId")
+    if not framePaths:
+        raise tool_error(VALIDATION_ERROR, "framePaths 가 비어 있습니다", gameId=gameId)
+    if not 1.0 <= framesPerSecond <= 60.0:
+        raise tool_error(
+            VALIDATION_ERROR, "framesPerSecond 는 1 이상 60 이하여야 합니다", gameId=gameId
+        )
+
+    try:
+        name = assembly.require_name(clipName, "clipName")
+        clip_path = assembly.require_asset_path(
+            f"{_animation_root()}/{name}.anim", "clipName", suffix=".anim"
+        )
+        resolved_frames = [
+            assembly.require_asset_path(path, f"framePaths[{index}]")
+            for index, path in enumerate(framePaths)
+        ]
+    except AssemblyError as exc:
+        raise tool_error(VALIDATION_ERROR, str(exc), gameId=gameId) from exc
+
+    inner = await _run_command(
+        assembly.animation_clip_command(clip_path, resolved_frames, framesPerSecond, loop),
+        f"AutoGen clip {name}",
+        _assembly_timeout(),
+    )
+
+    missing = list(inner.get("missing") or [])
+    if missing:
+        raise tool_error(
+            VALIDATION_ERROR,
+            "every frame must be an imported Sprite asset",
+            gameId=gameId,
+            missing=missing,
+        )
+
+    logger.info(
+        "Animation clip created",
+        extra={"game_id": gameId, "clip": clip_path, "frames": len(resolved_frames)},
+    )
+    return {
+        "clip": clip_path,
+        "gameId": gameId,
+        "frameCount": inner.get("frameCount", len(resolved_frames)),
+        "frameRate": inner.get("frameRate", framesPerSecond),
+        "loop": bool(inner.get("loop", loop)),
+        "length": inner.get("length"),
+        "frames": resolved_frames,
+    }
+
+
+@mcp.tool(
+    description=(
+        "Create an AnimatorController from clips, parameters, and transitions, then bind it "
+        "to a prefab's Animator."
+    )
+)
+@expects_dict_return
+async def create_animator_controller(
+    gameId: str,
+    controllerName: str,
+    states: list[dict[str, Any]],
+    parameters: list[dict[str, Any]] | None = None,
+    transitions: list[dict[str, Any]] | None = None,
+    defaultState: str = "",
+    targetPrefab: str = "",
+) -> dict[str, Any]:
+    """상태 전환 그래프를 만들고 프리팹에 꽂는다.
+
+    파라미터 이름은 게임 코드가 부르는 이름과 같아야 한다. 정의되지 않은
+    파라미터를 조건으로 쓰는 전환은 여기서 막는다 — Unity 는 그런 전환을 조용히
+    무시해서, 통과시키면 "왜 안 바뀌는지" 를 런타임에 찾아야 한다.
+    """
+
+    gameId = _require(gameId, "gameId")
+    if not states:
+        raise tool_error(VALIDATION_ERROR, "states 가 비어 있습니다", gameId=gameId)
+
+    parameter_list = parameters or []
+    transition_list = transitions or []
+
+    try:
+        name = assembly.require_name(controllerName, "controllerName")
+        controller_path = assembly.require_asset_path(
+            f"{_animation_root()}/{name}.controller", "controllerName", suffix=".controller"
+        )
+        prefab_path = (
+            assembly.require_asset_path(targetPrefab, "targetPrefab", suffix=".prefab")
+            if str(targetPrefab).strip()
+            else ""
+        )
+
+        state_names: list[str] = []
+        state_clips: list[str] = []
+        for index, state in enumerate(states):
+            state_name = assembly.require_name(str(state.get("name") or ""), f"states[{index}].name")
+            if state_name in state_names:
+                raise tool_error(
+                    VALIDATION_ERROR, f"중복된 상태 이름입니다: {state_name}", gameId=gameId
+                )
+            clip = str(state.get("clip") or "")
+            state_clips.append(
+                assembly.require_asset_path(clip, f"states[{index}].clip", suffix=".anim")
+                if clip
+                else ""
+            )
+            state_names.append(state_name)
+
+        parameter_names: list[str] = []
+        parameter_types: list[str] = []
+        for index, parameter in enumerate(parameter_list):
+            parameter_name = assembly.require_name(
+                str(parameter.get("name") or ""), f"parameters[{index}].name"
+            )
+            parameter_type = str(parameter.get("type") or "Float")
+            if parameter_type not in assembly.PARAMETER_TYPES:
+                raise tool_error(
+                    VALIDATION_ERROR,
+                    f"parameters[{index}].type 은 {assembly.PARAMETER_TYPES} 중 하나여야 합니다",
+                    gameId=gameId,
+                )
+            parameter_names.append(parameter_name)
+            parameter_types.append(parameter_type)
+
+        default_name = str(defaultState or state_names[0])
+        if default_name not in state_names:
+            raise tool_error(
+                VALIDATION_ERROR, f"defaultState 가 states 에 없습니다: {default_name}", gameId=gameId
+            )
+
+        transition_from: list[str] = []
+        transition_to: list[str] = []
+        transition_durations: list[float] = []
+        transition_has_exit: list[bool] = []
+        condition_transition: list[int] = []
+        condition_parameters: list[str] = []
+        condition_modes: list[str] = []
+        condition_thresholds: list[float] = []
+
+        for index, transition in enumerate(transition_list):
+            source = str(transition.get("from") or "")
+            destination = str(transition.get("to") or "")
+            if source not in state_names or destination not in state_names:
+                raise tool_error(
+                    VALIDATION_ERROR,
+                    f"transitions[{index}] 이 존재하지 않는 상태를 가리킵니다",
+                    gameId=gameId,
+                )
+            transition_from.append(source)
+            transition_to.append(destination)
+            transition_durations.append(float(transition.get("duration", 0.1)))
+            transition_has_exit.append(bool(transition.get("hasExitTime", False)))
+
+            for condition in transition.get("conditions") or []:
+                condition_name = str(condition.get("parameter") or "")
+                if condition_name not in parameter_names:
+                    raise tool_error(
+                        VALIDATION_ERROR,
+                        f"transitions[{index}] 이 정의되지 않은 파라미터를 씁니다: "
+                        f"{condition_name}",
+                        gameId=gameId,
+                    )
+                mode = str(condition.get("mode") or "If")
+                if mode not in assembly.CONDITION_MODES:
+                    raise tool_error(
+                        VALIDATION_ERROR,
+                        f"조건 mode 는 {assembly.CONDITION_MODES} 중 하나여야 합니다",
+                        gameId=gameId,
+                    )
+                condition_transition.append(index)
+                condition_parameters.append(condition_name)
+                condition_modes.append(mode)
+                condition_thresholds.append(float(condition.get("threshold", 0.0)))
+    except AssemblyError as exc:
+        raise tool_error(VALIDATION_ERROR, str(exc), gameId=gameId) from exc
+
+    inner = await _run_command(
+        assembly.animator_controller_command(
+            controller_path,
+            state_names,
+            state_clips,
+            parameter_names,
+            parameter_types,
+            default_name,
+            transition_from,
+            transition_to,
+            transition_durations,
+            transition_has_exit,
+            condition_transition,
+            condition_parameters,
+            condition_modes,
+            condition_thresholds,
+            prefab_path,
+        ),
+        f"AutoGen controller {name}",
+        _assembly_timeout(),
+    )
+
+    missing = list(inner.get("missing") or [])
+    if missing:
+        raise tool_error(
+            MCP_ERROR,
+            "controller assembly could not resolve every asset",
+            gameId=gameId,
+            missing=missing,
+        )
+
+    logger.info(
+        "Animator controller created",
+        extra={
+            "game_id": gameId,
+            "controller": controller_path,
+            "states": len(state_names),
+            "bound": bool(inner.get("boundToPrefab")),
+        },
+    )
+    return {
+        "controller": controller_path,
+        "gameId": gameId,
+        "states": state_names,
+        "parameters": [
+            {"name": item, "type": kind}
+            for item, kind in zip(parameter_names, parameter_types)
+        ],
+        "defaultState": default_name,
+        "transitions": inner.get("transitions", len(transition_from)),
+        "boundToPrefab": bool(inner.get("boundToPrefab")),
+        "targetPrefab": prefab_path,
+    }
+
+
+@mcp.tool(
+    description=(
+        "Report what an Animator actually carries: controller path, states, parameters, and "
+        "per-clip frame counts. Evidence only, no verdict."
+    )
+)
+@expects_dict_return
+async def inspect_animator(gameId: str, target: str) -> dict[str, Any]:
+    """사람과 호스트가 같은 것을 보게 만드는 검사다.
+
+    컨트롤러가 없는 ``Animator`` 는 오류를 내지 않고 조용히 아무것도 하지 않는다.
+    그래서 "왜 안 움직이나" 를 눈으로 확인할 수 있는 통로가 필요하다.
+    """
+
+    gameId = _require(gameId, "gameId")
+    try:
+        if target.strip().endswith(".prefab"):
+            resolved = assembly.require_asset_path(target, "target", suffix=".prefab")
+        else:
+            resolved = assembly.require_asset_path(target, "target", suffix=".controller")
+    except AssemblyError as exc:
+        raise tool_error(VALIDATION_ERROR, str(exc), gameId=gameId) from exc
+
+    inner = await _run_command(
+        assembly.animator_inspect_command(resolved),
+        f"AutoGen inspect {resolved}",
+        _assembly_timeout(),
+    )
+
+    states = [_split_record(item, ("state", "motion")) for item in inner.get("states") or []]
+    parameters = [_split_record(item, ("name", "type")) for item in inner.get("parameters") or []]
+    clips = [_split_record(item, ("clip", "frames", "length")) for item in inner.get("clips") or []]
+
+    return {
+        "gameId": gameId,
+        "target": resolved,
+        "controller": inner.get("controller", ""),
+        "hasAnimator": bool(inner.get("hasAnimator")),
+        "hasController": bool(inner.get("success")),
+        "states": states,
+        "parameters": parameters,
+        "clips": clips,
+    }
+
+
+def _split_record(value: str, fields: tuple[str, ...]) -> dict[str, str]:
+    """``"Base/Idle:PlayerIdle"`` 처럼 콜론으로 이어 보낸 값을 되돌린다."""
+
+    parts = str(value).split(":")
+    parts += [""] * (len(fields) - len(parts))
+    return dict(zip(fields, parts))
+
+# ---------------------------------------------------------------------------
+# 행동 검증 — 이름으로 지목한 테스트를 실제로 돌린다
+# ---------------------------------------------------------------------------
+_TEST_POLL_SECONDS = 3.0
+
+
+@mcp.tool(
+    description=(
+        "Run named Unity tests (EditMode or PlayMode) and return per-test results. "
+        "Requires PipelineTestReporter in the target project's Assets/Editor."
+    )
+)
+@expects_dict_return
+async def run_named_tests(
+    gameId: str,
+    testNames: list[str] | None = None,
+    mode: str = "PlayMode",
+    timeoutSeconds: float = 300.0,
+) -> dict[str, Any]:
+    """합격 기준에 적힌 테스트 이름을 실제 증거로 바꾸는 단계다.
+
+    ``run_playmode_test`` 는 10초 돌리고 콘솔 에러만 줍는다. 예외를 던지지 않는
+    결함은 그 검사를 통과한다 — 접지 판정이 항상 참을 돌려주어 점프가 무한히
+    가능했던 상태가 컴파일·레이아웃·PlayMode 세 게이트를 모두 통과했다.
+
+    테스트 실행은 도메인 리로드를 넘어가므로 여기서 기다릴 수 없다. 시작만
+    보내고, 대상 프로젝트에 설치된 리포터가 남긴 기록을 폴링한다.
+    """
+
+    gameId = _require(gameId, "gameId")
+    if mode not in assembly.TEST_MODES:
+        raise tool_error(
+            VALIDATION_ERROR, f"mode 는 {assembly.TEST_MODES} 중 하나여야 합니다", gameId=gameId
+        )
+    if timeoutSeconds <= 0:
+        raise tool_error(VALIDATION_ERROR, "timeoutSeconds 는 0보다 커야 합니다", gameId=gameId)
+
+    try:
+        names = [
+            assembly.require_name(item, f"testNames[{index}]")
+            for index, item in enumerate(testNames or [])
+        ]
+    except AssemblyError as exc:
+        raise tool_error(VALIDATION_ERROR, str(exc), gameId=gameId) from exc
+
+    await _run_command(
+        assembly.test_start_command(mode, names),
+        f"AutoGen test start {mode}",
+        _assembly_timeout(),
+    )
+
+    deadline = time.monotonic() + timeoutSeconds
+    inner: dict[str, Any] = {}
+    status = "starting"
+    while time.monotonic() < deadline:
+        await anyio.sleep(_TEST_POLL_SECONDS)
+        inner = await _run_command(
+            assembly.test_poll_command(),
+            "AutoGen test poll",
+            _assembly_timeout(),
+        )
+        status = str(inner.get("status", "absent"))
+        if status in ("completed", "absent"):
+            break
+
+    if status == "absent":
+        raise tool_error(
+            MCP_ERROR,
+            "PipelineTestReporter is not installed in the Unity project; "
+            "copy templates/unity-editor/PipelineTestReporter.cs and its .asmdef "
+            "into Assets/Editor",
+            gameId=gameId,
+        )
+
+    results = list(inner.get("results") or [])
+    if status == "completed" and not results:
+        # A filter that matches nothing is not a pass. Reporting it as one is how an
+        # acceptance criterion gets ticked without any test behind it.
+        raise tool_error(
+            VALIDATION_ERROR,
+            "no test matched the requested names",
+            gameId=gameId,
+            testNames=names,
+            mode=mode,
+        )
+
+    failed = [item for item in results if str(item.get("status", "")).lower() != "passed"]
+    timed_out = status != "completed"
+
+    logger.info(
+        "Named tests finished",
+        extra={"game_id": gameId, "mode": mode, "tests": len(results), "failed": len(failed)},
+    )
+    return {
+        "gameId": gameId,
+        "mode": mode,
+        "requested": names,
+        "status": "timeout" if timed_out else "completed",
+        "passed": not timed_out and not failed,
+        "testCount": len(results),
+        "failedCount": len(failed),
+        "results": results,
+        "failures": failed,
+    }
 
 if __name__ == "__main__":
     serve(mcp)

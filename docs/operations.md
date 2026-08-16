@@ -6,6 +6,7 @@
 - Unity 6 Editor and Unity MCP relay
 - `RESEARCH_DSN` for Research
 - `PIXELLAB_API_KEY` for Asset generation
+- `MESHY_API_KEY` for 3D Asset generation
 
 Node, Docker, a job database, and Redis are not required.
 
@@ -33,12 +34,46 @@ new dependency graph or downloading isolated build dependencies.
 | `UNITY_BUILD_TARGET` | Validated Unity build target | `WebGL` |
 | `UNITY_BUILD_OUTPUT` | Optional project-relative path under `Builds/` | target default |
 | `PIXELLAB_API_KEY` | Asset generation | none |
+| `MESHY_API_KEY` | Meshy 3D Asset generation | none |
+| `BLENDER_PATH` | Blender headless mesh cleanup | `blender` on `PATH` |
+| `ASSET3D_RUN_ROOT` | 3D requests, downloads, tasks, and reports | `<UNITY_PROJECT_PATH>/.asset3d-staging` |
 | `ASSET_ROOT` | Asset output; relative paths resolve from the repository root | `./var/assets` |
 | `HANDOFF_ROOT` | Planning files for execution AI | `./var/handoffs` |
 | `UNITY_SCRIPT_ROOT` | C# root | `Assets/Scripts` |
+| `UNITY_ANIMATION_ROOT` | Generated clips and animator controllers | `Assets/Animations` |
 | `LOG_LEVEL` | Logging | `INFO` |
 
 Do not use `ANTHROPIC_API_KEY`, `*_MCP_URL`, `GIT_ROOT`, or Postgres/Redis job settings.
+
+### Meshy 3D provider
+
+Every 3D submission uses host-supplied, human-approved reference images with Meshy. The runtime
+does not automatically search or adopt local or third-party CC0 models.
+
+`ASSET3D_RUN_ROOT` must be an absolute directory inside the external Unity project but outside
+its `Assets/` directory. Relative paths and paths inside this orchestration repository are
+rejected. Only a Blender `gameReadyPassed` result is copied to
+`Assets/Generated3D/<featureId>/`; request metadata, source downloads, task state, and Blender
+reports remain in the external staging directory.
+
+Credit estimates follow Meshy's published API pricing for the configured operations: 20 credits
+for Meshy-6 Multi-Image-to-3D, 10 for 2K retexture, and 5 for untextured T2 smart
+topology image generation. The task record keeps the pricing source URL, balances before/after,
+and provider-reported or balance-derived actual consumption.
+
+The 3D Asset MCP uses [Meshy's REST API](https://docs.meshy.ai/en/api) only for Image-to-3D,
+Multi-Image-to-3D, and Retexture tasks. Meshy was selected because it supports the repository's direct Unity
+interchange formats (GLB and FBX), API-key authentication, task polling, and explicit
+credit errors. Text tasks require a Meshy preview followed by refine; image tasks require
+an HTTPS reference image owned or licensed by the caller.
+
+An approved operator must create the Meshy account, purchase API credits if required, and
+store the one-time-visible key only in the local `.env` or an approved secret store as
+`MESHY_API_KEY`. Never commit, log, or paste the key into an MCP prompt. Meshy documents
+that paid customers own generated assets; free-plan output uses CC BY 4.0 attribution.
+Review its current [API pricing](https://docs.meshy.ai/en/api/pricing) and
+[commercial-use terms](https://help.meshy.ai/en/articles/9992001-can-i-use-my-generated-assets-for-commercial-projects)
+before buying credits or publishing generated assets.
 
 ## Direct execution
 
@@ -67,7 +102,17 @@ bootstrap and repair it only when its backup is acceptable:
 ```
 
 The contract check imports no live service. For Unity integration, start the Editor and relay,
-then verify bridge status, build, PlayMode, and layout in that order.
+verify bridge status, and then follow [the functional QA policy](unity-functional-qa.md): compile,
+focal named tests, PlayMode console smoke, regression and layout checks, then the final build.
+Copy the reporter described below before calling `run_named_tests`.
+
+### Unity named test reporter
+
+Copy `templates/unity-editor/PipelineTestReporter.cs` and
+`templates/unity-editor/PipelineTestReporter.asmdef` into the target Unity project's
+`Assets/Editor/` directory. Wait for Unity compilation to finish and confirm that
+`get_compile_errors.errors` is empty. A missing reporter is `INFRA_ERROR`; it is never a zero-test
+pass. Keep individual game tests in the target Unity project, not in this orchestration repository.
 
 ### Unity MCP bridge connection
 
@@ -85,6 +130,22 @@ following in the open Unity project before retrying:
 
 Do not disable process validation or auto-approve connections as a workaround. Approve the
 specific pending client in the same settings page when Unity requests approval.
+
+### Windows Unity session CI (no build)
+
+The normal `tests.yml` Windows job checks named-pipe discovery and a non-ASCII temporary path;
+it does **not** start an Editor. To collect real PlayMode evidence without a player or WebGL
+build, register a protected runner with the labels `self-hosted`, `windows`, and `unity`, then:
+
+1. Set the repository Actions variable `UNITY_EDITOR_PATH` to that runner's `Unity.exe` path.
+2. Keep a disposable Unity project on the runner, including at least one PlayMode test assembly.
+3. Run **Unity session verification** manually and supply its absolute project path. The path may
+   contain non-ASCII characters; the workflow passes it as one PowerShell argument rather than
+   constructing a shell command.
+4. Download the `unity-playmode-nunit` artifact. No XML, or a zero-test XML, is a failed test
+   setup and must not be reported as gameplay verification.
+
+This workflow uses `-runTests -testPlatform PlayMode` only; it does not produce a game build.
 
 Verify an exported hand-off before an execution agent consumes it:
 

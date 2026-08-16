@@ -930,3 +930,233 @@ async def test_art_style_argument_reaches_the_palette():
 
     assert result.is_error is False
     assert locked.structured_content["artStyle"] == "dark fantasy"
+
+
+# --------------------------------------------------------------------------
+# Animation frames (Issue #27)
+# --------------------------------------------------------------------------
+
+
+def _stub_animation(monkeypatch, calls, opaque: bool = False):
+    """Return frames that differ per index so ordering is observable."""
+
+    def _fake_animation(*, first_frame, action, frame_count, description=None, **kwargs):
+        calls.append(
+            {
+                "action": action,
+                "frame_count": frame_count,
+                "size": first_frame.size,
+                "description": description,
+            }
+        )
+        frames = []
+        for index in range(frame_count):
+            frame = Image.new("RGBA", first_frame.size, (10 * index, 20, 30, 255 if opaque else 0))
+            if not opaque:
+                # A subject on transparent ground, the shape a sprite needs.
+                box = (
+                    first_frame.width // 4,
+                    first_frame.height // 4,
+                    first_frame.width * 3 // 4,
+                    first_frame.height * 3 // 4,
+                )
+                frame.paste((10 * index, 20, 30, 255), box)
+            frames.append(frame)
+        return frames, {"type": "generations", "generations": float(frame_count)}, "job-anim"
+
+    monkeypatch.setattr(pixellab_client, "create_animation", _fake_animation)
+
+
+async def _approved_prototype(client, game_id: str, feature_id: str) -> str:
+    prototype = await client.call_tool(
+        "generate_2d_sprite",
+        {
+            "featureId": feature_id,
+            "prompt": "treasure chest prop",
+            "gameId": game_id,
+            "artStyle": "dark fantasy pixel art",
+        },
+    )
+    asset_id = prototype.structured_content["assetId"]
+    await client.call_tool("review_asset", {"assetId": asset_id, "approved": True})
+    return asset_id
+
+
+async def test_animation_requires_an_approved_first_frame(monkeypatch):
+    calls: list[dict] = []
+    _stub_animation(monkeypatch, calls)
+
+    async with session() as client:
+        prototype = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-anim-source",
+                "prompt": "treasure chest prop",
+                "gameId": "t-anim-gate",
+            },
+        )
+        result = await client.call_tool(
+            "generate_2d_animation",
+            {
+                "featureId": "f-anim",
+                "firstFrameAssetId": prototype.structured_content["assetId"],
+                "action": "walk cycle",
+                "gameId": "t-anim-gate",
+            },
+        )
+
+    assert result.is_error is True
+    assert "must be approved" in "".join(
+        getattr(block, "text", "") for block in result.content
+    )
+    assert calls == [], "an unapproved frame must never reach the provider"
+
+
+async def test_animation_saves_frames_in_play_order(monkeypatch):
+    calls: list[dict] = []
+    _stub_animation(monkeypatch, calls)
+
+    async with session() as client:
+        first_frame_id = await _approved_prototype(client, "t-anim-order", "f-anim-source")
+        result = await client.call_tool(
+            "generate_2d_animation",
+            {
+                "featureId": "f-anim",
+                "firstFrameAssetId": first_frame_id,
+                "action": "walk cycle",
+                "gameId": "t-anim-order",
+                "frameCount": 4,
+            },
+        )
+
+    body = result.structured_content
+    assert result.is_error is False
+    assert body["frameCount"] == 4
+    assert body["status"] == "pending", "frames wait for human review like every other asset"
+    assert [frame["frameIndex"] for frame in body["frames"]] == [0, 1, 2, 3]
+
+    names = [Path(frame["assetPath"]).name for frame in body["frames"]]
+    assert names == sorted(names), "file names must sort into play order"
+
+    index = json.loads(Path(body["indexPath"]).read_text(encoding="utf-8"))
+    assert index["firstFrameAssetId"] == first_frame_id
+    assert index["action"] == "walk cycle"
+    assert index["jobId"] == "job-anim"
+    assert index["usage"]["generations"] == 4.0
+    assert calls[0]["frame_count"] == 4
+
+    async with session() as client:
+        inspected = await client.call_tool(
+            "inspect_asset", {"assetId": body["frames"][0]["assetId"]}
+        )
+
+    # A generated frame is not importable until a human has looked at it.
+    assert inspected.structured_content["readyForImport"] is False
+    assert inspected.structured_content["humanReviewStatus"] == "pending"
+
+
+async def test_animation_rejects_a_frame_count_the_provider_refuses(monkeypatch):
+    calls: list[dict] = []
+    _stub_animation(monkeypatch, calls)
+
+    async with session() as client:
+        first_frame_id = await _approved_prototype(client, "t-anim-range", "f-anim-source")
+        result = await client.call_tool(
+            "generate_2d_animation",
+            {
+                "featureId": "f-anim",
+                "firstFrameAssetId": first_frame_id,
+                "action": "walk cycle",
+                "gameId": "t-anim-range",
+                "frameCount": 5,
+            },
+        )
+
+    assert result.is_error is True
+    assert "frameCount" in "".join(getattr(block, "text", "") for block in result.content)
+    assert calls == []
+
+
+async def test_animation_reports_frames_that_come_back_on_a_plate(monkeypatch):
+    """An opaque sequence cannot be used as a sprite; say so at generation time."""
+
+    calls: list[dict] = []
+    _stub_animation(monkeypatch, calls, opaque=True)
+
+    async with session() as client:
+        first_frame_id = await _approved_prototype(client, "t-anim-opaque", "f-anim-source")
+        result = await client.call_tool(
+            "generate_2d_animation",
+            {
+                "featureId": "f-anim",
+                "firstFrameAssetId": first_frame_id,
+                "action": "walk cycle",
+                "gameId": "t-anim-opaque",
+                "frameCount": 4,
+            },
+        )
+
+    body = result.structured_content
+    assert body["technicalStatus"] == "fail"
+    assert "transparent_background_missing" in body["technicalFailures"]
+    assert all(frame["technicalStatus"] == "fail" for frame in body["frames"])
+
+
+async def test_animation_passes_inspection_when_frames_carry_alpha(monkeypatch):
+    calls: list[dict] = []
+    _stub_animation(monkeypatch, calls)
+
+    async with session() as client:
+        first_frame_id = await _approved_prototype(client, "t-anim-alpha", "f-anim-source")
+        result = await client.call_tool(
+            "generate_2d_animation",
+            {
+                "featureId": "f-anim",
+                "firstFrameAssetId": first_frame_id,
+                "action": "walk cycle",
+                "gameId": "t-anim-alpha",
+                "frameCount": 4,
+            },
+        )
+
+    body = result.structured_content
+    assert body["technicalStatus"] == "pass"
+    assert body["technicalFailures"] == []
+
+
+async def test_animation_reports_sequence_metrics_and_anchors(monkeypatch):
+    """A sequence that shakes must be visible at generation time, not after import."""
+
+    calls: list[dict] = []
+
+    def _drifting(*, first_frame, action, frame_count, description=None, **kwargs):
+        calls.append({"frame_count": frame_count})
+        frames = []
+        for index in range(frame_count):
+            frame = Image.new("RGBA", first_frame.size, (0, 0, 0, 0))
+            left = 8 + index * 10
+            frame.paste((10, 20, 30, 255), (left, 40, left + 30, 110))
+            frames.append(frame)
+        return frames, {"type": "generations", "generations": 2.0}, "job-drift"
+
+    monkeypatch.setattr(pixellab_client, "create_animation", _drifting)
+
+    async with session() as client:
+        first_frame_id = await _approved_prototype(client, "t-anim-drift", "f-anim-source")
+        result = await client.call_tool(
+            "generate_2d_animation",
+            {
+                "featureId": "f-anim",
+                "firstFrameAssetId": first_frame_id,
+                "action": "walk cycle",
+                "gameId": "t-anim-drift",
+                "frameCount": 4,
+            },
+        )
+
+    body = result.structured_content
+    assert "subject_drifts_between_frames" in body["sequenceWarnings"]
+    assert body["sequenceMetrics"]["anchorDriftPixels"] >= 6
+    # Every frame carries the anchor Unity needs to cancel that drift.
+    assert all(len(frame["footAnchor"]) == 2 for frame in body["frames"])
+    assert body["frames"][0]["footAnchor"] != body["frames"][-1]["footAnchor"]

@@ -4,8 +4,8 @@
 
 The host agent writes an `assetSpec` that captures the game's intent. Without making
 model-driven decisions, `Asset3DGenMcpServer` applies the specification to deterministic
-templates, composes and validates provider-neutral prompts, and preserves the request
-package. External 3D providers and Unity integration are outside this contract.
+templates, composes and validates provider-neutral prompts, submits approved references to Meshy,
+and preserves provenance through Blender validation and Unity import.
 
 ```mermaid
 flowchart TD
@@ -16,8 +16,10 @@ flowchart TD
     S --> P["prepare_3d_asset_request"]
     G --> P
     Q --> P
-    P --> H["Request package under var/assets/3d/requests"]
-    H -->|"Separate work after provider approval"| E["External 3D generation"]
+    P --> H["Request package under external ASSET3D_RUN_ROOT"]
+    H --> E["Meshy generation"]
+    E --> B["Blender GameReady gate"]
+    B -->|"pass only"| U["Unity Assets/Generated3D"]
 ```
 
 ## Specification
@@ -29,17 +31,69 @@ required only when `animation.required` is `true`. The optional lists `materials
 | Area | Fields |
 |---|---|
 | Identity | `assetId`, `assetName`, `assetType`, `gameplayRole` |
-| Design | `description`, `style`, `proportions`, `colors`, optional `materials`, `preserve`, `exclude` |
-| Geometry | `maxTriangles`, `separateMeshes` |
-| Output | `format`, `scale`, `pivot`, `collider` |
+| Design | `description`, `style`, `proportions`, `colors`, required `form`, optional `materials`, `preserve`, `exclude` |
+| Geometry | `maxTriangles`, `separateMeshes`, required `shading` |
+| Output | `format`, `scale`, `pivot`, `pivotPolicy`, `collider` |
+| Texture | `required`, `description`, `maps`, optional `surfaceDetails`, optional `material` |
 | Animation | `required`, conditional `rigType`, `clips` |
 | Generation | `method` |
 | Validation | `requirements` |
 
 Supported `assetType` values are `character`, `slime`, `monster`, `prop`,
 `environment`, `building`, and `interactive`. Supported `method` values are
-`image_to_3d`, `text_to_3d`, `manual_blender`, `procedural`, and `existing_asset`.
+`image_to_3d`, `manual_blender`, `procedural`, and `existing_asset`.
+
+`text_to_3d` is deliberately unsupported. Meshy generation must start from exactly three
+views of the same GPT-created model, all human-approved. Create them as one GPT image generation:
+an approved PNG/JPEG data-URI contact sheet with three equal-width columns (at most one pixel
+difference from image rounding) ordered front, side, back. Do not stitch independently generated
+images into a sheet. The submission provenance
+must declare `captureMode: single_generation_contact_sheet`; the server splits the sheet into
+three PNG inputs before Meshy submission and never sends it as a single viewpoint.
+
+`design.form` prevents a recognizable silhouette from hiding an unusable object. It requires
+`silhouette`, `primaryVolumes`, `partRelationships`, `surfaceFeatures`, and `bevelPolicy`.
+Describe connected parts, intentional inset/extrude depth, and only the edges that justify bevel
+budget. Do not approximate an inset frame by attaching four unrelated bars.
+
+`output.pivotPolicy` is one of `ground_center`, `center`, `root`, or `custom`. Ordinary static
+props normally use `ground_center`: the lowest support point is on the ground plane and the
+horizontal center is the origin. Organic, animated, hanging, or gameplay-specific assets may use
+another explicit policy. Export and format conversion must preserve the selected origin.
+
+`geometry.shading` requires `normalPolicy`, outward `faceOrientation`, and non-empty
+`smoothingRules`. Hard-surface props normally use `explicit_hard`; organic surfaces use
+`explicit_smooth` or `mixed`. Exported meshes must carry explicit normals, keep all renderable
+faces outward, and split normals across intended hard edges so triangulation cannot create
+diagonal lighting gradients or expose flipped faces.
+`geometry.integrity` requires all four safeguards to be true: reject degenerate faces,
+duplicate faces, and coplanar overlaps, while preserving hard-edge vertex/normal splits across
+triangulation and format conversion. Parts may touch intentionally, but they must not intersect
+or leave thin sliver faces at joints.
 Supported output formats are `fbx`, `glb`, and `gltf`.
+
+Treat `geometry.maxTriangles` as a final runtime ceiling, not a detail target. Planning should
+normally budget 100-500 triangles for distant background props, 500-1,500 for ordinary props,
+and more only for close-up or silhouette-complex assets. Reference prompts model only silhouette
+and primary volumes; repeated or tiny details that do not change the silhouette must be shown as
+flat color or normal-map information so Image-to-3D does not spend geometry on them.
+
+`texture.material` contains `baseColor` (`#RRGGBB`), `metallic`, and `roughness`
+(both from 0 to 1). The server selects `material_only` only when `design.colors`
+and `design.materials` each declare at most one appearance region and
+`texture.surfaceDetails` is empty. Multiple colors or materials select
+`generated_texture`; flattening a screen, keyboard, body, or other distinct region
+into one material is not an optimization. Required decals, patterns, wear, or other
+unique appearance also belong in `surfaceDetails` and select `generated_texture`.
+Omitting `material` preserves the generated-texture behavior.
+
+Multiple Unity material slots are not a safe automatic substitute when the provider returns
+one mesh without semantic face or part IDs: assigning screen, keys, trim, or body by position
+would be object-specific and can silently damage unrelated assets. Prefer a compact generated
+texture in that case. A texture-free multi-material palette is valid only when the generated
+model carries stable, specification-matched part or material IDs; each extra material slot also
+adds a render submission, so it must be chosen for measured runtime value rather than appearance
+flattening.
 
 Asset-type differences are expressed through specification values.
 
@@ -86,19 +140,43 @@ a prompt is therefore rejected with error code `1000`.
     "style": "cute stylized 3D",
     "proportions": "compact and broad",
     "colors": ["leaf green", "cream"],
+    "form": {
+      "silhouette": "compact rounded outline",
+      "primaryVolumes": ["one rounded body"],
+      "partRelationships": ["eyes attached to the front surface"],
+      "surfaceFeatures": ["preserve intentional recesses and protrusions"],
+      "bevelPolicy": ["bevel only silhouette-defining hard edges"]
+    },
     "materials": ["soft matte body"],
     "preserve": ["round silhouette"],
     "exclude": ["text", "weapons"]
   },
   "geometry": {
     "maxTriangles": 2500,
-    "separateMeshes": []
+    "separateMeshes": [],
+    "shading": {
+      "normalPolicy": "mixed",
+      "faceOrientation": "outward",
+      "smoothingRules": ["split normals across silhouette-defining hard edges"]
+    },
+    "integrity": {
+      "forbidDegenerateFaces": true,
+      "forbidDuplicateFaces": true,
+      "forbidCoplanarOverlaps": true,
+      "preserveHardEdgeSplits": true
+    }
   },
   "output": {
     "format": "glb",
     "scale": 1.0,
     "pivot": "ground center",
+    "pivotPolicy": "ground_center",
     "collider": "single capsule"
+  },
+  "texture": {
+    "required": true,
+    "description": "matte stylized surface with readable color separation",
+    "maps": ["base color"]
   },
   "animation": {
     "required": true,
@@ -133,18 +211,35 @@ to produce prompts and a request package with a new SHA-256 digest.
 1. compose_3d_asset_prompts(assetSpec)
 2. Optionally validate_3d_asset_prompts(assetSpec, generationPrompt, referenceSearchPrompt)
 3. prepare_3d_asset_request(featureId, assetSpec, gameId)
+4. The host creates consistent front, side, and back reference images from the user's prompt
+   (GPT image API is allowed at the host layer), shows all three to the user, and records approval.
+   It may show and submit `referenceContactSheetUrl` as one three-column front/side/back review
+   sheet; the server splits it into the required three Meshy inputs.
+5. submit_3d_asset_generation(featureId, assetSpec, gameId, referenceImageUrls or referenceContactSheetUrl,
+   referenceProvenance)
+6. get_3d_asset_generation(taskId), then inspect the geometry preview.
+7. refine_3d_asset_generation(taskId, geometryReviewApproved, geometryReviewNote?)
+8. get_3d_asset_generation(taskId), then inspect the textured/final visual output.
+9. finalize_3d_asset_generation(taskId, finalVisualReviewApproved, finalVisualReviewNote?)
 ```
 
 `prepare_3d_asset_request` recomposes and validates the prompts before saving them to:
 
 ```text
-var/assets/3d/requests/<gameId>/<assetId>__<spec-hash>.json
+<ASSET3D_RUN_ROOT>/3d/requests/<gameId>/<assetId>__<spec-hash>.json
 ```
 
 The package preserves the original specification, both derived prompts, their SHA-256
-digests, game and feature IDs, and the creation timestamp. Because no provider is approved,
-the status is `provider_unconfigured`, and neither an `assetPath` nor a 2D placeholder is
-returned.
+digests, game and feature IDs, and the creation timestamp. The status is `prepared`; Meshy
+submission requires one to four approved PNG/JPEG HTTPS
+URLs or data URIs. `referenceProvenance.source` identifies the host-side source such as
+`gpt_image_api`, `humanApproved` must be true, and `sourcePromptSha256` may preserve prompt
+lineage. The MCP does not generate the reference image itself.
+
+Text-to-3D is rejected by the asset contract. Refine/retexture is blocked until geometry review
+approval, and completed output remains in external staging as `AWAITING_FINAL_REVIEW`. A separate final
+visual approval is required before Blender GameReady and before the final model is copied into
+Unity `Assets/`.
 
 Run locally:
 

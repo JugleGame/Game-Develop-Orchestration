@@ -65,6 +65,7 @@ review approves the complete dependency graph.
 {
   "title": "Example game",
   "genre": "platformer",
+  "visualDimension": "3D",
   "coreMechanics": ["run", "jump", "collect"],
   "artStyle": "project-defined visual style",
   "structureOverview": "Describe the playable structure and independently testable features.",
@@ -107,6 +108,7 @@ the exported feature prompt contains these execution-ready keys:
 | `implementationRequirements`, `constraints` | Planning | Define behavior and boundaries. |
 | `acceptanceCriteria`, `verificationMethod` | Planning + QA | Define observable completion and its evidence. |
 | `assets_needed` | Planning | Declare the assets associated with this feature. |
+| `asset_specs` | Planning | Carry complete 3D specifications directly to the 3D Asset MCP. |
 | file/type/scene mapping | Execution | Produced by `design_architecture`; this prevents planning from dictating implementation details. |
 
 `status` remains on the stored spec. A draft can be edited directly; a published
@@ -128,10 +130,10 @@ listed by the manifest.
 
 ### Asset AI
 
-1. Read the asset declarations from the execution manifest and corresponding feature spec.
-2. Select a provider appropriate to the requested asset, such as PixelLab for 2D pixel art, an image generator for other 2D work, or a 3D provider for models.
-3. Preserve generated provenance and require human review metadata.
-4. Return structured feedback for a rejected asset; do not silently substitute placeholder art.
+1. Read `blueprint.visualDimension` and the asset declarations from the execution manifest.
+2. For each `asset_specs` entry, pass the unchanged object and feature ID to the 3D Asset MCP. Generate the reference image first when its method is `image_to_3d`.
+3. Select PixelLab only for declared 2D work; never route a 3D failure to a 2D placeholder.
+4. Preserve generated provenance and return structured feedback for rejected output.
 
 ### Unity execution AI
 
@@ -189,6 +191,42 @@ The template is not installed in this repository and must be compiled only after
 an execution agent copies it into the target Unity project's `Assets/Editor/`
 directory. Treat compilation and an import test as Unity-side evidence, not as
 evidence supplied by this template alone.
+
+## Unity test reporter
+
+[`templates/unity-editor/PipelineTestReporter.cs`](../templates/unity-editor/PipelineTestReporter.cs)
+and its `.asmdef` are copied into `Assets/Editor/` alongside the other templates. The MCP
+tool `run_named_tests` starts a filtered run through `TestRunnerApi`; this reporter records
+each finished test into `EditorPrefs`, and the tool polls those keys.
+
+Two constraints force that shape. A test run crosses a domain reload, so callbacks
+registered by an injected command die before the run ends; an `[InitializeOnLoad]` class in
+the project re-registers after every reload. And the MCP command runner refuses source that
+merely mentions `File.WriteAllText`, so `EditorPrefs` carries the hand-off instead of a
+results file.
+
+Without the reporter installed, `run_named_tests` reports the reporter as absent rather than
+guessing. Results are written after every finished test, so a run that stalls still leaves
+behind what it managed to prove.
+
+## Unity animation debugging tool
+
+[`templates/unity-editor/AnimationDebugWindow.cs`](../templates/unity-editor/AnimationDebugWindow.cs)
+is the human-facing companion to the animation MCP tools, opened from
+**Tools > Game Development > Animation Debugger** after the same copy into
+`Assets/Editor/`. It does three things the MCP tools cannot do for a person:
+
+1. Build a clip from a folder of loose frame PNGs, in file-name order — the order
+   `generate_2d_animation` zero-pads its frames for.
+2. List every `AnimatorController` with its states, parameters, and per-clip frame
+   counts, and flag prefabs and scene objects whose `Animator` has no controller.
+3. Drive a live `Animator`'s parameters during PlayMode and read back the current
+   state, so a transition that never fires can be seen rather than guessed.
+
+The second and third points exist because a missing controller fails silently:
+`SetFloat` and `SetTrigger` do nothing, no error is logged, and PlayMode
+verification still passes. `inspect_animator` reports the same facts to the host
+agent, and layout rule `L8` reports them in `inspect_project_layout`.
 
 ## First vertical slice and improvement evidence
 

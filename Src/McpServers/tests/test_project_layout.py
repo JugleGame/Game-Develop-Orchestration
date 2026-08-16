@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from project_layout import (
+    RULE_ANIMATOR_WITHOUT_CONTROLLER,
     RULE_DOCUMENT_NAMED_TYPE,
     RULE_FILENAME_MISMATCH,
     RULE_FLAT_SCRIPT_ROOT,
@@ -345,3 +346,53 @@ def test_catches_the_shipped_sample():
     unattached = {f.target for f in report.findings if f.rule == RULE_UNATTACHED_BEHAVIOUR}
     assert len(unattached) == 5, f"붙지 않은 스크립트가 5개여야 한다: {sorted(unattached)}"
     assert "Scripts/Spec006.cs" not in unattached, "Spec006 은 씬에 붙어 있다"
+
+
+# ---------------------------------------------------------------------------
+# L8 — 컨트롤러 없는 Animator (Issue #28)
+# ---------------------------------------------------------------------------
+_EMPTY_ANIMATOR = """%YAML 1.1
+--- !u!95 &4242
+Animator:
+  m_ObjectHideFlags: 0
+  m_Enabled: 1
+  m_Avatar: {fileID: 0}
+  m_Controller: {fileID: 0}
+  m_CullingMode: 0
+"""
+
+_BOUND_ANIMATOR = _EMPTY_ANIMATOR.replace(
+    "m_Controller: {fileID: 0}",
+    "m_Controller: {fileID: 9100000, guid: 1234567890abcdef1234567890abcdef, type: 2}",
+)
+
+
+def _write_prefab(root: Path, relative: str, body: str) -> None:
+    path = root / "Assets" / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+
+
+def test_animator_without_controller_warns(tmp_path: Path):
+    """컨트롤러 없는 Animator 는 오류 없이 조용히 아무 일도 하지 않는다."""
+
+    builder = ProjectBuilder(tmp_path / "proj")
+    root = builder.write()
+    _write_prefab(root, "Prefabs/Player.prefab", _EMPTY_ANIMATOR)
+
+    report = analyze_project(root)
+    findings = [f for f in report.findings if f.rule == RULE_ANIMATOR_WITHOUT_CONTROLLER]
+
+    assert [f.target for f in findings] == ["Prefabs/Player.prefab"]
+    assert findings[0].severity is Severity.WARN
+    assert report.ok is True, "경고이지 실패는 아니다"
+
+
+def test_animator_with_controller_does_not_warn(tmp_path: Path):
+    builder = ProjectBuilder(tmp_path / "proj")
+    root = builder.write()
+    _write_prefab(root, "Prefabs/Player.prefab", _BOUND_ANIMATOR)
+
+    report = analyze_project(root)
+
+    assert RULE_ANIMATOR_WITHOUT_CONTROLLER not in _rules(report)

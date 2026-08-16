@@ -28,6 +28,12 @@ REQUIRED_IMPORTS = (
     "asset.server",
     "asset3d.server",
 )
+MCP_SERVERS = (
+    ("research", "strategic.server"),
+    ("unity", "unity.server"),
+    ("asset", "asset.server"),
+    ("asset3d", "asset3d.server"),
+)
 
 
 def venv_python() -> Path:
@@ -83,19 +89,7 @@ def seed_local_files() -> None:
 
     python = str(venv_python().resolve())
     cwd = str(MCP_ROOT.resolve())
-    servers = {
-        name: {
-            "command": python,
-            "args": ["-m", module],
-            "cwd": cwd,
-            "env": {"PYTHONPATH": cwd},
-        }
-        for name, module in (
-            ("research", "strategic.server"),
-            ("unity", "unity.server"),
-            ("asset", "asset.server"),
-        )
-    }
+    servers = _mcp_servers(python, cwd)
     MCP_CONFIG.write_text(
         json.dumps({"mcpServers": servers}, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -138,22 +132,21 @@ def expected_mcp_config() -> dict[str, object]:
 
     python = str(venv_python().resolve())
     cwd = str(MCP_ROOT.resolve())
-    servers = {
+    return {"mcpServers": _mcp_servers(python, cwd)}
+
+
+def _mcp_servers(python: str, cwd: str) -> dict[str, dict[str, object]]:
+    """Build one complete MCP server map for creation, checking, and repair."""
+
+    return {
         name: {
             "command": python,
             "args": ["-m", module],
             "cwd": cwd,
             "env": {"PYTHONPATH": cwd},
         }
-        for name, module in (
-            ("research", "strategic.server"),
-            ("unity", "unity.server"),
-            ("asset", "asset.server"),
-            ("asset3d", "asset3d.server"),
-            ("asset3d", "asset3d.server"),
-        )
+        for name, module in MCP_SERVERS
     }
-    return {"mcpServers": servers}
 
 
 def mcp_config_is_current() -> bool:

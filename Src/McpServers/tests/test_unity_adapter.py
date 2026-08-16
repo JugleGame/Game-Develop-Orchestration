@@ -88,7 +88,9 @@ def test_exposes_every_contract_tool():
         "create_scene",
         "import_asset",
         "build_project",
+        "run_playmode_smoke",
         "run_playmode_test",
+        "run_playmode_function_tests",
         "get_compile_errors",
         "design_architecture",
         "inspect_project_layout",
@@ -102,7 +104,9 @@ def test_exposes_every_contract_tool():
         ("create_scene", {"featureId", "sceneName"}),
         ("import_asset", {"featureId", "assetPath"}),
         ("build_project", {"gameId"}),
+        ("run_playmode_smoke", {"gameId"}),
         ("run_playmode_test", {"gameId"}),
+        ("run_playmode_function_tests", {"gameId"}),
         ("get_compile_errors", {"gameId"}),
     ],
 )
@@ -146,6 +150,55 @@ def test_compile_error_never_returns_empty_file():
 
     assert parsed["file"] == "unknown"
     assert parsed["line"] is None
+
+
+def test_project_versions_reads_the_editor_and_installed_test_framework(tmp_path):
+    (tmp_path / "ProjectSettings").mkdir()
+    (tmp_path / "Packages").mkdir()
+    (tmp_path / "ProjectSettings" / "ProjectVersion.txt").write_text(
+        "m_EditorVersion: 6000.5.5f1\n", encoding="utf-8"
+    )
+    (tmp_path / "Packages" / "manifest.json").write_text(
+        '{"dependencies":{"com.unity.test-framework":"1.7.0"}}', encoding="utf-8"
+    )
+
+    assert unity_server._project_versions(str(tmp_path)) == {
+        "editorVersion": "6000.5.5f1",
+        "testFrameworkVersion": "1.7.0",
+    }
+
+
+def test_nunit_results_preserve_per_test_evidence_and_reject_empty_runs(tmp_path):
+    results = tmp_path / "results.xml"
+    results.write_text(
+        '<test-run><test-suite><test-case fullname="Game.Move" result="Passed" duration="0.1" />'
+        '<test-case fullname="Game.Attack" result="Failed" duration="0.2"><failure><message>miss</message>'
+        '</failure></test-case></test-suite></test-run>',
+        encoding="utf-8",
+    )
+    assert unity_server._parse_nunit_results(results) == {
+        "passed": False,
+        "testCount": 2,
+        "tests": [
+            {"name": "Game.Move", "result": "Passed", "durationSeconds": 0.1, "message": ""},
+            {"name": "Game.Attack", "result": "Failed", "durationSeconds": 0.2, "message": "miss"},
+        ],
+    }
+    results.write_text("<test-run />", encoding="utf-8")
+    with pytest.raises(ValueError, match="zero"):
+        unity_server._parse_nunit_results(results)
+
+
+def test_playmode_test_assembly_detection_requires_test_source_or_assembly(tmp_path):
+    assets = tmp_path / "Assets"
+    assets.mkdir()
+    (assets / "Gameplay.cs").write_text("public class Gameplay {}", encoding="utf-8")
+    assert not unity_server._has_playmode_test_assembly(str(tmp_path))
+
+    (assets / "GameplayTests.asmdef").write_text(
+        '{"optionalUnityReferences":["TestAssemblies"]}', encoding="utf-8"
+    )
+    assert unity_server._has_playmode_test_assembly(str(tmp_path))
 
 
 def test_compile_error_survives_non_dict_entries():
@@ -335,3 +388,28 @@ async def test_import_asset_dedupes_same_basename_by_feature_id(tmp_path, monkey
     generated_dir = tmp_path / "Assets" / "Generated"
     assert (generated_dir / "theme-a_wang_0.png").exists()
     assert (generated_dir / "theme-b_wang_0.png").exists()
+
+
+@pytest.mark.asyncio
+async def test_import_asset_repairs_model_texture_types(tmp_path, monkeypatch):
+    """생성 FBX 의 노멀맵이 ``Default`` 로 들어오면 셰이딩이 깨진다."""
+
+    _record_calls(monkeypatch)
+    monkeypatch.setattr(unity_server, "PROJECT_PATH", str(tmp_path))
+    commands: list[str] = []
+
+    async def fake_run_command(code, title, timeout):
+        commands.append(code)
+        return {"success": True, "repaired": ["Assets/Generated/f-1_chest.fbm/albedo_normal.png"]}
+
+    monkeypatch.setattr(unity_server, "_run_command", fake_run_command)
+    source = tmp_path / "chest.fbx"
+    source.write_bytes(b"Kaydara FBX Binary  ")
+
+    result = await unity_server.import_asset(featureId="f-1", assetPath=str(source))
+
+    assert result["texturesRepaired"] == [
+        "Assets/Generated/f-1_chest.fbm/albedo_normal.png"
+    ]
+    assert 'string folder = "Assets/Generated";' in commands[0]
+    assert "TextureImporterType.NormalMap" in commands[0]

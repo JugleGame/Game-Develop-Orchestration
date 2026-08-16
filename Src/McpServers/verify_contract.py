@@ -20,19 +20,27 @@ REQUIRED_TOOLS = {
         "revise_spec": {"specId", "spec"},
         "add_spec": {"gameId", "spec"},
         "research_status": set(),
+        "get_unity_project_setup_guidance": {"visualDimension"},
     },
     "unity": {
         "design_architecture": {"gameId", "featurePrompts", "design"},
         "create_script": {"featureId", "contents"},
         "create_scene": {"featureId", "sceneName"},
         "build_project": {"gameId"},
+        "run_playmode_smoke": {"gameId"},
         "run_playmode_test": {"gameId"},
+        "run_playmode_function_tests": {"gameId"},
         "inspect_project_layout": set(),
+        "run_named_tests": {"gameId"},
+        "create_animation_clip": {"gameId", "clipName", "framePaths"},
+        "create_animator_controller": {"gameId", "controllerName", "states"},
+        "inspect_animator": {"gameId", "target"},
     },
     "asset": {
         "prepare_asset_prompt": {"assetKind"},
         "generate_2d_sprite": {"featureId", "prompt"},
         "generate_2d_variations": {"featureId", "prototypeAssetId", "prompts"},
+        "generate_2d_animation": {"featureId", "firstFrameAssetId", "action"},
         "generate_ui_asset": {"featureId", "prompt"},
         "generate_tileset": {"featureId", "lowerDescription", "upperDescription"},
         "establish_art_style": {"gameId"},
@@ -48,9 +56,22 @@ REQUIRED_TOOLS = {
             "referenceSearchPrompt",
         },
         "prepare_3d_asset_request": {"featureId", "assetSpec"},
+        "submit_3d_asset_generation": {"featureId", "assetSpec"},
+        "refine_3d_asset_generation": {"taskId"},
+        "get_3d_asset_generation": {"taskId"},
+        "cancel_3d_asset_generation": {"taskId"},
     },
 }
 FORBIDDEN_IMPORTS = {"anthropic", "openai", "fastapi", "langgraph", "git"}
+
+
+def configure_console_utf8() -> None:
+    """Keep CI diagnostics printable when Windows selects a legacy code page."""
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 def is_tool(node: ast.AsyncFunctionDef | ast.FunctionDef) -> bool:
@@ -124,4 +145,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    configure_console_utf8()
     raise SystemExit(main())

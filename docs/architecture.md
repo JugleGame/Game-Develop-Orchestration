@@ -9,15 +9,18 @@ Web, FastAPI, or LangGraph orchestrator.
 flowchart TB
     U["User"] --> H["Planning / execution host agent"]
     H --> R["Research MCP: evidence, draft/spec storage, dependency lint"]
-    H --> N["Unity MCP: apply, assemble, build, PlayMode, validation"]
+    H --> N["Unity MCP: apply, assemble, named tests, PlayMode, build"]
     H --> A["Asset MCP: 2D asset requests and review metadata"]
-    H --> A3["3D Asset MCP: prompt validation and request packages"]
+    H --> A3["3D Asset MCP: Meshy generation, Blender GameReady"]
     R --> DB["Research DB"]
     R -->|"published only"| HO["var/handoffs: hashed versioned files"] --> H
     N --> UE["Unity Editor"]
     A --> PX["Configured asset providers"]
     A --> V["var/assets"]
-    A3 --> R3["var/assets/3d/requests"]
+    A3 --> R3["External Unity workspace staging"]
+    A3 --> M3["Meshy API"]
+    A3 --> B3["Blender headless cleanup"]
+    A3 --> V3["GameReady files in Unity Assets"] --> N
     N --> E["Validation evidence"] --> H
     H -->|"after user approval"| G["Native Git"]
 ```
@@ -40,7 +43,7 @@ flowchart TB
 
 - Validate completed architecture and C#.
 - Apply files; assemble scenes, prefabs, and references.
-- Return raw compile, build, PlayMode, and layout evidence.
+- Return raw compile, named-test, PlayMode console, build, and layout evidence.
 
 ### Asset MCP
 
@@ -51,7 +54,11 @@ flowchart TB
 ### 3D Asset MCP
 
 - Deterministically compose and validate provider-neutral 3D prompts from host-authored specifications.
-- Store request packages under `var/assets/3d/requests`; no 3D provider or model generation is configured.
+- Submit validated single- or multi-image Image-to-3D work to Meshy from human-approved references.
+  Reject Text-to-3D and store reference/provider provenance in external staging.
+- Run Blender headless cleanup and GameReady quality gates. Keep 3D runtime state in an absolute staging directory in
+  the external Unity workspace and copy only passing FBX or GLB output into Unity `Assets/`.
+- Hand a validated model path to Unity MCP for import, model-backed prefab creation, and scene composition.
 
 ## Deliberately absent
 
@@ -67,9 +74,11 @@ Drafts are directly editable. Only a fully published, acyclic specification grap
 as a hand-off package. After export, code and asset requests may be prepared in parallel. Asset
 generation follows a bounded host-agent loop: complete the brief, generate one MCP prototype,
 inspect technical evidence, obtain semantic and human review, then generate API variations from
-one to four approved style anchors. Import and bind assets only after validation. Make the final
-feature judgment only after build, compile, PlayMode, and layout evidence is available. Retry the
-same failure at most three times, then ask the user.
+one to four approved style anchors. Import and bind assets only after validation. For each Unity
+feature, apply [the functional QA policy](unity-functional-qa.md): compile, focal named tests,
+PlayMode console smoke, regression tests, and layout checks precede the final build. Make the final
+feature judgment only after all required evidence is available. Retry the same failure at most
+three times, then ask the user.
 
 ## Source of truth and write order
 

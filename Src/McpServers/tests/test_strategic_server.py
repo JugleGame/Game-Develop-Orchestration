@@ -13,10 +13,25 @@ import pytest
 os.environ.setdefault("RESEARCH_DSN", "postgresql://unused/unused")
 
 from strategic.research_repo import COUNTEREXAMPLE_MISSING, Card, ResearchEvidence  # noqa: E402
-from strategic.server import _next_spec_id, _publication_state, _to_feature_prompt, _to_spec  # noqa: E402
+from strategic.server import (  # noqa: E402
+    _unity_project_setup_guidance,
+    _next_spec_id,
+    _publication_state,
+    _to_feature_prompt,
+    _to_spec,
+    _visual_dimension,
+)
 from strategic.specs import SpecDocument, dependency_errors, dependency_order, lint_spec  # noqa: E402
 
 KNOWN = {"ELEM-003", "GAME-013", "GENRE-006"}
+
+
+def test_unity_project_setup_guidance_routes_2d_and_3d_without_mixing_templates():
+    assert _unity_project_setup_guidance("2D")["unityHubTemplate"] == "Universal 2D"
+    assert _unity_project_setup_guidance("3D")["unityHubTemplate"] == "Universal 3D"
+
+    with pytest.raises(Exception, match="requires visualDimension"):
+        _unity_project_setup_guidance("hybrid")
 
 
 def _spec(**overrides) -> SpecDocument:
@@ -174,6 +189,27 @@ def test_assets_needed_is_empty_when_the_plan_omits_hints():
     """힌트를 안 채운 기획도 예전처럼 동작해야 한다 (필드는 추가 변경)."""
 
     assert _to_feature_prompt(_spec(unity_hints={}))["assets_needed"] == []
+
+
+def test_structured_asset_specs_travel_without_prose_parsing():
+    asset_spec = {"assetId": "black-laptop", "assetName": "Black laptop"}
+    prompt = _to_feature_prompt(_spec(unity_hints={"assetSpecs": [asset_spec]}))
+
+    assert prompt["asset_specs"] == [asset_spec]
+    assert prompt["assets_needed"] == ["Black laptop"]
+
+
+def test_structured_asset_specs_reject_non_object_entries():
+    errors = lint_spec(_spec(unity_hints={"assetSpecs": ["black laptop"]}), KNOWN)
+
+    assert "asset handoff: unityHints.assetSpecs[0] must be an object" in errors
+
+
+def test_visual_dimension_normalizes_and_rejects_unknown_values():
+    assert _visual_dimension({"visualDimension": "3D"}) == "3d"
+    assert _visual_dimension({}) == "unspecified"
+    with pytest.raises(Exception, match="visualDimension"):
+        _visual_dimension({"visualDimension": "VR"})
 
 
 def test_dependencies_are_namespaced_per_game():

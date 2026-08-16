@@ -38,6 +38,7 @@ RULE_FLAT_SCRIPT_ROOT = "L4"
 RULE_UNUSED_SPRITE = "L5"
 RULE_FILENAME_MISMATCH = "L6"
 RULE_ASSEMBLY_CYCLE = "L7"
+RULE_ANIMATOR_WITHOUT_CONTROLLER = "L8"
 
 
 class Severity(StrEnum):
@@ -454,6 +455,43 @@ def _check_unused_sprites(assets: Path, referenced: set[str]) -> list[Finding]:
     return findings
 
 
+_ANIMATOR_BLOCK = re.compile(
+    r"^Animator:\n(?:.*\n)*?\s*m_Controller:\s*\{fileID:\s*0\}",
+    re.MULTILINE,
+)
+_ANIMATED_SUFFIXES = (".prefab", ".unity")
+
+
+def _check_animator_controllers(assets: Path) -> list[Finding]:
+    """L8 — ``Animator`` 는 붙어 있는데 컨트롤러가 비어 있는가.
+
+    컨트롤러가 없는 ``Animator`` 는 오류를 내지 않는다. ``SetFloat`` 도
+    ``SetTrigger`` 도 조용히 아무 일도 하지 않아서, PlayMode 검증은 통과하고
+    화면만 정지 스프라이트로 남는다. 조용하기 때문에 검사가 필요하다.
+    """
+
+    findings: list[Finding] = []
+    for suffix in _ANIMATED_SUFFIXES:
+        for path in sorted(assets.rglob(f"*{suffix}")):
+            relative = path.relative_to(assets).as_posix()
+            if _is_ignored(relative):
+                continue
+            if not _ANIMATOR_BLOCK.search(_read(path)):
+                continue
+            findings.append(
+                Finding(
+                    rule=RULE_ANIMATOR_WITHOUT_CONTROLLER,
+                    severity=Severity.WARN,
+                    target=relative,
+                    message=(
+                        "Animator 가 붙어 있으나 컨트롤러가 비어 있다. "
+                        "애니메이터 파라미터를 구동해도 아무 일도 일어나지 않는다."
+                    ),
+                )
+            )
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # 진입점
 # ---------------------------------------------------------------------------
@@ -487,6 +525,7 @@ def analyze_project(project_path: Path, script_root: str = "Scripts") -> LayoutR
     report.findings.extend(_check_flat_root(scripts, script_root))
     report.findings.extend(_check_unused_sprites(assets, referenced))
     report.findings.extend(_check_assembly_cycles(assets))
+    report.findings.extend(_check_animator_controllers(assets))
     return report
 
 

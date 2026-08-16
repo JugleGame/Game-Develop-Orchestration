@@ -151,6 +151,10 @@ def export_handoff(
             path.write_text(spec.to_markdown(), encoding="utf-8")
             manifest_files.append({"path": f"specs/{filename}", "sha256": _sha256(path)})
 
+        readme_path = temporary / "README.md"
+        readme_path.write_text(_readme(safe_id, blueprint_version, ordered_specs), encoding="utf-8")
+        manifest_files.append({"path": "README.md", "sha256": _sha256(readme_path)})
+
         manifest = {
             "schemaVersion": 1,
             "gameId": safe_id,
@@ -162,9 +166,6 @@ def export_handoff(
         _write_json(manifest_path, manifest)
         manifest_digest = _sha256(manifest_path)
         _write_checksum(temporary / "execution-manifest.sha256", manifest_digest)
-        readme_path = temporary / "README.md"
-        readme_path.write_text(_readme(safe_id, blueprint_version, ordered_specs), encoding="utf-8")
-        manifest_files.append({"path": "README.md", "sha256": _sha256(readme_path)})
 
         # A package directory is published only after every file and digest is complete.
         temporary.replace(target)

@@ -377,3 +377,113 @@ def test_generate_with_style_rejects_non_square_output(monkeypatch):
             style_description="pixel art",
             seed=9,
         )
+
+
+# --------------------------------------------------------------------------
+# create_animation (Issue #27)
+# --------------------------------------------------------------------------
+
+
+def _animation_client(monkeypatch, captured, statuses, encoded):
+    """Fake httpx client whose job status walks through ``statuses``."""
+
+    class _FakeClient:
+        def __init__(self, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, json, headers):
+            captured["url"] = url
+            captured["payload"] = json
+            return _FakeResponse({"background_job_id": "job-anim"}, 200)
+
+        def get(self, url, headers):
+            captured.setdefault("polls", 0)
+            captured["polls"] += 1
+            status = statuses[min(captured["polls"] - 1, len(statuses) - 1)]
+            if status != "completed":
+                return _FakeResponse({"status": status})
+            return _FakeResponse(
+                {
+                    "status": "completed",
+                    "last_response": {"images": [{"base64": encoded}, {"base64": encoded}]},
+                    "usage": {"type": "generations", "generations": 2.0},
+                }
+            )
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+
+
+def test_create_animation_posts_the_first_frame_and_returns_ordered_frames(monkeypatch):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    encoded = base64.b64encode(_png_bytes(size=(64, 64))).decode()
+    captured: dict = {}
+    _animation_client(monkeypatch, captured, ["processing", "completed"], encoded)
+
+    frames, usage, job_id = pixellab_client.create_animation(
+        first_frame=Image.new("RGBA", (64, 64), (1, 2, 3, 255)),
+        action="walk cycle",
+        frame_count=4,
+        poll_seconds=0,
+    )
+
+    assert captured["url"] == "https://api.pixellab.ai/v2/animate-with-text-v3"
+    assert captured["payload"]["action"] == "walk cycle"
+    assert captured["payload"]["frame_count"] == 4
+    assert captured["payload"]["first_frame"]["type"] == "base64"
+    # Without this the provider paints every frame onto an opaque plate.
+    assert captured["payload"]["no_background"] is True
+    assert "description" not in captured["payload"]
+    assert len(frames) == 2
+    assert usage["generations"] == 2.0
+    assert job_id == "job-anim"
+
+
+def test_create_animation_reports_a_failed_job(monkeypatch):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    encoded = base64.b64encode(_png_bytes()).decode()
+    captured: dict = {}
+    _animation_client(monkeypatch, captured, ["failed"], encoded)
+
+    with pytest.raises(pixellab_client.PixelLabUnavailable, match="animation job failed"):
+        pixellab_client.create_animation(
+            first_frame=Image.new("RGBA", (32, 32), (1, 2, 3, 255)),
+            action="walk cycle",
+            frame_count=4,
+            poll_seconds=0,
+        )
+
+
+def test_create_animation_times_out_instead_of_hanging(monkeypatch):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    encoded = base64.b64encode(_png_bytes()).decode()
+    captured: dict = {}
+    _animation_client(monkeypatch, captured, ["processing"], encoded)
+
+    with pytest.raises(pixellab_client.PixelLabUnavailable, match="not ready after"):
+        pixellab_client.create_animation(
+            first_frame=Image.new("RGBA", (32, 32), (1, 2, 3, 255)),
+            action="walk cycle",
+            frame_count=4,
+            poll_seconds=0,
+            max_polls=3,
+        )
+
+
+@pytest.mark.parametrize("frame_count", [1, 5, 18])
+def test_create_animation_rejects_a_frame_count_the_provider_refuses(monkeypatch, frame_count):
+    """PixelLab answers 422 for odd counts; spend nothing to learn that."""
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(pixellab_client.PixelLabUnavailable, match="frame_count"):
+        pixellab_client.create_animation(
+            first_frame=Image.new("RGBA", (32, 32), (1, 2, 3, 255)),
+            action="walk cycle",
+            frame_count=frame_count,
+        )
