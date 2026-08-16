@@ -16,7 +16,7 @@ Server: `ResearchMcpServer`.
 | Tool | Responsibility |
 |---|---|
 | `research_idea` | Retrieve evidence, counterexamples, and architecture cards |
-| `get_unity_project_setup_guidance` | Return the Unity Hub project template and initial settings for an explicit `2D` or `3D` visual dimension |
+| `get_unity_project_setup_guidance` | Return the Unity Hub project template and initial settings for an explicit `2D` or `3D` visual dimension; it has no project-creation or GitHub Issue side effect |
 | `propose_concept` | Store an evidence-backed proposal for review |
 | `list_pending_concepts`, `get_concept` | Read concept review state |
 | `decide_concept` | Record approve, revise, or reject |
@@ -84,7 +84,8 @@ Server: `UnityMcpServer`.
   with no controller raises no error at runtime, so `inspect_project_layout` reports that case as
   layout rule `L8`.
 - `run_named_tests` runs the tests an acceptance criterion names, in EditMode or PlayMode, and
-  returns each test with its status, duration, and failure message. `run_playmode_test` only
+  always returns each requested test with its status, duration, and failure message because the
+  functional QA contract must match every requested name to an executed result. `run_playmode_test` only
   collects console errors, so a defect that throws nothing passes it; a named test is what turns
   a criterion such as `Test_Player_NoDoubleJump` into evidence. A filter that matches no test is
   reported as an error, never as a pass. Because a run crosses a domain reload, results are
@@ -104,6 +105,11 @@ Server: `UnityMcpServer`.
 - Evidence: `build_project`, `run_playmode_smoke`, `run_playmode_test`,
   `run_playmode_function_tests`, `run_named_tests`, `get_compile_errors`,
   `inspect_project_layout`, `unity_bridge_status`, `inspect_animator`.
+- Potentially large Unity evidence is compact by default. Build results omit the raw bridge payload,
+  while compile, smoke, and Unity Test Framework results return total counts plus at most five
+  representative failures. Use `detail=true` for the full payload or NUnit per-test records.
+  `run_named_tests` is deliberately exempt and retains all focal per-test evidence. NUnit artifact
+  paths remain available in compact results.
 - Return evidence; never declare final PASS.
 
 ## Asset MCP
@@ -161,7 +167,9 @@ Server: `AssetGenMcpServer`.
   `readyForImport` marks any technically valid, human-approved asset. It also returns the next
   workflow action and escalates after three rejected attempts.
 - `list_assets` lets a new host-agent session recover prior pending, approved, or rejected records
-  by game and feature, including structured review feedback.
+  by game and feature. It defaults to compact pages of 20 records, accepts `limit` from 1 to 100,
+  and returns `nextCursor`. Compact records retain identity, state, path, and structured review
+  feedback. Use `detail=true` only for a page that needs full prompts and provenance.
 - The normal sequence is intake, one MCP prototype, human review, a revised intake when rejected,
   approval, and only then REST API variations.
 - Keep all output under `ASSET_ROOT`.

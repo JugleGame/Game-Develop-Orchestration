@@ -601,13 +601,46 @@ async def test_list_assets_recovers_rejected_work_by_feature():
         )
         listed = await client.call_tool(
             "list_assets",
-            {"gameId": "t-resume", "status": "rejected", "featureId": "f-resume"},
+            {
+                "gameId": "t-resume",
+                "status": "rejected",
+                "featureId": "f-resume",
+                "detail": True,
+            },
         )
 
     assert listed.structured_content["count"] == 1
     assert listed.structured_content["assets"][0]["review_feedback"]["change"] == [
         "make the hands readable"
     ]
+
+
+async def test_list_assets_defaults_to_compact_bounded_pages():
+    async with session() as client:
+        for index in range(3):
+            await client.call_tool(
+                "generate_2d_sprite",
+                {
+                    "featureId": f"f-page-{index}",
+                    "prompt": f"clock prop {index}",
+                    "gameId": "t-pages",
+                    "assetKind": "prop",
+                },
+            )
+        first = await client.call_tool("list_assets", {"gameId": "t-pages", "limit": 2})
+        second = await client.call_tool(
+            "list_assets",
+            {"gameId": "t-pages", "limit": 2, "cursor": first.structured_content["nextCursor"]},
+        )
+
+    assert first.structured_content["count"] == 3
+    assert first.structured_content["pageCount"] == 2
+    assert first.structured_content["nextCursor"] == "2"
+    assert first.structured_content["detail"] is False
+    assert "prompt" not in first.structured_content["assets"][0]
+    assert "provenance" not in first.structured_content["assets"][0]
+    assert second.structured_content["pageCount"] == 1
+    assert second.structured_content["nextCursor"] is None
 
 
 async def test_inspect_solid_tile_passes_horizontal_seam_check():

@@ -27,8 +27,13 @@ KNOWN = {"ELEM-003", "GAME-013", "GENRE-006"}
 
 
 def test_unity_project_setup_guidance_routes_2d_and_3d_without_mixing_templates():
-    assert _unity_project_setup_guidance("2D")["unityHubTemplate"] == "Universal 2D"
-    assert _unity_project_setup_guidance("3D")["unityHubTemplate"] == "Universal 3D"
+    guidance_2d = _unity_project_setup_guidance("2D")
+    guidance_3d = _unity_project_setup_guidance("3D")
+
+    assert guidance_2d["unityHubTemplate"] == "Universal 2D"
+    assert guidance_3d["unityHubTemplate"] == "Universal 3D"
+    assert set(guidance_2d) == {"visualDimension", "unityHubTemplate", "initialSetup"}
+    assert set(guidance_3d) == {"visualDimension", "unityHubTemplate", "initialSetup"}
 
     with pytest.raises(Exception, match="requires visualDimension"):
         _unity_project_setup_guidance("hybrid")

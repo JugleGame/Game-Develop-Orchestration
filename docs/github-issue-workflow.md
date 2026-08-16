@@ -5,6 +5,13 @@
 An Issue is a **work contract**, a branch is a **private work desk**, and a
 Pull Request (PR) is **evidence that the work is complete**.
 
+This contract applies to source changes and Pull Requests in this orchestration repository. Creating
+or operating a user's external Unity project is an operational action, not a repository work
+contract: it has no orchestration-repository diff, PR, or independent rollback state. It therefore
+must not create a GitHub Issue merely because a project was created. An Issue is appropriate only
+when the user explicitly requests Issue-backed tracking or the work also changes this repository as
+an independently verifiable outcome.
+
 ```text
 Create pipeline Issue #123
   -> Create branch 123-fix-issue-contract-check
@@ -16,7 +23,7 @@ Create pipeline Issue #123
 
 ## Everyday rules
 
-1. Normal pipeline maintenance starts from one open Issue.
+1. Normal pipeline maintenance that changes this repository starts from one open Issue.
 2. Write Issue and PR titles and explanatory prose in Korean so reviewers
    share one working language. Keep the bracketed Issue contract type in its exact
    English form, for example `[pipeline]`; do not translate it. Also preserve
@@ -54,7 +61,7 @@ count, and implementation order do not define the boundary.
 
 ## Small exception
 
-The only no-Issue exception is a documentation typo. Use a
+For changes submitted to this repository, the only no-Issue exception is a documentation typo. Use a
 `docs/<short-description>` branch and include this line in the PR body:
 
 ```text

@@ -1262,14 +1262,32 @@ def list_pending_assets(gameId: str) -> dict[str, Any]:
     return {"gameId": game_id, "pending": pending, "count": len(pending)}
 
 
-@mcp.tool(description="List resumable asset records, optionally filtered by status or feature.")
+@mcp.tool(
+    description=(
+        "List resumable asset records with bounded pagination. Returns compact records by "
+        "default; set detail=true only when full prompt and provenance data is required."
+    )
+)
 @expects_dict_return
 def list_assets(
-    gameId: str, status: str | None = None, featureId: str | None = None
+    gameId: str,
+    status: str | None = None,
+    featureId: str | None = None,
+    limit: int = 20,
+    cursor: str | None = None,
+    detail: bool = False,
 ) -> dict[str, Any]:
     game_id = _require_identifier(gameId, "gameId")
     if status is not None and status not in (PENDING, APPROVED, REJECTED):
         raise tool_error(VALIDATION_ERROR, f"unsupported status: {status}")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise tool_error(VALIDATION_ERROR, "limit must be between 1 and 100")
+    if cursor is None:
+        offset = 0
+    elif not cursor.isdigit():
+        raise tool_error(VALIDATION_ERROR, "cursor must be a non-negative integer string")
+    else:
+        offset = int(cursor)
     feature_id = featureId.strip() if featureId else None
     assets = [
         record
@@ -1278,7 +1296,29 @@ def list_assets(
         and (feature_id is None or record["feature_id"] == feature_id)
     ]
     assets.sort(key=lambda record: (record["created_at"], record["asset_id"]))
-    return {"gameId": game_id, "assets": assets, "count": len(assets)}
+    page = assets[offset : offset + limit]
+    next_offset = offset + len(page)
+    if not detail:
+        page = [
+            {
+                "assetId": record["asset_id"],
+                "featureId": record["feature_id"],
+                "kind": record["kind"],
+                "status": record["status"],
+                "assetPath": record["asset_path"],
+                "createdAt": record["created_at"],
+                "reviewFeedback": record.get("review_feedback"),
+            }
+            for record in page
+        ]
+    return {
+        "gameId": game_id,
+        "assets": page,
+        "count": len(assets),
+        "pageCount": len(page),
+        "nextCursor": str(next_offset) if next_offset < len(assets) else None,
+        "detail": detail,
+    }
 
 
 @mcp.tool(
