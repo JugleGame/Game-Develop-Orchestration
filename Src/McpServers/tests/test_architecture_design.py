@@ -274,6 +274,42 @@ def test_rejects_a_scene_object_whose_parent_is_absent():
         _validate(raw)
 
 
+def test_scene_transform_is_preserved_by_design():
+    raw = _design()
+    raw["scene"]["objects"][1]["transform"] = {
+        "position": [3, 4.5, 0],
+        "rotation": [0, 0, 90],
+        "scale": [2, 1, 1],
+    }
+
+    scene_object = _validate(raw).scene["objects"][1]
+
+    assert scene_object["transform"] == {
+        "position": [3.0, 4.5, 0.0],
+        "rotation": [0.0, 0.0, 90.0],
+        "scale": [2.0, 1.0, 1.0],
+    }
+    assert "transform" not in _validate(_design()).scene["objects"][1]
+
+
+@pytest.mark.parametrize(
+    "transform",
+    [
+        [0, 0, 0],
+        {"position": [0, 0]},
+        {"rotation": [0, True, 0]},
+        {"scale": [1, float("inf"), 1]},
+        {"velocity": [0, 0, 0]},
+    ],
+)
+def test_scene_transform_rejects_invalid_values(transform):
+    raw = _design()
+    raw["scene"]["objects"][1]["transform"] = transform
+
+    with pytest.raises(ArchitectureError, match="transform"):
+        _validate(raw)
+
+
 def test_rejects_an_unknown_kind():
     raw = _design()
     raw["files"][0]["kind"] = "Component"
