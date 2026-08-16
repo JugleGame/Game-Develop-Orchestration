@@ -93,6 +93,7 @@ class SpecDocument:
     dependencies: list[str] = field(default_factory=list)
     status: str = "draft"
     change_log: list[dict[str, Any]] = field(default_factory=list)
+    contamination_acceptance: list[dict[str, str]] = field(default_factory=list)
     # refs 에 인용된 ARCH 카드의 구현 절차·안티패턴·검증 방법. 모델이 쓰지 않고
     # arch_cards.py 가 카드 원문에서 옮긴다 (그 모듈 docstring 참고).
     architecture: list[ArchGuidance] = field(default_factory=list)
@@ -132,6 +133,13 @@ class SpecDocument:
         if self.verification_method:
             lines += ["", "## Verification method"]
             lines += [f"- {item}" for item in self.verification_method]
+        if self.contamination_acceptance:
+            lines += ["", "## Contamination acceptance"]
+            lines += [
+                f"- {item.get('cardId', '')} / {item.get('guardId', '')}: "
+                f"{item.get('reason', '')}"
+                for item in self.contamination_acceptance
+            ]
 
         # 아키텍처 지침은 카드 원문이므로 개발 AI 가 읽을 spec 안에 함께 남는다.
         # 필수 섹션이 아니라 추가 섹션이라 lint_spec 의 S4 와 무관하다.
@@ -168,6 +176,7 @@ class SpecDocument:
             "dependencies": self.dependencies,
             "status": self.status,
             "changeLog": self.change_log,
+            "contaminationAcceptance": self.contamination_acceptance,
             "architecture": [g.to_dict() for g in self.architecture],
             "markdown": self.to_markdown(),
         }
@@ -411,6 +420,41 @@ def _lint_contamination(spec: SpecDocument) -> list[str]:
 
     errors: list[str] = []
     cited = set(spec.refs)
+    guidance_ids = {guidance.card_id for guidance in spec.architecture}
+    guards_by_id = {str(guard.get("id") or ""): guard for guard in CONTAMINATION_GUARDS}
+    accepted: set[tuple[str, str]] = set()
+    acceptance = spec.contamination_acceptance
+    if not isinstance(acceptance, list):
+        errors.append("S7: contaminationAcceptance 는 배열이어야 함")
+        acceptance = []
+    for index, item in enumerate(acceptance):
+        label = f"S7: contaminationAcceptance[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{label} 은 객체여야 함")
+            continue
+        card_id = item.get("cardId")
+        guard_id = item.get("guardId")
+        reason = item.get("reason")
+        if not isinstance(card_id, str) or card_id not in guidance_ids:
+            errors.append(f"{label}.cardId 는 이 spec 의 ARCH 지침 카드여야 함")
+        if not isinstance(guard_id, str) or guard_id not in guards_by_id:
+            errors.append(f"{label}.guardId 가 알려진 contamination guard 가 아님")
+        if not isinstance(reason, str) or not reason.strip():
+            errors.append(f"{label}.reason 은 비어 있지 않은 문자열이어야 함")
+        if (
+            isinstance(card_id, str)
+            and card_id in guidance_ids
+            and isinstance(guard_id, str)
+            and guard_id in guards_by_id
+            and isinstance(reason, str)
+            and reason.strip()
+        ):
+            key = (card_id, guard_id)
+            if key in accepted:
+                errors.append(f"{label} 이 같은 카드와 guard 를 중복 수용함")
+            accepted.add(key)
+
+    triggered: set[tuple[str, str]] = set()
     for guidance in spec.architecture:
         text = " ".join(guidance.build_steps + guidance.anti_patterns + guidance.verification)
         for guard in CONTAMINATION_GUARDS:
@@ -418,11 +462,19 @@ def _lint_contamination(spec: SpecDocument) -> list[str]:
                 continue
             if cited & set(guard["requiresRef"]):
                 continue
+            key = (guidance.card_id, str(guard["id"]))
+            triggered.add(key)
+            if key in accepted:
+                continue
             errors.append(
                 f"S7: {guidance.card_id} 의 지침이 "
                 f"{'/'.join(guard['keywords'])} 를 지시하는데 "
                 f"{'/'.join(guard['requiresRef'])} 이 refs 에 없음 — {guard['reason']}"
             )
+    for card_id, guard_id in sorted(accepted - triggered):
+        errors.append(
+            f"S7: {card_id} / {guard_id} 수용 기록은 실제 감지된 오염과 일치하지 않음"
+        )
     return errors
 
 
@@ -660,6 +712,7 @@ def _from_dict(data: dict[str, Any]) -> SpecDocument:
         dependencies=data.get("dependencies", []),
         status=data.get("status", "draft"),
         change_log=data.get("changeLog", []),
+        contamination_acceptance=data.get("contaminationAcceptance", []),
         architecture=[ArchGuidance.from_dict(g) for g in data.get("architecture") or []],
     )
 

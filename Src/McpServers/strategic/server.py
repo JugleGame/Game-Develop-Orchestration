@@ -334,6 +334,7 @@ def _to_spec(
         verification_method=list(raw.get("verificationMethod") or []),
         unity_hints=raw.get("unityHints", {}),
         dependencies=_dependencies_for(game_id, list(raw.get("dependencies") or [])),
+        contamination_acceptance=raw.get("contaminationAcceptance") or [],
         architecture=_architecture_for(raw["refs"], guidance),
     )
 
@@ -374,6 +375,15 @@ def _to_feature_prompt(spec: SpecDocument) -> dict[str, Any]:
         lines.append(
             "\n## Verification method\n" + "\n".join(f"- {x}" for x in spec.verification_method)
         )
+    if spec.contamination_acceptance:
+        lines.append(
+            "\n## Contamination acceptance\n"
+            + "\n".join(
+                f"- {item.get('cardId', '')} / {item.get('guardId', '')}: "
+                f"{item.get('reason', '')}"
+                for item in spec.contamination_acceptance
+            )
+        )
     if hints:
         lines.append(
             "\n## Unity hints"
@@ -413,6 +423,7 @@ def _to_feature_prompt(spec: SpecDocument) -> dict[str, Any]:
         "constraints": spec.constraints,
         "acceptanceCriteria": spec.acceptance_criteria,
         "verificationMethod": spec.verification_method,
+        "contaminationAcceptance": spec.contamination_acceptance,
         # 위 "필요 에셋" 줄과 같은 값을 구조체로도 낸다. 문장으로만 주면 AssetGen 이
         # 긴 description 전체를 프롬프트로 삼게 되고, 어떤 자산을 만들지가
         # 키워드 등장 순서로 정해지므로 구조화된 값도 함께 보낸다.
@@ -731,6 +742,9 @@ async def revise_spec(
             else current.dependencies,
         ),
         status=current.status,
+        contamination_acceptance=revised_raw.get(
+            "contaminationAcceptance", current.contamination_acceptance
+        ),
         architecture=_architecture_for(refs, guidance),
         change_log=[
             *current.change_log,
