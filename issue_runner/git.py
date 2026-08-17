@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -9,7 +11,7 @@ from pathlib import Path
 
 BRANCH_PATTERN = re.compile(
     r"^(?P<number>[1-9][0-9]*)-(?P<type>feat|fix|refactor|test|docs|chore)-"
-    r"(?P<description>[a-z0-9]+(?:-[a-z0-9]+)*)$"
+    r"(?P<description>[a-z]+(?:-[a-z]+)*)$"
 )
 
 
@@ -35,6 +37,48 @@ class GitRepository:
             raise GitError(f"git {' '.join(args)} failed: {message}")
         return completed.stdout.strip()
 
+    def _run_bytes(self, *args: str) -> bytes:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=self.root,
+            capture_output=True,
+        )
+        if completed.returncode:
+            message = (completed.stderr or completed.stdout).decode(
+                "utf-8", errors="replace"
+            ).strip()
+            raise GitError(f"git {' '.join(args)} failed: {message}")
+        return completed.stdout
+
+    def head_commit(self) -> str:
+        return self._run("rev-parse", "HEAD")
+
+    def current_branch(self) -> str:
+        return self._run("branch", "--show-current")
+
+    def worktree_fingerprint(self, base_branch: str) -> str:
+        """Hash every non-ignored repository change without depending on local path encoding."""
+        digest = hashlib.sha256()
+        for args in (
+            ("diff", "--binary", f"{base_branch}...HEAD"),
+            ("diff", "--binary"),
+            ("diff", "--binary", "--cached"),
+        ):
+            digest.update(self._run_bytes(*args))
+            digest.update(b"\0")
+        untracked = self._run_bytes("ls-files", "-z", "--others", "--exclude-standard")
+        for raw_path in sorted(path for path in untracked.split(b"\0") if path):
+            relative = os.fsdecode(raw_path)
+            path = self.root / relative
+            digest.update(raw_path)
+            digest.update(b"\0")
+            if path.is_symlink():
+                digest.update(os.fsencode(os.readlink(path)))
+            else:
+                digest.update(path.read_bytes())
+            digest.update(b"\0")
+        return digest.hexdigest()
+
     def prepare_branch(self, issue_number: int, base_branch: str, work_branch: str) -> None:
         match = BRANCH_PATTERN.fullmatch(work_branch)
         if not match or int(match.group("number")) != issue_number:
@@ -43,7 +87,7 @@ class GitRepository:
             )
         if base_branch != "dev":
             raise GitError("Issue work must start from base branch dev")
-        if self._run("branch", "--show-current") != base_branch:
+        if self.current_branch() != base_branch:
             raise GitError(f"current branch must be {base_branch}")
         if self._run("status", "--porcelain=v1", "--untracked-files=all"):
             raise GitError("worktree must be clean before creating the Issue branch")

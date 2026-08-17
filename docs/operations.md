@@ -121,19 +121,27 @@ Use the repository-local `issue-work-runner` Skill for natural-language requests
 Skill reads the complete open Issue with the GitHub connector, writes only its bounded snapshot
 under ignored `var/issue-snapshots/`, and invokes the CLI in the Desktop built-in terminal.
 
+Use `.venv\Scripts\python.exe` as `<venv-python>` on Windows and `.venv/bin/python` on macOS/Linux.
+All snapshot and artifact values use repository-relative POSIX paths so a run does not embed the
+checkout location of one developer.
+
 ```powershell
-.venv\Scripts\python.exe -m issue_runner start `
-  --snapshot-file var\issue-snapshots\54.json `
-  --branch 54-feat-issue-work-runner
-.venv\Scripts\python.exe -m issue_runner status <run-id>
-.venv\Scripts\python.exe -m issue_runner approve <run-id>
-.venv\Scripts\python.exe -m issue_runner resume <run-id>
+<venv-python> -m issue_runner start --snapshot-file var/issue-snapshots/54.json --branch 54-feat-issue-work-runner
+<venv-python> -m issue_runner status <run-id>
+<venv-python> -m issue_runner approve <run-id>
+<venv-python> -m issue_runner resume <run-id>
 ```
 
 `start` requires an open Issue snapshot, clean `dev`, an absent work branch, and the
 `<issue-number>-<type>-<short-description>` naming contract. It creates the branch and runs only
 analysis. Branch creation or checkout by itself is never a trigger. Inspect
 `var/issue-runs/<run-id>/phases/analysis/result.json` before approval.
+
+The Issue URL and required Objective, Scope, Out of Scope, Acceptance Criteria, and Test sections
+are validated before branch creation. Analysis and review use a read-only Codex sandbox;
+verification may write ignored test output but cannot change the repository fingerprint. Every
+phase rejects a changed HEAD, and every reported artifact must exist beneath the repository using a
+portable POSIX relative path.
 
 Failures persist atomically and require explicit recovery. Completed phases remain idempotent, and
 an OS lock rejects concurrent commands for the same run.

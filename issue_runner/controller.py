@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import urlparse
 
 from jsonschema import ValidationError, validate
 
@@ -23,8 +24,21 @@ from .schemas import (
     phase_result_schema,
 )
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 PHASES = ("analysis", "implementation", "verification", "review")
+PHASE_SANDBOX = {
+    "analysis": "read-only",
+    "implementation": "workspace-write",
+    "verification": "workspace-write",
+    "review": "read-only",
+}
+ISSUE_SECTION_ALIASES = {
+    "Objective": {"목표", "objective"},
+    "Scope": {"범위", "scope"},
+    "Out of Scope": {"범위 제외", "out of scope"},
+    "Acceptance Criteria": {"완료 조건", "acceptance criteria"},
+    "Test": {"검증", "test", "tests"},
+}
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
@@ -80,6 +94,7 @@ class IssueRunner:
             "currentPhase": None,
             "issue": issue,
             "baseBranch": base_branch,
+            "baseCommit": self.git.head_commit(),
             "workBranch": work_branch,
             "analysisApproval": "pending",
             "phases": {},
@@ -198,6 +213,21 @@ class IssueRunner:
         state["currentPhase"] = phase
         self._save(state)
         try:
+            if self.git.current_branch() != state["workBranch"]:
+                raise IssueError(f"current branch must be {state['workBranch']}")
+            if self.git.head_commit() != state["baseCommit"]:
+                raise IssueError("HEAD changed during the run; commits are not allowed")
+            immutable_fingerprint: str | None = None
+            if phase != "implementation":
+                immutable_fingerprint = self.git.worktree_fingerprint(state["baseBranch"])
+                expected_fingerprint = record.setdefault(
+                    "inputFingerprint", immutable_fingerprint
+                )
+                if expected_fingerprint != immutable_fingerprint:
+                    raise IssueError(
+                        "worktree changed since the phase began; restore it before retry"
+                    )
+                self._save(state)
             phase_dir = self._run_dir(state["runId"]) / "phases" / phase
             if phase != "analysis":
                 self.git.write_diff(state["baseBranch"], phase_dir / "repository.diff")
@@ -207,8 +237,17 @@ class IssueRunner:
                 prompt=self._prompt(state, phase),
                 schema=phase_result_schema(phase),
                 phase_dir=phase_dir,
+                sandbox=PHASE_SANDBOX[phase],
             )
             execution = self.executor.execute(request)
+            if self.git.head_commit() != state["baseCommit"]:
+                raise IssueError("phase created a commit; commits are not allowed")
+            if (
+                immutable_fingerprint is not None
+                and self.git.worktree_fingerprint(state["baseBranch"])
+                != immutable_fingerprint
+            ):
+                raise IssueError(f"{phase} phase modified repository source")
             self._validate_result(state, phase, execution)
             result_path = phase_dir / "result.json"
             self._atomic_json(result_path, execution.result)
@@ -217,7 +256,7 @@ class IssueRunner:
                     "status": "completed",
                     "completedAt": _now(),
                     "threadId": execution.thread_id,
-                    "resultPath": str(result_path),
+                    "resultPath": self._stored_path(result_path),
                 }
             )
             state["status"] = "ready"
@@ -243,15 +282,14 @@ class IssueRunner:
                 "baseBranch": state["baseBranch"],
                 "workBranch": state["workBranch"],
                 "completedResults": {},
-                "changedFiles": self.git.changed_files(state["baseBranch"]),
-                "diffPath": str(
+                "diffPath": self._stored_path(
                     self._run_dir(state["runId"]) / "phases" / phase / "repository.diff"
                 ),
             }
             for name in PHASES:
                 record = state["phases"].get(name, {})
                 if record.get("status") == "completed":
-                    path = Path(record["resultPath"]).resolve()
+                    path = self._resolve_stored_path(record["resultPath"])
                     if not path.is_relative_to(self._run_dir(state["runId"])):
                         raise IssueError(f"phase result path escapes run directory: {name}")
                     context["completedResults"][name] = json.loads(
@@ -274,21 +312,23 @@ class IssueRunner:
             ),
             "verification": (
                 "Run every test from the approved analysis plus relevant regression checks. "
+                "Do not modify repository source. Write disposable test output only under var/. "
                 "Record one testEvidence item per planned test, using the exact planned test text "
                 "as its id."
             ),
             "review": (
                 "Review the repository diff against Scope, Out of Scope, every Acceptance "
                 "Criterion, and every Test. Use the exact criterion/test text as evidence ids. "
-                "Verdict PASS is allowed only when there are no scope violations and every item "
-                "has passing evidence."
+                "Do not modify repository source. Verdict PASS is allowed only when there are no "
+                "scope violations and every item has passing evidence."
             ),
         }
         return (
             f"You are the fresh '{phase}' worker for Issue run '{state['runId']}'.\n"
             f"{instructions[phase]}\n"
             "Return only JSON conforming to the supplied schema. Read full logs from artifact "
-            "paths; do not paste them into the result. Bounded context follows:\n"
+            "paths; do not paste them into the result. Artifact paths must be existing, "
+            "POSIX-style repository-relative paths. Bounded context follows:\n"
             + packed
         )
 
@@ -304,6 +344,7 @@ class IssueRunner:
             raise IssueError(f"invalid phase result: {exc.message}") from exc
         if not execution.thread_id.strip():
             raise IssueError("executor returned an empty thread id")
+        self._validate_artifact_paths(execution.result)
         if phase == "analysis":
             for name in ("scope", "outOfScope", "acceptanceCriteria", "tests"):
                 values = execution.result[name]
@@ -325,9 +366,27 @@ class IssueRunner:
         if len(result["changedFiles"]) != len(reported) or reported != actual:
             raise IssueError("reported changedFiles do not match the repository")
 
-    @staticmethod
-    def _validate_verification(state: dict[str, Any], result: dict[str, Any]) -> None:
-        analysis_path = Path(state["phases"]["analysis"]["resultPath"])
+    def _validate_artifact_paths(self, result: dict[str, Any]) -> None:
+        paths = list(result["artifactPaths"])
+        for field in ("testEvidence", "acceptanceCriteriaEvidence"):
+            for evidence in result.get(field, []):
+                paths.extend(evidence["artifactPaths"])
+        for raw_path in paths:
+            if "\\" in raw_path:
+                raise IssueError("artifact paths must use portable POSIX separators")
+            relative = Path(raw_path)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise IssueError("artifact paths must be repository-relative")
+            resolved = (self.root / relative).resolve()
+            if not resolved.is_relative_to(self.root) or not resolved.exists():
+                raise IssueError(f"artifact path does not exist in repository: {raw_path}")
+
+    def _validate_verification(
+        self, state: dict[str, Any], result: dict[str, Any]
+    ) -> None:
+        analysis_path = self._resolve_stored_path(
+            state["phases"]["analysis"]["resultPath"]
+        )
         analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
         entries = result["testEvidence"]
         ids = [entry["id"] for entry in entries]
@@ -336,9 +395,10 @@ class IssueRunner:
         if not result["allTestsPassed"] or not all(entry["passed"] for entry in entries):
             raise IssueError("verification reported failing tests")
 
-    @staticmethod
-    def _validate_review(state: dict[str, Any], result: dict[str, Any]) -> None:
-        analysis_path = Path(state["phases"]["analysis"]["resultPath"])
+    def _validate_review(self, state: dict[str, Any], result: dict[str, Any]) -> None:
+        analysis_path = self._resolve_stored_path(
+            state["phases"]["analysis"]["resultPath"]
+        )
         analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
         expected_criteria = set(analysis["acceptanceCriteria"])
         expected_tests = set(analysis["tests"])
@@ -380,6 +440,17 @@ class IssueRunner:
                 raise IssueError(f"Issue {key} must be a non-empty string")
         if len(snapshot["body"].encode("utf-8")) > MAX_ISSUE_BODY_BYTES:
             raise IssueError(f"Issue body exceeds {MAX_ISSUE_BODY_BYTES} bytes")
+        parsed = urlparse(snapshot["url"])
+        parts = [part for part in parsed.path.split("/") if part]
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname not in {"github.com", "www.github.com"}
+            or len(parts) != 4
+            or parts[2] != "issues"
+            or parts[3] != str(number)
+        ):
+            raise IssueError("Issue URL must be a matching github.com Issue URL")
+        IssueRunner._validate_issue_sections(snapshot["body"])
         return {
             "number": number,
             "title": snapshot["title"].strip(),
@@ -387,6 +458,22 @@ class IssueRunner:
             "state": "open",
             "url": snapshot["url"].strip(),
         }
+
+    @staticmethod
+    def _validate_issue_sections(body: str) -> None:
+        headings = list(re.finditer(r"(?m)^##[ \t]+(.+?)[ \t]*$", body))
+        sections: dict[str, str] = {}
+        for index, match in enumerate(headings):
+            end = headings[index + 1].start() if index + 1 < len(headings) else len(body)
+            sections[match.group(1).strip().casefold()] = body[match.end() : end].strip()
+        for contract_name, aliases in ISSUE_SECTION_ALIASES.items():
+            content = next(
+                (sections[alias] for alias in aliases if sections.get(alias)), None
+            )
+            if content is None:
+                raise IssueError(
+                    f"Issue body must contain a non-empty {contract_name} section"
+                )
 
     @staticmethod
     def _completed(state: dict[str, Any], phase: str) -> bool:
@@ -405,6 +492,10 @@ class IssueRunner:
             raise IssueError(f"unknown run status: {state.get('status')}")
         if state.get("analysisApproval") not in {"pending", "approved", "rejected"}:
             raise IssueError("unknown analysis approval status")
+        if not isinstance(state.get("baseCommit"), str) or not re.fullmatch(
+            r"[0-9a-fA-F]{40,64}", state["baseCommit"]
+        ):
+            raise IssueError("invalid base commit")
         phases = state.get("phases")
         if not isinstance(phases, dict) or any(name not in PHASES for name in phases):
             raise IssueError("unknown phase in run state")
@@ -439,6 +530,16 @@ class IssueRunner:
 
     def _run_dir(self, run_id: str) -> Path:
         return self.runs_root / run_id
+
+    def _stored_path(self, path: Path) -> str:
+        resolved = path.resolve()
+        if resolved.is_relative_to(self.root):
+            return resolved.relative_to(self.root).as_posix()
+        return str(resolved)
+
+    def _resolve_stored_path(self, raw_path: str) -> Path:
+        path = Path(raw_path)
+        return path.resolve() if path.is_absolute() else (self.root / path).resolve()
 
     @staticmethod
     def _validate_run_id(run_id: str) -> None:

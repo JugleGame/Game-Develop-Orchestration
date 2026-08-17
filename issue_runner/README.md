@@ -22,12 +22,11 @@ Skill이 GitHub connector로 열린 Issue 전체를 조회하고 다음 형식�
 ```
 
 Skill은 현재 브랜치가 clean `dev`인지 확인하고 Issue 계약에 맞는 작업 브랜치 이름을 정한 뒤
-Desktop 내장 터미널에서 다음 명령을 실행합니다.
+Desktop 내장 터미널에서 명령을 실행합니다. Windows에서는 `.venv\Scripts\python.exe`,
+macOS/Linux에서는 `.venv/bin/python`을 `<venv-python>`으로 사용합니다.
 
 ```powershell
-.venv\Scripts\python.exe -m issue_runner start `
-  --snapshot-file var\issue-snapshots\54.json `
-  --branch 54-feat-issue-work-runner
+<venv-python> -m issue_runner start --snapshot-file var/issue-snapshots/54.json --branch 54-feat-issue-work-runner
 ```
 
 `start`는 snapshot의 필수 필드와 열린 상태, base/work branch 계약, clean worktree, branch
@@ -37,7 +36,8 @@ Desktop 내장 터미널에서 다음 명령을 실행합니다.
 ## 승인과 실행
 
 ```powershell
-.venv\Scripts\python.exe -m issue_runner status <run-id>
+.venv\Scripts\python.exe -m issue_runner status <run-id> # Windows
+.venv/bin/python -m issue_runner status <run-id>          # macOS/Linux
 Get-Content -Raw var\issue-runs\<run-id>\phases\analysis\result.json
 .venv\Scripts\python.exe -m issue_runner approve <run-id>
 .venv\Scripts\python.exe -m issue_runner resume <run-id>
@@ -54,6 +54,10 @@ analysis 결과에는 Objective, Scope, Out of Scope, Acceptance Criteria, Test�
 승인 후 `resume`은 implementation, verification, review를 각각 별도의 fresh thread로 실행합니다.
 review는 Scope 밖 변경이 없고 모든 Acceptance Criteria와 Test에 정확히 대응하는 PASS 증거가
 있어야 완료됩니다. Runner는 commit, push, PR, merge 또는 GitHub Issue 변경을 수행하지 않습니다.
+analysis와 review는 read-only sandbox를 사용합니다. verification은 테스트의 ignored 출력 생성을
+위해 workspace-write를 사용하지만 실행 전후 repository fingerprint가 달라지면 실패합니다.
+모든 phase에서 HEAD 변경을 거부하며, 제출된 artifact 경로는 실제로 존재하는 저장소 상대 POSIX
+경로여야 합니다.
 
 ## 복구
 

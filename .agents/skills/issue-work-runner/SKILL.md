@@ -1,6 +1,6 @@
 ---
 name: issue-work-runner
-description: Start and operate this repository's approval-gated Issue Work Runner. Use for requests such as "Issue #N 작업 시작", "이 Issue 구현 시작", or "Issue 작업 자동화" that ask Codex Desktop to begin or resume GitHub Issue-backed maintenance in Game-Develop-Orchestration.
+description: "Start and operate this repository's approval-gated Issue Work Runner. Use for requests such as \"Issue #N 작업 시작\", \"이 Issue 구현 시작\", or \"Issue 작업 자동화\" that ask Codex Desktop to begin or resume GitHub Issue-backed maintenance in Game-Develop-Orchestration."
 ---
 
 # Issue Work Runner
@@ -14,10 +14,12 @@ description: Start and operate this repository's approval-gated Issue Work Runne
 4. Derive a branch matching `<issue-number>-<type>-<short-description>`, where type is one of
    `feat`, `fix`, `refactor`, `test`, `docs`, or `chore`. Use the Issue objective and contract type;
    do not invent a second objective.
-5. Run the following in the Desktop built-in terminal from the repository root:
+5. Select the repository virtual-environment Python for the current OS: use
+   `.venv\Scripts\python.exe` on Windows or `.venv/bin/python` on macOS/Linux. Run the following
+   equivalent command in the Desktop built-in terminal from the repository root:
 
    ```powershell
-   .venv\Scripts\python.exe -m issue_runner start --snapshot-file var\issue-snapshots\<number>.json --branch <branch>
+   <venv-python> -m issue_runner start --snapshot-file var/issue-snapshots/<number>.json --branch <branch>
    ```
 
    Let the Runner reject a dirty worktree, a base other than `dev`, a closed or malformed Issue,
@@ -26,8 +28,8 @@ description: Start and operate this repository's approval-gated Issue Work Runne
    only after explicit approval:
 
    ```powershell
-   .venv\Scripts\python.exe -m issue_runner approve <run-id>
-   .venv\Scripts\python.exe -m issue_runner resume <run-id>
+   <venv-python> -m issue_runner approve <run-id>
+   <venv-python> -m issue_runner resume <run-id>
    ```
 
 7. On failure, inspect `status`, the phase `stderr.log`, `events.jsonl`, and `repository.diff` paths.

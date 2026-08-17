@@ -17,6 +17,10 @@ verification, and review in separate fresh Codex threads. Only analysis receives
 body. Later phases receive bounded prior results plus paths to repository diff artifacts under
 `var/issue-runs/`. A deterministic final gate rejects PASS when Scope violations, missing
 Acceptance Criteria evidence, or missing/failing Test evidence are reported.
+Analysis and review execute read-only. Verification can emit ignored test artifacts but must leave
+the repository fingerprint unchanged; implementation is the only source-writing phase. The
+controller also pins HEAD, validates evidence paths beneath the checkout, and caps each phase result
+so three completed hand-offs always fit within the aggregate context budget.
 
 ```mermaid
 flowchart TB

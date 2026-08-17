@@ -16,6 +16,7 @@ class PhaseRequest:
     prompt: str
     schema: dict[str, Any]
     phase_dir: Path
+    sandbox: str = "workspace-write"
 
 
 @dataclass(frozen=True)
@@ -33,9 +34,18 @@ class CodexExecError(RuntimeError):
 
 
 class CodexExecExecutor:
-    def __init__(self, root: Path, *, codex_command: str = "codex") -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        codex_command: str = "codex",
+        timeout_seconds: int = 3600,
+    ) -> None:
+        if timeout_seconds < 1:
+            raise ValueError("timeout_seconds must be positive")
         self.root = root.resolve()
         self.codex_command = codex_command
+        self.timeout_seconds = timeout_seconds
 
     def execute(self, request: PhaseRequest) -> ExecutionResult:
         request.phase_dir.mkdir(parents=True, exist_ok=True)
@@ -43,6 +53,7 @@ class CodexExecExecutor:
         result_path = request.phase_dir / "result.json"
         events_path = request.phase_dir / "events.jsonl"
         stderr_path = request.phase_dir / "stderr.log"
+        result_path.unlink(missing_ok=True)
         schema_path.write_text(
             json.dumps(request.schema, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
@@ -52,7 +63,7 @@ class CodexExecExecutor:
             "exec",
             "--json",
             "--sandbox",
-            "workspace-write",
+            request.sandbox,
             "--output-schema",
             str(schema_path),
             "--output-last-message",
@@ -67,7 +78,14 @@ class CodexExecExecutor:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                timeout=self.timeout_seconds,
             )
+        except subprocess.TimeoutExpired as exc:
+            events_path.write_text(self._timeout_output(exc.stdout), encoding="utf-8")
+            stderr_path.write_text(self._timeout_output(exc.stderr), encoding="utf-8")
+            raise CodexExecError(
+                f"codex exec timed out after {self.timeout_seconds} seconds; see {stderr_path}"
+            ) from exc
         except OSError as exc:
             raise CodexExecError(f"cannot start codex exec: {exc}") from exc
         events_path.write_text(completed.stdout, encoding="utf-8")
@@ -83,6 +101,14 @@ class CodexExecExecutor:
         if not isinstance(result, dict):
             raise CodexExecError("Codex phase result must be a JSON object")
         return ExecutionResult(self._thread_id(completed.stdout), result)
+
+    @staticmethod
+    def _timeout_output(value: str | bytes | None) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return value
 
     @staticmethod
     def _thread_id(events: str) -> str:

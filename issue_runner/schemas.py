@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-MAX_RESULT_BYTES = 48 * 1024
+MAX_RESULT_BYTES = 24 * 1024
 MAX_CONTEXT_BYTES = 96 * 1024
 MAX_ISSUE_BODY_BYTES = 64 * 1024
 
@@ -28,6 +28,7 @@ def _evidence(*, include_passed: bool) -> dict[str, Any]:
         "evidence": _string(4000),
         "artifactPaths": {
             "type": "array",
+            "minItems": 1,
             "maxItems": 16,
             "items": _string(500),
         },
