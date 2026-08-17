@@ -15,7 +15,13 @@ from typing import Any, Iterator
 from jsonschema import ValidationError, validate
 
 from .executor import ExecutionResult, PhaseExecutor, PhaseRequest
-from .schemas import MAX_CONTEXT_BYTES, MAX_RESULT_BYTES, phase_result_schema
+from .schemas import (
+    MAX_CONTEXT_BYTES,
+    MAX_RESULT_BYTES,
+    codex_phase_result_schema,
+    phase_result_schema,
+    QA_PHASES,
+)
 
 FORMAT_VERSION = 1
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -51,6 +57,7 @@ class PhaseRunner:
         prompt = prompt.strip()
         if not prompt or len(prompt) > 20_000:
             raise PhaseError("initial prompt must contain 1-20000 characters")
+        self.check_executor()
         run_id = run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
         self._validate_run_id(run_id)
         run_dir = self._run_dir(run_id)
@@ -143,6 +150,7 @@ class PhaseRunner:
                     state["currentPhase"] = None
                     self._save(state)
                     break
+                self.check_executor()
                 self._execute_phase(state, phase)
                 executed += 1
             self._set_waiting_status(state)
@@ -161,6 +169,7 @@ class PhaseRunner:
             if len(failed) != 1:
                 raise PhaseError("run must contain exactly one retryable phase")
             phase = failed[0]
+            self.check_executor()
             state["phases"][phase]["status"] = "pending"
             state["status"] = "ready"
             state["lastError"] = None
@@ -168,6 +177,17 @@ class PhaseRunner:
             self._execute_phase(state, phase)
             self._set_waiting_status(state)
             return self._public_state(state)
+
+    def check_executor(self, *, force: bool = False) -> tuple[str, ...] | None:
+        """Validate optional production dependencies without changing run state."""
+
+        validator = getattr(self.executor, "validate_command", None)
+        if validator is None:
+            return None
+        try:
+            return validator(force=force) if force else validator()
+        except Exception as exc:
+            raise PhaseError(str(exc)) from exc
 
     def _execute_phase(self, state: dict[str, Any], phase: str) -> None:
         profile = PHASE_PROFILES[phase]
@@ -193,12 +213,15 @@ class PhaseRunner:
                 phase=phase,
                 profile=profile,
                 prompt=self._prompt(state, phase),
-                schema=phase_result_schema(phase),
+                schema=codex_phase_result_schema(phase),
                 phase_dir=self._run_dir(state["runId"]) / "phases" / phase,
             )
             execution = self.executor.execute(request)
-            self._validate_result(phase, execution)
+            # Production Codex writes this path itself. Recording it before
+            # semantic QA validation keeps an INCOMPLETE report inspectable.
             result_path = request.phase_dir / "result.json"
+            record["resultPath"] = str(result_path)
+            self._validate_result(phase, execution)
             self._atomic_json(result_path, execution.result)
             record.update(
                 {
@@ -281,7 +304,9 @@ class PhaseRunner:
             ),
             "unity_implementation": (
                 "Implement the approved Unity work using only the Unity MCP. Do not generate "
-                "assets or perform final asset integration."
+                "assets or perform final asset integration. Follow docs/unity-functional-qa.md. "
+                "Set qaStatus to PASS only when every required QA gate has trustworthy evidence; "
+                "otherwise return the exact non-PASS status."
             ),
             "asset2d_generation": (
                 "Generate and validate the approved 2D assets using only the 2D Asset MCP."
@@ -290,12 +315,15 @@ class PhaseRunner:
                 "Generate and validate the approved 3D assets using only the 3D Asset MCP."
             ),
             "unity_integration": (
-                "Perform final Unity asset integration and functional QA using only the Unity MCP."
+                "Perform final Unity asset integration and functional QA using only the Unity MCP. "
+                "Follow docs/unity-functional-qa.md. Set qaStatus to PASS only when every required "
+                "QA gate has trustworthy evidence; otherwise return the exact non-PASS status."
             ),
         }
         return (
             f"You are executing phase '{phase}' for run '{state['runId']}'.\n"
             f"{instructions[phase]}\n"
+            "Write summary and handoff in Korean unless the user's request requires another language.\n"
             "Return only data conforming to the supplied JSON Schema. Artifact paths must point "
             "to durable local evidence. Context follows:\n" + packed
         )
@@ -311,6 +339,11 @@ class PhaseRunner:
             raise PhaseError(f"invalid phase result: {exc.message}") from exc
         if not execution.thread_id.strip():
             raise PhaseError("executor returned an empty thread id")
+        if phase in QA_PHASES and execution.result["qaStatus"] != "PASS":
+            raise PhaseError(
+                f"Unity functional QA did not pass: {execution.result['qaStatus']}. "
+                f"{execution.result['summary']}"
+            )
 
     @staticmethod
     def _completed(state: dict[str, Any], phase: str) -> bool:
