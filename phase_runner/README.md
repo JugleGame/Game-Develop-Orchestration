@@ -28,6 +28,24 @@ artifact 경로만 전달합니다.
 python scripts/bootstrap.py
 ```
 
+Windows에서는 Phase Runner가 자식 프로세스로 실행할 수 있는 standalone Codex CLI가
+필요합니다. 보호된 `WindowsApps`의 데스크톱 앱 실행 파일만 발견되면 시작 전에 실패합니다.
+CLI를 설치하고 로그인한 뒤 실제 실행 가능 여부를 확인합니다.
+
+```powershell
+npm install -g @openai/codex
+codex --version
+codex
+python scripts/bootstrap.py --check
+```
+
+PATH에서 올바른 CLI를 자동 탐지할 수 없으면 명시적으로 지정할 수 있습니다. 지정한 명령이
+실행 불가능한 경우 다른 PATH 후보로 우회하지 않습니다.
+
+```powershell
+$env:GDAI_CODEX_COMMAND = Join-Path (npm prefix -g) "codex.cmd"
+```
+
 Phase Runner 명령은 저장소 루트에서 실행해야 합니다. 이후 예시는 Windows PowerShell을
 기준으로 합니다.
 
@@ -154,6 +172,11 @@ planning (research)
 .venv\Scripts\python.exe -m phase_runner status <run-id>
 Get-Content -Raw var\runs\<run-id>\phases\<phase>\stderr.log
 ```
+
+Codex 실행 실패 시 상태 오류에는 JSONL에서 추출한 bounded 진단과 로그 경로가 포함됩니다.
+재시도는 이전 `result.json`과 로그를 제거한 뒤 시작하므로 실패한 새 실행이 오래된 결과를
+완료 결과로 재사용하지 않습니다. Unity 단계는 기능 QA 결과가 `PASS`가 아니면 실패 상태로
+중단됩니다.
 
 실패 원인을 해결한 뒤 명시적으로 재시도합니다.
 

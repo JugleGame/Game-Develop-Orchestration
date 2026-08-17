@@ -8,6 +8,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -139,6 +140,34 @@ def verify() -> int:
             print(f"  X {name}: {reason}", file=sys.stderr)
         return 1
     print(f"  OK 필수 모듈 {len(REQUIRED_IMPORTS)}개")
+    return verify_codex_cli(python)
+
+
+def verify_codex_cli(python: Path | None = None) -> int:
+    """Check that Phase Runner can launch a standalone Codex CLI process."""
+
+    python = python or venv_python()
+    probe = (
+        "import json, sys; from pathlib import Path; "
+        "from phase_runner.executor import CodexExecExecutor; "
+        "executor=CodexExecExecutor(Path.cwd()); "
+        "\ntry: command=executor.validate_command()"
+        "\nexcept Exception as exc: print(str(exc), file=sys.stderr); raise SystemExit(1)"
+        "\nprint(json.dumps(command, ensure_ascii=True))"
+    )
+    result = subprocess.run(
+        [str(python), "-c", probe],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode:
+        print(f"  X Codex CLI: {result.stderr.strip()}", file=sys.stderr)
+        return 1
+    command = json.loads(result.stdout.strip().splitlines()[-1])
+    print(f"  OK Codex CLI: {' '.join(command)}")
     return 0
 
 
@@ -167,7 +196,9 @@ def expected_codex_config(profile: str = "research") -> str:
                 "enabled = true\n",
                 "required = true\n",
                 f"\n[mcp_servers.{name}.env]\n",
-                f"PYTHONPATH = {json.dumps(server['env']['PYTHONPATH'], ensure_ascii=False)}\n\n",
+                f"PYTHONPATH = {json.dumps(server['env']['PYTHONPATH'], ensure_ascii=False)}\n",
+                'PYTHONUTF8 = "1"\n',
+                'PYTHONIOENCODING = "utf-8"\n\n',
             ]
         )
     content = "".join(sections)
@@ -185,7 +216,11 @@ def _mcp_servers(
             "command": python,
             "args": ["-m", module],
             "cwd": cwd,
-            "env": {"PYTHONPATH": cwd},
+            "env": {
+                "PYTHONPATH": cwd,
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8",
+            },
         }
         for name, module in MCP_SERVERS
     }
@@ -226,18 +261,59 @@ def _replace_with_backup(path: Path, content: str) -> None:
             shutil.copyfile(path, backup)
             print(f"MCP config backup: {backup}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        handle.write(content)
+        temporary = Path(handle.name)
+    try:
+        temporary.replace(path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
     print(f"MCP config repaired: {path}")
 
 
 def repair_mcp_config(profile: str = "research") -> int:
     """Back up and recreate compatible-host and Codex configs for this checkout."""
 
-    _replace_with_backup(
-        MCP_CONFIG,
-        json.dumps(expected_mcp_config(profile), ensure_ascii=False, indent=2) + "\n",
+    targets = (
+        (
+            MCP_CONFIG,
+            json.dumps(expected_mcp_config(profile), ensure_ascii=False, indent=2) + "\n",
+        ),
+        (CODEX_CONFIG, expected_codex_config(profile)),
     )
-    _replace_with_backup(CODEX_CONFIG, expected_codex_config(profile))
+    originals = {
+        path: path.read_bytes() if path.exists() else None for path, _content in targets
+    }
+    written: list[Path] = []
+    try:
+        for path, content in targets:
+            _replace_with_backup(path, content)
+            written.append(path)
+    except Exception:
+        rollback_errors: list[str] = []
+        for path in reversed(written):
+            try:
+                original = originals[path]
+                if original is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_bytes(original)
+            except OSError as rollback_error:
+                rollback_errors.append(f"{path}: {rollback_error}")
+        if rollback_errors:
+            raise RuntimeError(
+                "MCP config update failed and rollback was incomplete: "
+                + "; ".join(rollback_errors)
+            )
+        raise
     return 0
 
 
