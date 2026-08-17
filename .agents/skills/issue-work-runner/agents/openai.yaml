@@ -1,0 +1,4 @@
+interface:
+  display_name: "Issue Work Runner"
+  short_description: "Guide valid Issue requests and run the local workflow"
+  default_prompt: "Use $issue-work-runner to correct or start work on GitHub Issue #54."
