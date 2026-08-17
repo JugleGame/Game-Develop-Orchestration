@@ -240,7 +240,7 @@ def test_state_writes_are_atomic_and_prompt_is_not_in_status(tmp_path):
     ] == "private initial prompt"
 
 
-def test_codex_exec_adapter_applies_profile_and_captures_fresh_thread(tmp_path, monkeypatch):
+def test_codex_exec_adapter_applies_profile_and_captures_fresh_thread(tmp_path):
     applied = []
     result = _result("planning", assets_required=False)
 
@@ -255,9 +255,11 @@ def test_codex_exec_adapter_applies_profile_and_captures_fresh_thread(tmp_path, 
             stderr="",
         )
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
     executor = CodexExecExecutor(
-        tmp_path, profile_applier=lambda profile: applied.append(profile) or 0
+        tmp_path,
+        codex_command="codex-test",
+        profile_applier=lambda profile: applied.append(profile) or 0,
+        process_runner=fake_run,
     )
     request = PhaseRequest(
         run_id="adapter",
