@@ -121,6 +121,19 @@ Use the repository-local `issue-work-runner` Skill for natural-language requests
 Skill reads the complete open Issue with the GitHub connector, writes only its bounded snapshot
 under ignored `var/issue-snapshots/`, and invokes the CLI in the Desktop built-in terminal.
 
+Developers do not need to memorize the CLI or read this guide before starting. Repository source
+changes without an established open Issue number must stop before any edit or branch creation and
+return a copyable correction:
+
+- No Issue exists: request `이 작업으로 Issue 생성해줘`.
+- An Issue exists: request `Issue #<number> 작업 시작`.
+- Immediately after Issue creation: the response must include
+  `Issue #<created-number> 작업 시작` as the next request and must not start implementation.
+
+An ongoing conversation that has already established the open Issue may continue without repeating
+the trigger. The current branch alone is never evidence of user intent or a substitute for the Issue
+number.
+
 Use `.venv\Scripts\python.exe` as `<venv-python>` on Windows and `.venv/bin/python` on macOS/Linux.
 All snapshot and artifact values use repository-relative POSIX paths so a run does not embed the
 checkout location of one developer.

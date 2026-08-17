@@ -538,9 +538,30 @@ def test_repository_local_skill_metadata_and_triggers():
     assert "Issue #N 작업 시작" in description
     assert "이 Issue 구현 시작" in description
     assert "Issue 작업 자동화" in description
+    assert "omit an Issue number" in description
     assert "GitHub connector" in content
     assert "--snapshot-file" in content
+    assert "이 작업으로 Issue 생성해줘" in content
+    assert "Issue #<created-number> 작업 시작" in content
+    assert "infer it from the current branch" in content
     assert "$issue-work-runner" in ui_metadata
+
+
+def test_issue_entry_guard_provides_copyable_corrections():
+    root = Path(__file__).resolve().parents[3]
+    agents = (root / "AGENTS.md").read_text(encoding="utf-8")
+    operations = (root / "docs" / "operations.md").read_text(encoding="utf-8")
+    workflow = (root / "docs" / "github-issue-workflow.md").read_text(
+        encoding="utf-8"
+    )
+
+    for content in (agents, operations, workflow):
+        assert "이 작업으로 Issue 생성해줘" in content
+        assert "Issue #<number> 작업 시작" in content
+    assert "do not edit files, create a branch, or start a runner" in agents
+    assert "current conversation has already established the open Issue" in agents
+    assert "Issue #<created-number> 작업 시작" in operations
+    assert "Issue creation alone must not start implementation" in workflow
 
 
 def test_codex_exec_adapter_captures_a_fresh_thread(tmp_path, monkeypatch):

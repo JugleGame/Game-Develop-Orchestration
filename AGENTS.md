@@ -24,6 +24,13 @@ user explicitly requests Issue-backed tracking or the work changes this reposito
 Before starting normal development work, identify the related GitHub Issue and read it **in full**.
 Pay particular attention to Objective, Scope, Out of Scope, Acceptance Criteria, and Test.
 
+For a new repository source-change request, do not edit files, create a branch, or start a runner
+until an open Issue number is established in the current conversation. If no Issue exists, tell the
+user to request `이 작업으로 Issue 생성해줘`. If an Issue exists but its number is missing or the
+start request is ambiguous, tell the user to request `Issue #<number> 작업 시작`. After creating an
+Issue, stop and provide that exact next request with the created number. Do not repeat this gate for
+follow-up work after the current conversation has already established the open Issue.
+
 1. Do not start normal development work without a valid, open Issue.
 2. Write Issue and PR titles and explanatory prose in Korean. Keep the bracketed Issue contract type in exact English, such as `[pipeline]`; do not translate it. Preserve code identifiers, file paths, commands, and required GitHub keywords exactly.
 3. Use `<issue-number>-<type>-<short-description>` for branch names.

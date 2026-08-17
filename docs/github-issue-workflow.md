@@ -42,6 +42,21 @@ Create pipeline Issue #123
    problem.
 8. Merge only after the automated tests and contract check are green.
 
+## Agent entry guidance
+
+An agent must establish an open Issue number in the current conversation before editing repository
+source, creating a work branch, or starting an Issue runner. When the request is incomplete, stop
+before repository mutation and return a copyable correction:
+
+- If no Issue exists, ask the user to request `이 작업으로 Issue 생성해줘`.
+- If an Issue exists but its number is missing or ambiguous, ask for
+  `Issue #<number> 작업 시작`.
+- After creating an Issue, provide `Issue #<created-number> 작업 시작` as the exact next request;
+  Issue creation alone must not start implementation.
+
+Do not infer consent from the checked-out branch. Once the current conversation has established the
+open Issue, normal follow-up requests may continue without repeating the trigger.
+
 ## How to size an Issue
 
 Use **one independently verifiable outcome** as the boundary of an Issue:

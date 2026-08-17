@@ -81,6 +81,8 @@ For this repository's own Issue-backed maintenance, ask `Issue #N 작업 시작`
 session. The repository-local Skill validates the complete open Issue and starts the separate
 [Issue Work Runner](issue_runner/README.md), which gates implementation on analysis approval and
 uses fresh Codex threads for analysis, implementation, verification, and review.
+If an Issue number is missing, the repository rules stop source changes and provide the exact Issue
+creation or `Issue #N 작업 시작` request instead of silently bypassing the Runner.
 
 ## Development
 

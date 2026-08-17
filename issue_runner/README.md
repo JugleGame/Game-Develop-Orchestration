@@ -11,6 +11,12 @@ Issue Work Runner는 이 저장소의 GitHub Issue 유지보수를 분석, 구�
 Skill이 GitHub connector로 열린 Issue 전체를 조회하고 다음 형식의 snapshot을
 `var/issue-snapshots/54.json`에 저장합니다.
 
+Issue 번호 없이 저장소 변경을 요청하면 파일이나 branch를 변경하지 않고 먼저
+`이 작업으로 Issue 생성해줘` 또는 `Issue #<number> 작업 시작` 형식을 안내합니다. Issue를 방금
+생성한 경우에도 Runner를 곧바로 시작하지 않고 `Issue #<created-number> 작업 시작`을 다음 요청으로
+제시합니다. 이미 현재 대화에서 열린 Issue가 확정된 후속 작업에는 같은 문구를 반복 요구하지
+않습니다.
+
 ```json
 {
   "number": 54,
