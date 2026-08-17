@@ -1,0 +1,4 @@
+interface:
+  display_name: "Issue Work Runner"
+  short_description: "Validate an Issue contract and start its local runner"
+  default_prompt: "Use $issue-work-runner to start work on GitHub Issue #54."

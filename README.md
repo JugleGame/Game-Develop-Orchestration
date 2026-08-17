@@ -16,6 +16,7 @@ The host agent reasons and decides; MCP servers only validate data or access ext
 ```text
 docs/                    Authoritative architecture, contracts, operations, backlog
 phase_runner/            Deterministic approval gates and fresh Codex phase execution
+issue_runner/            Approval-gated fresh Codex execution for repository Issue work
 Src/McpServers/          Research, Unity, and Asset MCP servers
 AGENTS.md                Thin Codex adapter
 CLAUDE.md                Thin Claude Code adapter
@@ -75,6 +76,11 @@ For an approval-gated end-to-end run, use the local Python Phase Runner. It star
 See the [Phase Runner guide](phase_runner/README.md) for the complete CLI workflow, approval,
 rejection, resume, and failure recovery. The broader environment and manual MCP profile procedures
 remain in [docs/operations.md](docs/operations.md#automatic-phase-runner).
+
+For this repository's own Issue-backed maintenance, ask `Issue #N 작업 시작` in a new Desktop
+session. The repository-local Skill validates the complete open Issue and starts the separate
+[Issue Work Runner](issue_runner/README.md), which gates implementation on analysis approval and
+uses fresh Codex threads for analysis, implementation, verification, and review.
 
 ## Development
 
