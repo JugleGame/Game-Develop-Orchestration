@@ -9,7 +9,26 @@
 - `PIXELLAB_API_KEY` for Asset generation
 - `MESHY_API_KEY` for 3D Asset generation
 
-Node, Docker, a job database, and Redis are not required.
+Docker, a job database, and Redis are not required. Node is required only when using npm to
+install or update the standalone Codex CLI.
+
+On Windows, Phase Runner must be able to launch a standalone Codex CLI as a child process. A
+protected desktop-app binary under `WindowsApps` is not sufficient. Install and authenticate the
+CLI, then verify the exact executable before starting a run:
+
+```powershell
+npm install -g @openai/codex
+codex --version
+codex
+python scripts/bootstrap.py --check
+```
+
+When PATH discovery is ambiguous, set `GDAI_CODEX_COMMAND` to the standalone executable. An
+explicit but invalid override fails closed and is not silently replaced by another PATH candidate:
+
+```powershell
+$env:GDAI_CODEX_COMMAND = Join-Path (npm prefix -g) "codex.cmd"
+```
 
 ## Setup
 
@@ -85,7 +104,11 @@ reason; a rejected run is terminal:
 .venv\Scripts\python.exe -m phase_runner reject <run-id> planning --reason "기획 수정 필요"
 ```
 
-`state.json` is replaced atomically. Each phase records `pending`, `running`, `completed`, or
+`state.json` is replaced atomically. Profile changes replace `.mcp.json` and
+`.codex/config.toml` as one logical operation and restore the previous contents if the second
+write fails. Generated MCP process environments force UTF-8 stdin/stdout on Windows.
+
+Each phase records `pending`, `running`, `completed`, or
 `failed`, its attempt count, profile, fresh Codex thread ID, bounded result path, and error. A
 process interruption can leave a phase as `running`; both `running` and `failed` require the user
 to accept possible repeated external effects by invoking the explicit retry command:
@@ -100,6 +123,10 @@ Never approve `asset-generation` until provider cost and external changes are ac
 never approve `asset-review` until the generated artifacts have been inspected. Run commands for
 one run sequentially; an OS lock rejects concurrent controller processes. Full Codex JSONL events
 and stderr remain beside each phase result for diagnosis but are not passed to later phases.
+Before creating a run or mutating retry state, Phase Runner probes `codex --version`. A failed
+execution removes stale result and log files, surfaces a bounded and credential-redacted cause
+from JSONL when available, and never treats an earlier result as the current attempt. Unity phases
+also fail closed unless their functional QA status is `PASS`.
 
 Default tests use a fake executor and make no model or paid provider calls. The real CLI smoke test
 is deliberately opt-in:

@@ -20,7 +20,8 @@ from phase_runner import (
     PhaseRequest,
     PhaseRunner,
 )
-from phase_runner.schemas import phase_result_schema
+from phase_runner.schemas import codex_phase_result_schema, phase_result_schema
+from phase_runner.executor import CodexExecError
 
 
 def _result(
@@ -40,6 +41,8 @@ def _result(
         result.update(
             {"visualDimension": dimension, "assetsRequired": assets_required}
         )
+    if phase in {"unity_implementation", "unity_integration"}:
+        result["qaStatus"] = "PASS"
     return result
 
 
@@ -190,6 +193,26 @@ def test_invalid_phase_result_fails_closed(tmp_path):
     assert runner.status("invalid")["status"] == "failed"
 
 
+def test_non_pass_unity_qa_stops_workflow_before_integration(tmp_path):
+    incomplete = _result("unity_implementation")
+    incomplete["qaStatus"] = "INCOMPLETE"
+    incomplete["summary"] = "Unity 연결이 취소되어 증거가 없습니다."
+    executor = FakeExecutor(
+        assets_required=False,
+        overrides={"unity_implementation": [incomplete]},
+    )
+    runner = _runner(tmp_path, executor)
+    runner.start("build it", run_id="qa-incomplete")
+    runner.approve("qa-incomplete", "planning")
+
+    with pytest.raises(PhaseError, match="functional QA did not pass: INCOMPLETE"):
+        runner.resume("qa-incomplete")
+    state = runner.status("qa-incomplete")
+    assert state["status"] == "failed"
+    assert state["phases"]["unity_implementation"]["status"] == "failed"
+    assert "unity_integration" not in state["phases"]
+
+
 def test_unknown_persisted_state_is_rejected_without_executor_call(tmp_path):
     executor = FakeExecutor()
     runner = _runner(tmp_path, executor)
@@ -217,11 +240,13 @@ def test_state_writes_are_atomic_and_prompt_is_not_in_status(tmp_path):
     ] == "private initial prompt"
 
 
-def test_codex_exec_adapter_applies_profile_and_captures_fresh_thread(tmp_path, monkeypatch):
+def test_codex_exec_adapter_applies_profile_and_captures_fresh_thread(tmp_path):
     applied = []
     result = _result("planning", assets_required=False)
 
     def fake_run(command, **kwargs):
+        if "--version" in command:
+            return SimpleNamespace(returncode=0, stdout="codex-cli 1.0\n", stderr="")
         result_path = Path(command[command.index("--output-last-message") + 1])
         result_path.write_text(json.dumps(result), encoding="utf-8")
         return SimpleNamespace(
@@ -230,9 +255,11 @@ def test_codex_exec_adapter_applies_profile_and_captures_fresh_thread(tmp_path, 
             stderr="",
         )
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
     executor = CodexExecExecutor(
-        tmp_path, profile_applier=lambda profile: applied.append(profile) or 0
+        tmp_path,
+        codex_command="codex-test",
+        profile_applier=lambda profile: applied.append(profile) or 0,
+        process_runner=fake_run,
     )
     request = PhaseRequest(
         run_id="adapter",
@@ -250,6 +277,275 @@ def test_codex_exec_adapter_applies_profile_and_captures_fresh_thread(tmp_path, 
     assert execution.result == result
     assert (tmp_path / "phase" / "output-schema.json").is_file()
     assert (tmp_path / "phase" / "events.jsonl").is_file()
+
+
+def test_phase_schemas_declare_types_for_const_and_enum_properties():
+    planning = phase_result_schema("planning")
+
+    assert planning["properties"]["phase"] == {
+        "type": "string",
+        "const": "planning",
+    }
+    assert planning["properties"]["status"] == {
+        "type": "string",
+        "const": "completed",
+    }
+    assert planning["properties"]["visualDimension"]["type"] == "string"
+
+    transport = codex_phase_result_schema("planning")
+    packed = json.dumps(transport)
+    assert "minLength" not in packed
+    assert "maxLength" not in packed
+    assert "maxItems" not in packed
+    assert phase_result_schema("planning")["properties"]["summary"]["maxLength"] == 2000
+
+
+def test_codex_exec_failure_surfaces_jsonl_cause_and_removes_stale_result(tmp_path):
+    phase_dir = tmp_path / "phase"
+    phase_dir.mkdir()
+    stale_result = phase_dir / "result.json"
+    stale_result.write_text('{"stale": true}', encoding="utf-8")
+    api_error = {
+        "type": "error",
+        "error": {
+            "code": "invalid_json_schema",
+            "message": "schema must have a type key",
+        },
+    }
+    turn_failure = {
+        "type": "turn.failed",
+        "error": {"message": json.dumps({"error": api_error["error"]})},
+    }
+
+    def failed_run(command, **kwargs):
+        if "--version" in command:
+            return SimpleNamespace(returncode=0, stdout="codex-cli 1.0\n", stderr="")
+        return SimpleNamespace(
+            returncode=1,
+            stdout=json.dumps(api_error) + "\n" + json.dumps(turn_failure) + "\n",
+            stderr="unhelpful warning\n",
+        )
+
+    executor = CodexExecExecutor(
+        tmp_path,
+        codex_command="codex-test",
+        profile_applier=lambda _profile: 0,
+        process_runner=failed_run,
+    )
+    request = PhaseRequest(
+        run_id="failure",
+        phase="planning",
+        profile="research",
+        prompt="plan",
+        schema=phase_result_schema("planning"),
+        phase_dir=phase_dir,
+    )
+
+    with pytest.raises(CodexExecError, match="invalid_json_schema.*type key"):
+        executor.execute(request)
+    assert not stale_result.exists()
+    assert (phase_dir / "events.jsonl").is_file()
+    assert (phase_dir / "stderr.log").is_file()
+
+
+def test_codex_exec_failure_detail_is_bounded_and_redacts_credentials(tmp_path):
+    secret = "sk-" + ("a" * 32)
+
+    def failed_run(command, **kwargs):
+        if "--version" in command:
+            return SimpleNamespace(returncode=0, stdout="codex-cli 1.0\n", stderr="")
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr=f"failure {secret} " + ("x" * 3000),
+        )
+
+    executor = CodexExecExecutor(
+        tmp_path,
+        codex_command="codex-test",
+        profile_applier=lambda _profile: 0,
+        process_runner=failed_run,
+    )
+    request = PhaseRequest(
+        run_id="bounded",
+        phase="planning",
+        profile="research",
+        prompt="plan",
+        schema=phase_result_schema("planning"),
+        phase_dir=tmp_path / "bounded-phase",
+    )
+
+    with pytest.raises(CodexExecError) as raised:
+        executor.execute(request)
+    message = str(raised.value)
+    assert secret not in message
+    assert "[REDACTED]" in message
+    assert len(message) < 1600
+
+
+def test_windows_command_discovery_skips_denied_desktop_binary(tmp_path):
+    windows_apps = tmp_path / "WindowsApps"
+    app_data = tmp_path / "AppData" / "Roaming"
+    npm_bin = app_data / "npm"
+    windows_apps.mkdir()
+    npm_bin.mkdir(parents=True)
+    protected = windows_apps / "codex.exe"
+    standalone = npm_bin / "codex.cmd"
+    protected.touch()
+    standalone.touch()
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[0] == str(protected.resolve()):
+            raise PermissionError(5, "access denied")
+        return SimpleNamespace(returncode=0, stdout="codex-cli 1.0\n", stderr="")
+
+    executor = CodexExecExecutor(
+        tmp_path,
+        process_runner=fake_run,
+        environment={"PATH": str(windows_apps), "APPDATA": str(app_data)},
+        platform_name="nt",
+    )
+
+    assert executor.validate_command() == (str(standalone.resolve()),)
+    assert [call[0] for call in calls] == [str(protected.resolve()), str(standalone.resolve())]
+
+
+def test_windows_codex_processes_are_started_without_console_window(tmp_path):
+    calls = []
+    result = _result("planning", assets_required=False)
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        if "--version" in command:
+            return SimpleNamespace(returncode=0, stdout="codex-cli 1.0\n", stderr="")
+        result_path = Path(command[command.index("--output-last-message") + 1])
+        result_path.write_text(json.dumps(result), encoding="utf-8")
+        return SimpleNamespace(
+            returncode=0,
+            stdout='{"type":"thread.started","thread_id":"thread-hidden"}\n',
+            stderr="",
+        )
+
+    executor = CodexExecExecutor(
+        tmp_path,
+        codex_command="codex.cmd",
+        profile_applier=lambda _profile: 0,
+        process_runner=fake_run,
+        platform_name="nt",
+    )
+    executor.execute(
+        PhaseRequest(
+            run_id="hidden",
+            phase="planning",
+            profile="research",
+            prompt="plan",
+            schema=phase_result_schema("planning"),
+            phase_dir=tmp_path / "hidden-phase",
+        )
+    )
+
+    expected = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    assert len(calls) == 2
+    assert all(kwargs["creationflags"] == expected for _command, kwargs in calls)
+
+
+def test_explicit_codex_override_fails_closed_without_path_fallback(tmp_path):
+    fallback_dir = tmp_path / "fallback"
+    fallback_dir.mkdir()
+    (fallback_dir / "codex.exe").touch()
+    calls = []
+
+    def denied(command, **kwargs):
+        calls.append(command)
+        raise PermissionError(5, "access denied")
+
+    executor = CodexExecExecutor(
+        tmp_path,
+        process_runner=denied,
+        environment={"PATH": str(fallback_dir), "GDAI_CODEX_COMMAND": "chosen-codex"},
+        platform_name="nt",
+    )
+
+    with pytest.raises(CodexExecError, match="chosen-codex"):
+        executor.validate_command()
+    assert calls == [["chosen-codex", "--version"]]
+
+
+def test_forced_codex_recheck_detects_removed_or_blocked_command(tmp_path):
+    available = True
+    calls = []
+
+    def changing_runner(command, **kwargs):
+        calls.append(command)
+        if not available:
+            raise PermissionError(5, "access denied after startup")
+        return SimpleNamespace(returncode=0, stdout="codex-cli 1.0\n", stderr="")
+
+    executor = CodexExecExecutor(
+        tmp_path, codex_command="codex-test", process_runner=changing_runner
+    )
+    assert executor.validate_command() == ("codex-test",)
+    assert executor.validate_command() == ("codex-test",)
+    assert len(calls) == 1
+
+    available = False
+    with pytest.raises(CodexExecError, match="after startup"):
+        executor.validate_command(force=True)
+    assert len(calls) == 2
+
+
+def test_codex_preflight_failure_does_not_create_run_state(tmp_path):
+    def denied(command, **kwargs):
+        raise PermissionError(5, "access denied")
+
+    executor = CodexExecExecutor(
+        tmp_path,
+        codex_command="protected-codex",
+        profile_applier=lambda _profile: 0,
+        process_runner=denied,
+    )
+    runner = PhaseRunner(tmp_path, executor, runs_root=tmp_path / "runs")
+
+    with pytest.raises(PhaseError, match="Codex CLI is not executable"):
+        runner.start("must fail before state creation", run_id="no-state")
+    assert not (tmp_path / "runs" / "no-state").exists()
+
+
+def test_unavailable_cli_does_not_mask_gate_or_mutate_retry_state(tmp_path):
+    planning_executor = FakeExecutor()
+    runner = _runner(tmp_path, planning_executor)
+    runner.start("wait at planning", run_id="gate-first")
+
+    class UnavailableExecutor:
+        def validate_command(self, *, force=False):
+            raise OSError("CLI unavailable")
+
+        def execute(self, request):
+            raise AssertionError("execute must not be reached")
+
+    unavailable = PhaseRunner(
+        tmp_path, UnavailableExecutor(), runs_root=tmp_path / "runs"
+    )
+    with pytest.raises(PhaseBlocked, match="planning approval"):
+        unavailable.resume("gate-first")
+
+    failing_executor = FakeExecutor(
+        assets_required=False,
+        overrides={"unity_implementation": [RuntimeError("first failure")]},
+    )
+    failing = _runner(tmp_path, failing_executor)
+    failing.start("create retry state", run_id="retry-preflight")
+    failing.approve("retry-preflight", "planning")
+    with pytest.raises(PhaseError, match="first failure"):
+        failing.resume("retry-preflight")
+
+    before = unavailable.status("retry-preflight")
+    with pytest.raises(PhaseError, match="CLI unavailable"):
+        unavailable.retry("retry-preflight")
+    after = unavailable.status("retry-preflight")
+    assert after == before
 
 
 @pytest.mark.skipif(
