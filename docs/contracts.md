@@ -120,6 +120,22 @@ Server: `AssetGenMcpServer`.
   requires the subject, intended use and readable scale, composition, must-have visual structure,
   and shared art style. Revision briefs additionally require what to preserve and a positively
   stated replacement for what should change.
+- **The intake also asks about the generation parameters**: `gridSize`, `paletteLock`,
+  `initAssetId`, `initImageStrength`, and `direction`. `None` means unanswered; `0` and `"none"`
+  are answers meaning "the game's locked grid", "no reference", "no direction override". These were
+  optional arguments with defaults until an agent that never asked the user still generated —
+  measured on `daeume` (2026-08-22), it swept `gridSize` through 80, 64, 48, 40, and 32,
+  `paletteLock` through both values, and `initImageStrength` through 400 and 700, ten-plus billed
+  generations to rediscover settings one question would have settled.
+- `prepare_asset_prompt` returns a `briefId` and stores the brief under `briefs/` in the asset root.
+  The id is the hash of the brief, so answering one more question yields a new id and the id is
+  evidence of which answers were on the table.
+- **`generate_2d_sprite` requires `briefId`.** An unknown brief, or one with unanswered required
+  questions, is refused before any provider call. The five parameters above are read from the
+  brief; passing one at the call site is allowed only to restate what the brief answered, and a
+  contradicting value is refused rather than preferred, so a user's answer cannot be overridden at
+  the call site. `assetKind` is validated first, so a wrong kind is reported as a wrong kind rather
+  than sending the caller back to the intake step.
 - **`generate_2d_sprite` requires `assetKind`.** It is typed as the `AssetKind` literal, so the
   accepted values are published in the tool schema and a missing or wrong one is refused by the
   schema before any provider call. The kind is not guessed from prompt wording, because one wrong

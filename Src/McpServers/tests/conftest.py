@@ -15,3 +15,39 @@ os.environ["GDAI_SKIP_DOTENV"] = "1"
 
 # Every test writes into a throwaway root so runs never touch real output.
 os.environ.setdefault("ASSET_ROOT", tempfile.mkdtemp(prefix="mcpservers_test_"))
+
+
+_BRIEF_FIELDS = ("gridSize", "paletteLock", "initAssetId", "initImageStrength", "direction")
+
+
+async def sprite_call(client, arguments):
+    """Call ``generate_2d_sprite`` through the brief the tool now requires.
+
+    ``generate_2d_sprite`` refuses to guess a generation parameter, so a test
+    that wants one has to answer it first. This helper answers the intake with
+    exactly what the call passes — omitted parameters are answered as "nothing"
+    (0 / "none" / the old ``paletteLock`` default), which is what the tool used
+    to assume silently.
+    """
+
+    answers = {
+        "assetKind": arguments.get("assetKind") or "prop",
+        "subject": arguments.get("prompt") or "a test subject",
+        "purpose": "an automated test",
+        "composition": "full body centered",
+        "mustHave": ["a readable silhouette"],
+        "avoid": ["blur"],
+        "artStyle": arguments.get("artStyle") or "pixel art",
+        "gridSize": arguments.get("gridSize") or 0,
+        "paletteLock": arguments.get("paletteLock", True),
+        "initAssetId": arguments.get("initAssetId") or "none",
+        "initImageStrength": arguments.get("initImageStrength") or 0,
+        "direction": arguments.get("direction") or "none",
+    }
+    prepared = await client.call_tool("prepare_asset_prompt", answers)
+    # An intake that itself refused (an invalid assetKind, say) has no brief to
+    # hand over. Passing a placeholder keeps the refusal the test is after
+    # instead of replacing it with one about the brief.
+    brief_id = (prepared.structured_content or {}).get("briefId", "no-brief")
+    passed = {key: value for key, value in arguments.items() if key not in _BRIEF_FIELDS}
+    return await client.call_tool("generate_2d_sprite", {**passed, "briefId": brief_id})
