@@ -310,3 +310,107 @@ async def test_generate_2d_sprite_without_key_is_a_tool_error(monkeypatch, tmp_p
     assert result.is_error is True
     text = "".join(getattr(block, "text", "") for block in result.content)
     assert '"errorCode": 3000' in text
+
+
+# --------------------------------------------------------------------------
+# Per-asset canvas size (issue #57)
+# --------------------------------------------------------------------------
+
+
+def test_grid_override_changes_the_canvas_without_touching_the_style(style):
+    """A boss three times the player's height needs its own canvas, not an
+    edited game style — the style is shared and locked."""
+
+    from asset.server import _size_for as size_for
+
+    assert size_for(style, "character") == (32, 64)
+    assert size_for(style, "character", 56) == (56, 112)
+    assert style.pixel_grid == 32
+
+
+def test_size_below_pixellabs_floor_is_rejected_before_the_call(style):
+    from asset.server import _resolve_size
+
+    with pytest.raises(Exception) as excinfo:
+        _resolve_size(style, "character", 16, "f-1")
+
+    message = str(excinfo.value)
+    assert '"errorCode": 1000' in message
+    assert "16x32" in message
+    assert "32-400" in message
+
+
+def test_size_above_pixellabs_ceiling_is_rejected_before_the_call(style):
+    from asset.server import _resolve_size
+
+    with pytest.raises(Exception) as excinfo:
+        _resolve_size(style, "character", 240, "f-1")
+
+    assert "240x480" in str(excinfo.value)
+
+
+def test_omitting_the_grid_keeps_the_existing_size(style):
+    from asset.server import _resolve_size
+
+    assert _resolve_size(style, "character", None, "f-1") == _size_for(style, "character")
+
+
+async def test_grid_size_reaches_pixellab_and_leaves_the_style_grid_alone(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    seen: list[tuple[int, int]] = []
+
+    def _fake_prototype(**kwargs):
+        seen.append((kwargs["width"], kwargs["height"]))
+        image = Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255))
+        return image, {"type": "generations", "generations": 1.0}, "create_image"
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
+
+    from mcp import Client
+
+    async with Client(server.mcp) as client:
+        for grid in (None, 56):
+            arguments = {
+                "featureId": "f-1",
+                "prompt": "a lone figure",
+                "gameId": "t-grid-size",
+                "assetKind": "character",
+            }
+            if grid is not None:
+                arguments["gridSize"] = grid
+            result = await client.call_tool("generate_2d_sprite", arguments)
+            assert result.is_error is False
+
+    assert seen == [(32, 64), (56, 112)]
+    from asset.style import load_or_create
+
+    assert load_or_create(tmp_path, "t-grid-size", "pixel art").pixel_grid == 32
+
+
+async def test_grid_size_below_the_floor_fails_the_tool_call(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    def _never(**kwargs):  # pragma: no cover - must not run
+        raise AssertionError("PixelLab was called for an out-of-range size")
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _never)
+
+    from mcp import Client
+
+    async with Client(server.mcp) as client:
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-1",
+                "prompt": "a lone figure",
+                "gameId": "t-grid-floor",
+                "assetKind": "character",
+                "gridSize": 16,
+            },
+        )
+
+    assert result.is_error is True
