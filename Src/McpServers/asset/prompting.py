@@ -104,10 +104,9 @@ class PromptPlan:
     prompt: str
     original_characters: int
     composed_characters: int
-    #: Clauses a structured field also carries. Kept in the prompt, not removed
-    #: — the name is retained so existing readers of ``promptMetrics`` keep
-    #: working, and ``structuredClauses`` in the metadata says what it means.
-    removed_structured_clauses: tuple[str, ...]
+    #: Clauses that a structured field also carries. They stay in the prompt;
+    #: this only reports which parts of it are duplicated by a field.
+    structured_clauses: tuple[str, ...]
     removed_negations: tuple[str, ...] = ()
 
     @property
@@ -133,10 +132,7 @@ class PromptPlan:
             "originalCharacters": self.original_characters,
             "composedCharacters": self.composed_characters,
             "characterDelta": self.composed_characters - self.original_characters,
-            # Reported, not removed. The old key keeps its name for readers
-            # that already look for it; both now list what was *kept*.
-            "removedStructuredClauses": [],
-            "structuredClauses": list(self.removed_structured_clauses),
+            "structuredClauses": list(self.structured_clauses),
             "removedNegations": list(self.removed_negations),
             "negativeDescription": self.negative_description,
         }
@@ -299,7 +295,7 @@ def compose(prompt: str, kind: AssetKind) -> PromptPlan:
         prompt=subject,
         original_characters=len(normalized),
         composed_characters=len(subject),
-        removed_structured_clauses=tuple(structured),
+        structured_clauses=tuple(structured),
         removed_negations=tuple(negated),
     )
 

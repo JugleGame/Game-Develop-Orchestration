@@ -77,10 +77,10 @@ def test_prompt_composition_removes_structured_duplication(kind, prompt, framing
     # the description traded the strong signal for the weak one. The prompt
     # therefore grows by the framing rather than shrinking.
     assert plan.composed_characters > plan.original_characters
-    assert plan.removed_structured_clauses
-    for clause in plan.removed_structured_clauses:
+    assert plan.structured_clauses
+    for clause in plan.structured_clauses:
         assert clause in plan.prompt
-    assert plan.metadata()["structuredClauses"] == list(plan.removed_structured_clauses)
+    assert plan.metadata()["structuredClauses"] == list(plan.structured_clauses)
 
 
 def test_a_prepared_brief_still_gets_its_framing():
@@ -1049,3 +1049,25 @@ def test_matches_takes_only_the_keyword_and_the_prompt():
         "keyword",
         "lowered",
     ]
+
+
+def test_prompt_metrics_keys_say_what_they_hold():
+    """``removedStructuredClauses`` outlived what it described.
+
+    Once composition stopped deleting style wording (#65) it was always an
+    empty list, and a field named for a removal that reports nothing reads as
+    "this feature is off" rather than "nothing was removed".
+    """
+
+    plan = prompting.compose("flat shading, a mossy rock", "prop")
+
+    assert set(plan.metadata()) == {
+        "originalCharacters",
+        "composedCharacters",
+        "characterDelta",
+        "structuredClauses",
+        "removedNegations",
+        "negativeDescription",
+    }
+    assert plan.metadata()["structuredClauses"] == ["flat shading"]
+    assert not hasattr(plan, "removed_structured_clauses")

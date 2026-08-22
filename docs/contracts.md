@@ -254,8 +254,7 @@ Server: `AssetGenMcpServer`.
   They bias a result; they do not override a description. Prompt composition therefore **keeps**
   style wording rather than deleting it as a duplicate of a field — the previous policy removed the
   strong signal and left only the weak one. Both are sent. `promptMetrics.structuredClauses` lists
-  which clauses a field also covers; `removedStructuredClauses` is retained as an empty list so
-  existing readers do not break.
+  which clauses a field also covers.
 - Framing is always appended. It used to be skipped whenever a prompt contained both `Composition:`
   and `Required visual structure:` — exactly what `prepare_asset_prompt` writes — so following the
   intake procedure was the one reliable way to lose it.
