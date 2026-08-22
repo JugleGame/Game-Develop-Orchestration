@@ -442,16 +442,29 @@ def test_grid_override_changes_the_canvas_without_touching_the_style(style):
     assert style.pixel_grid == 32
 
 
+def test_the_floor_follows_the_schema_not_one_unexplained_failure(style):
+    """16px is inside ``CreateImagePixfluxRequest.image_size`` (minimum 16).
+
+    The floor previously sat at 32 because one 16x32 request through the MCP
+    path failed with a TaskGroup exception that named no cause. The schema
+    says 16, so a 16-grid request is accepted rather than pre-rejected.
+    """
+
+    from asset.server import _resolve_size
+
+    assert _resolve_size(style, "character", 16, "f-1") == (16, 32)
+
+
 def test_size_below_pixellabs_floor_is_rejected_before_the_call(style):
     from asset.server import _resolve_size
 
     with pytest.raises(Exception) as excinfo:
-        _resolve_size(style, "character", 16, "f-1")
+        _resolve_size(style, "character", 8, "f-1")
 
     message = str(excinfo.value)
     assert '"errorCode": 1000' in message
-    assert "16x32" in message
-    assert "32-400" in message
+    assert "8x16" in message
+    assert "16-400" in message
 
 
 def test_size_above_pixellabs_ceiling_is_rejected_before_the_call(style):
@@ -648,3 +661,146 @@ async def test_a_completed_claim_still_returns_the_existing_asset(monkeypatch, t
     assert second.structured_content["duplicateBlocked"] is True
     assert second.structured_content["assetPath"] == first.structured_content["assetPath"]
     assert len(calls) == 1
+
+
+# --------------------------------------------------------------------------
+# Endpoint style contracts at the server boundary (issue #63)
+# --------------------------------------------------------------------------
+
+
+def test_map_object_style_params_speak_the_endpoints_own_vocabulary(style):
+    """``/map-objects`` declares narrower enums than pixflux, so the locked
+    style has to be translated rather than passed through: it has no
+    "single color black outline" and spells the top level "high detail"."""
+
+    from asset.server import _map_object_style_params
+
+    params = _map_object_style_params(style)
+    allowed = pixellab_client.STYLE_ENUMS["map-objects"]
+
+    assert params["view"] == style.camera_view
+    for field, value in params.items():
+        assert value in allowed[field], (field, value)
+
+    detailed = replace(style, detail="highly detailed")
+    assert _map_object_style_params(detailed)["detail"] == "high detail"
+
+
+def test_generate_map_object_sends_the_locked_style(monkeypatch, tmp_path):
+    """Sending nothing let the endpoint default ``view`` to "high top-down",
+    which drew a side-view game's decorations from above."""
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    captured = {}
+
+    def _fake_map_object(**kwargs):
+        captured.update(kwargs)
+        return Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255)), {}
+
+    monkeypatch.setattr(pixellab_client, "create_map_object", _fake_map_object)
+
+    result = server.generate_map_object(
+        featureId="f-decor", prompt="a mossy rock", gameId="t-decor", size=32
+    )
+
+    style = load_or_create(tmp_path, "t-decor", server.DEFAULT_ART_STYLE)
+    assert captured["view"] == style.camera_view
+    assert captured["color_palette"] == _pixellab_palette(style, "prop", "a mossy rock")
+    assert result["status"] == "pending"
+
+
+def test_generate_map_object_rejects_a_size_below_the_endpoints_floor(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+
+    with pytest.raises(Exception) as excinfo:
+        server.generate_map_object(
+            featureId="f-decor", prompt="a mossy rock", gameId="t-decor", size=16
+        )
+
+    assert "32" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("tile_size", [24, 48, 64])
+def test_generate_tileset_rejects_a_tile_size_outside_the_enum(
+    monkeypatch, tmp_path, tile_size
+):
+    """``TileSize`` is an enum, so 24 and 48 are 422s despite sitting inside
+    the 16-64 range this used to accept."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+
+    with pytest.raises(Exception) as excinfo:
+        server.generate_tileset(
+            featureId="f-tiles",
+            lowerDescription="grass",
+            upperDescription="stone",
+            gameId="t-tiles",
+            tileSize=tile_size,
+        )
+
+    assert "tileSize" in str(excinfo.value)
+
+
+def test_generate_tileset_style_values_are_accepted_by_the_endpoint(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    captured = {}
+
+    def _fake_tileset(**kwargs):
+        captured.update(kwargs)
+        return (
+            [{"name": "wang_0", "image": Image.new("RGBA", (32, 32)), "corners": {}}],
+            {},
+            {},
+        )
+
+    monkeypatch.setattr(pixellab_client, "create_tileset", _fake_tileset)
+
+    server.generate_tileset(
+        featureId="f-tiles",
+        lowerDescription="grass",
+        upperDescription="stone",
+        gameId="t-tiles",
+        tileSize=32,
+    )
+
+    allowed = pixellab_client.STYLE_ENUMS["tilesets"]
+    for field in ("view", "outline", "shading", "detail"):
+        assert captured[field] in allowed[field], (field, captured[field])
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("detail", "minimal detail"), ("shading", "heavy shading")],
+)
+def test_establish_art_style_rejects_a_value_outside_the_schema(
+    monkeypatch, tmp_path, field, value
+):
+    """Checked before freezing: these are written to the game's style.json and
+    read by every later asset, so a wrong value would 422 the whole game."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+
+    with pytest.raises(Exception) as excinfo:
+        server.establish_art_style(gameId="t-enum", **{field: value})
+
+    message = str(excinfo.value)
+    assert '"errorCode": 1000' in message
+    assert field in message
+    assert not (tmp_path / "styles" / "t-enum.json").exists()
+
+
+def test_establish_art_style_accepts_the_schema_values(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+
+    result = server.establish_art_style(
+        gameId="t-enum-ok", detail="low detail", shading="basic shading"
+    )
+
+    assert result["detail"] == "low detail"
+    assert result["shading"] == "basic shading"

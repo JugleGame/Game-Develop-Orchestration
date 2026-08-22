@@ -350,7 +350,9 @@ async def test_variation_batch_uses_approved_style_references(monkeypatch):
 
     def _fake_variations(**kwargs):
         captured.append(kwargs)
-        width, height = kwargs["output_size"]
+        # The provider deduces the output size from the style references, so
+        # the fake answers at the reference's size rather than a requested one.
+        width, height = kwargs["style_images"][0].size
         box = (width // 4, height // 4, width * 3 // 4, height * 3 // 4)
         first = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         first.paste((10, 20, 30, 255), box)
@@ -414,7 +416,7 @@ async def test_variation_batch_uses_approved_style_references(monkeypatch):
     assert len(body["styleAssetIds"]) == 2
     assert len(captured[0]["style_images"]) == 2
     assert captured[0]["style_images"][0].tobytes() == captured[1]["style_images"][0].tobytes()
-    assert captured[0]["output_size"] == captured[0]["style_images"][0].size
+    assert "output_size" not in captured[0]
     assert all(Path(asset["assetPath"]).exists() for asset in body["assets"])
     assert selected.structured_content["semanticStatus"] == "approved"
     assert selected.structured_content["readyForVariations"] is False
