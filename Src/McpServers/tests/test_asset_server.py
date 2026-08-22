@@ -479,6 +479,44 @@ async def test_variation_batch_rejects_unapproved_style_reference(monkeypatch):
     )
 
 
+async def test_the_palette_lock_makes_it_a_different_asset(monkeypatch):
+    """The same prompt with the game ramp forced on is a different image from
+    the same prompt without it, so both have to exist to be compared. Before
+    the lock joined the digest the second call came back duplicate_blocked."""
+
+    def _fake_prototype(**kwargs):
+        image = Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255))
+        return image, {"type": "generations", "generations": 1.0}, "create_image"
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
+    async with session() as client:
+        locked = await sprite_call(
+            client,
+            {
+                "featureId": "f-palette",
+                "prompt": "a lone figure",
+                "assetKind": "character",
+                "gameId": "t-palette-digest",
+                "paletteLock": True,
+            },
+        )
+        unlocked = await sprite_call(
+            client,
+            {
+                "featureId": "f-palette",
+                "prompt": "a lone figure",
+                "assetKind": "character",
+                "gameId": "t-palette-digest",
+                "paletteLock": False,
+            },
+        )
+
+    assert locked.is_error is False
+    assert unlocked.is_error is False
+    assert unlocked.structured_content.get("duplicateBlocked") is not True
+    assert locked.structured_content["assetId"] != unlocked.structured_content["assetId"]
+
+
 async def test_variation_batch_takes_the_bitforge_path_for_a_character(monkeypatch):
     """A character prototype is square, so a single-reference character batch
     keeps the endpoint that carries ``styleStrength`` and its siblings.

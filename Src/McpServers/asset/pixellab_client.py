@@ -196,6 +196,39 @@ def _image_b64(image: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
+def _fit_to_canvas(image: Image.Image, width: int, height: int) -> Image.Image:
+    """Resize a reference to an exact canvas without changing its proportions.
+
+    The endpoint requires the reference to be exactly the requested canvas, so
+    something has to give when the two shapes disagree. Stretching is the wrong
+    thing to give: measured 2026-08-23, a 66x161 concept-art cutout squashed
+    into 64x64 came back as two and then three overlapping figures, at
+    ``init_image_strength`` 900 and 600 alike — the strength was not what was
+    wrong, the reference was. A squashed human reads as several humans.
+
+    So the image is scaled by one factor and the leftover is transparent. The
+    subject sits **bottom-centred**, because a side-view sprite stands on the
+    bottom of its canvas and that is where the generator is being asked to put
+    it. References that already match the canvas aspect — every stored sprite
+    of the same kind, which is the ordinary case — take the plain resize and
+    are unaffected.
+    """
+
+    if image.size == (width, height):
+        return image
+    source = image if image.mode == "RGBA" else image.convert("RGBA")
+    if source.width * height == source.height * width:
+        return source.resize((width, height), Image.NEAREST)
+    scale = min(width / source.width, height / source.height)
+    scaled = source.resize(
+        (max(1, round(source.width * scale)), max(1, round(source.height * scale))),
+        Image.NEAREST,
+    )
+    canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    canvas.paste(scaled, ((width - scaled.width) // 2, height - scaled.height))
+    return canvas
+
+
 def _prototype_tool(tools: list[Any], kind: str) -> Any:
     """Choose a compatible image-creation tool exposed by PixelLab's MCP server."""
 
@@ -919,10 +952,11 @@ def create_image_bitforge(
     The cost is reach: ``image_size`` stops at 200 per side (``pixflux``
     allows 400), so a large asset still has to go through ``generate_image``.
 
-    ``style_image`` and ``init_image`` are resized to the requested canvas
+    ``style_image`` and ``init_image`` are fitted to the requested canvas
     before they are sent. The endpoint requires an exact match and says so
     with a 500 rather than a 422, which is not something a caller can be
-    expected to discover from the schema.
+    expected to discover from the schema. A reference whose aspect differs from
+    the canvas is padded, not stretched — see ``_fit_to_canvas``.
     """
 
     _reject_style_enums(
@@ -977,9 +1011,10 @@ def create_image_bitforge(
         # ``style_image must be size (64, 32), not torch.Size([256, 128])``.
         # Stored sprites are upscaled copies of their generated canvas, so this
         # is normally an exact integer downscale back to the pixels the
-        # reference was drawn at.
-        if style_image.size != (width, height):
-            style_image = style_image.resize((width, height), Image.NEAREST)
+        # reference was drawn at. A reference of another shape — concept art a
+        # human drew at whatever size suited them — is padded rather than
+        # stretched; see ``_fit_to_canvas``.
+        style_image = _fit_to_canvas(style_image, width, height)
         payload["style_image"] = {
             "type": "base64",
             "base64": _image_b64(style_image),
@@ -993,8 +1028,7 @@ def create_image_bitforge(
     elif style_strength is not None:
         payload["style_strength"] = style_strength
     if init_image is not None:
-        if init_image.size != (width, height):
-            init_image = init_image.resize((width, height), Image.NEAREST)
+        init_image = _fit_to_canvas(init_image, width, height)
         payload["init_image"] = {
             "type": "base64",
             "base64": _image_b64(init_image),
@@ -1082,6 +1116,10 @@ def generate_with_style(
     if not 1 <= len(style_images) <= 4:
         raise PixelLabUnavailable("style_images must contain between 1 and 4 images")
 
+    # Scaled by one factor per image, so this path never squashes a reference
+    # and needs no padding: the endpoint deduces the output size from what it
+    # is given rather than demanding a canvas. Only bitforge has to match an
+    # exact canvas, which is why ``_fit_to_canvas`` lives on that path alone.
     normalized_style_images = []
     for image in style_images:
         scale = min(1.0, STYLE_IMAGE_MAX_SIDE / max(image.size))

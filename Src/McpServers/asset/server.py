@@ -506,6 +506,14 @@ def _posable_canvas(width: int, height: int) -> tuple[int, int] | None:
     square.
     """
 
+    if width == height:
+        # Already square: there is nothing for the growth to fix, whatever the
+        # size. The friendly list is about keypoints, and a keypoint request on
+        # a square canvas outside it is reported by
+        # ``pixellab_client.skeleton_size_warning`` instead. Without this, a
+        # 128x128 request fell past the list and was reported as unreliable
+        # "on a non-square canvas" — about a canvas that is square.
+        return (width, height)
     needed = max(width, height)
     for side in sorted(pixellab_client.SKELETON_FRIENDLY_SIZES):
         if side >= needed:
@@ -767,6 +775,14 @@ def _generate_prototype(
     digest_source = prompt if grid_size is None else f"{prompt}|grid{grid_size}"
     if canvas is not None:
         digest_source = f"{digest_source}|canvas{canvas[0]}x{canvas[1]}"
+    # The palette joins it too, for the same reason as the grid and the canvas:
+    # the same prompt with the game ramp forced on is a different image from the
+    # same prompt without it, so asking for both has to produce two assets to
+    # compare rather than a duplicate block on the second. Only the non-default
+    # value is appended, so digests written before this still resolve to the
+    # same asset id and file.
+    if not palette_lock:
+        digest_source = f"{digest_source}|palette-unlocked"
     prompt_digest = hashlib.sha256(digest_source.encode()).hexdigest()[:8]
     asset_id = f"{resolved_game}__{feature_id}__{kind}__{prompt_digest}"
     if not pixellab_client.is_configured():
