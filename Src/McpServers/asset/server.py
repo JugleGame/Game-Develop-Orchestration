@@ -99,11 +99,51 @@ _KIND_SIZE_RATIO: dict[str, tuple[float, float]] = {
 }
 
 
-def _size_for(style: Any, kind: render.AssetKind) -> tuple[int, int]:
-    """Native PixelLab generation size for this kind, derived from the game's grid."""
+# PixelLab (Pixflux) accepts 32-400px per side. Below the floor the call fails
+# with a TaskGroup exception that names no cause (measured 2026-08-22: a 16x32
+# character request, two of two samples); above the ceiling it 400s. Both are
+# cheaper to catch here than to rediscover from an opaque provider error.
+_PIXELLAB_MIN_SIDE = 32
+_PIXELLAB_MAX_SIDE = 400
+
+
+def _size_for(
+    style: Any, kind: render.AssetKind, grid: int | None = None
+) -> tuple[int, int]:
+    """Native PixelLab generation size for this kind, derived from a grid.
+
+    ``grid`` overrides ``style.pixel_grid`` for one call. Without it the game's
+    locked grid decides every asset's canvas, so two things of different
+    in-world size (a boy and the giant chasing him) can only be generated at
+    the same pixel density by editing the game's style file between calls —
+    which mutates shared state and races any concurrent generation.
+    """
 
     width_ratio, height_ratio = _KIND_SIZE_RATIO.get(kind, (1.0, 1.0))
-    return int(style.pixel_grid * width_ratio), int(style.pixel_grid * height_ratio)
+    resolved = style.pixel_grid if grid is None else grid
+    return int(resolved * width_ratio), int(resolved * height_ratio)
+
+
+def _resolve_size(
+    style: Any, kind: render.AssetKind, grid: int | None, feature_id: str
+) -> tuple[int, int]:
+    """Size for this call, rejected here rather than by an opaque provider error."""
+
+    if grid is not None and grid <= 0:
+        raise tool_error(VALIDATION_ERROR, "gridSize must be a positive integer")
+    width, height = _size_for(style, kind, grid)
+    if not (
+        _PIXELLAB_MIN_SIDE <= width <= _PIXELLAB_MAX_SIDE
+        and _PIXELLAB_MIN_SIDE <= height <= _PIXELLAB_MAX_SIDE
+    ):
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"{kind} at grid {style.pixel_grid if grid is None else grid} generates "
+            f"{width}x{height}, outside PixelLab's "
+            f"{_PIXELLAB_MIN_SIDE}-{_PIXELLAB_MAX_SIDE}px per-side range",
+            featureId=feature_id,
+        )
+    return width, height
 
 
 def _now() -> str:
@@ -504,6 +544,7 @@ def _generate_prototype(
     game_id: str | None,
     forced_kind: render.AssetKind | None = None,
     art_style: str | None = None,
+    grid_size: int | None = None,
 ) -> dict[str, Any]:
     """Generate the reviewable style prototype through PixelLab's official MCP."""
 
@@ -515,9 +556,12 @@ def _generate_prototype(
     )
     kind = forced_kind or render.classify(prompt)
     prompt_plan = prompting.compose(prompt, kind)
-    width, height = _size_for(style, kind)
+    width, height = _resolve_size(style, kind, grid_size, feature_id)
     seed = render.rng_for(style, feature_id, prompt).getrandbits(32)
-    prompt_digest = hashlib.sha256(prompt.encode()).hexdigest()[:8]
+    # The grid joins the digest only when overridden, so digests written before
+    # this parameter existed still resolve to the same asset id and file.
+    digest_source = prompt if grid_size is None else f"{prompt}|grid{grid_size}"
+    prompt_digest = hashlib.sha256(digest_source.encode()).hexdigest()[:8]
     asset_id = f"{resolved_game}__{feature_id}__{kind}__{prompt_digest}"
     if not pixellab_client.is_configured():
         raise tool_error(MCP_ERROR, "PIXELLAB_API_KEY is not set", featureId=feature_id)
@@ -690,7 +734,8 @@ def prepare_asset_prompt(
 @mcp.tool(
     description=(
         "Generate the initial 2D style prototype through PixelLab's official MCP. "
-        "Approve it before requesting API variations."
+        "Approve it before requesting API variations. Pass gridSize to generate one "
+        "asset at a different in-world size without changing the game's locked grid."
     )
 )
 @expects_dict_return
@@ -700,13 +745,22 @@ def generate_2d_sprite(
     gameId: str | None = None,
     artStyle: str | None = None,
     assetKind: str | None = None,
+    gridSize: int | None = None,
 ) -> dict[str, Any]:
+    """``gridSize`` overrides the game's pixel grid for this one asset.
+
+    Same density, different in-world size: a 32 grid character generates
+    32x64, a 56 grid character 56x112, and both upscale by the same factor.
+    The game's stored style is untouched either way.
+    """
+
     return _generate_prototype(
         featureId,
         prompt,
         gameId,
         forced_kind=_asset_kind(assetKind),
         art_style=artStyle,
+        grid_size=gridSize,
     )
 
 
