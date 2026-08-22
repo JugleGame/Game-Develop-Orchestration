@@ -52,6 +52,14 @@ _NEGATION_CLAUSE = re.compile(
     re.IGNORECASE,
 )
 
+# What a clause forbids, with the negation word taken off: "no city" -> "city".
+# ``negative_description`` wants the thing to avoid, not the instruction to
+# avoid it, so a clause is only useful there once the leading word is gone.
+_NEGATION_LEAD = re.compile(
+    r"^(?:no|not|never|without|avoid|avoiding|exclude|excluding)\b[\s:,-]*",
+    re.IGNORECASE,
+)
+
 _FRAMING: dict[AssetKind, str] = {
     "character": "full body centered, connected readable silhouette",
     "monster": "single centered creature, fully visible, connected readable silhouette",
@@ -83,6 +91,24 @@ class PromptPlan:
     removed_structured_clauses: tuple[str, ...]
     removed_negations: tuple[str, ...] = ()
 
+    @property
+    def negative_description(self) -> str:
+        """The removed negations as PixelLab's ``negative_description``.
+
+        Removing a negation from the description is right for pixflux, which
+        marks ``negative_description`` ``(Deprecated)`` and draws the noun
+        anyway. It was never right to *discard* the information: bitforge's
+        ``negative_description`` is live, so the same clauses become a usable
+        field there rather than something the caller has to remember.
+        """
+
+        subjects = [
+            stripped
+            for clause in self.removed_negations
+            if (stripped := _NEGATION_LEAD.sub("", clause).strip(" .,;"))
+        ]
+        return ", ".join(dict.fromkeys(subjects))
+
     def metadata(self) -> dict[str, object]:
         return {
             "originalCharacters": self.original_characters,
@@ -90,6 +116,7 @@ class PromptPlan:
             "characterDelta": self.composed_characters - self.original_characters,
             "removedStructuredClauses": list(self.removed_structured_clauses),
             "removedNegations": list(self.removed_negations),
+            "negativeDescription": self.negative_description,
         }
 
 
@@ -123,10 +150,13 @@ def prepare(
     required structures lead and feedback is explicit.
 
     ``avoid`` answers are returned as ``exclusions`` and are deliberately kept
-    out of the provider prompt. PixelLab draws the noun and ignores the
-    negation, so an exclusion list makes the excluded thing more likely, not
-    less (measured 2026-08-22). Restating it positively is a judgement call and
-    belongs to the host: this server never calls a model.
+    out of the provider *description*. PixelLab draws the noun and ignores the
+    negation, so an exclusion written into the description makes the excluded
+    thing more likely, not less (measured 2026-08-22). They are not thrown
+    away: on the bitforge path they are sent as ``negative_description``, a
+    live field there and ``(Deprecated)`` on pixflux. Restating an exclusion
+    positively in ``mustHave`` is still a judgement call and belongs to the
+    host: this server never calls a model.
     """
 
     subject = _SPACE.sub(" ", subject).strip(" .")
@@ -172,8 +202,9 @@ def prepare(
                 "field": "avoid",
                 "question": (
                     "Which misleading interpretations or production defects should be excluded? "
-                    "State the replacement positively in mustHave as well: exclusions are "
-                    "recorded but never sent to the generator."
+                    "State the replacement positively in mustHave as well: exclusions travel as "
+                    "negative_description on the style-reference path and are dropped entirely "
+                    "on the plain one."
                 ),
                 "required": False,
             }

@@ -681,6 +681,184 @@ def generate_image(
 #: output follows the style images rather than a requested size.
 STYLE_IMAGE_MAX_SIDE = 512
 
+#: ``CreateImageBitforgeRequest.image_size`` stops at 200 per side, half of
+#: pixflux's 400. A caller that needs a larger canvas cannot use this endpoint.
+BITFORGE_SIDE_RANGE = (16, 200)
+
+#: ``style_strength`` defaults to 0 in the schema, which means "ignore the
+#: style image entirely". Sending a reference and leaving the strength at the
+#: provider default would silently do nothing, so a caller that supplies a
+#: ``style_image`` and no strength gets the schema's own documented midpoint
+#: ("50 = balanced") instead.
+BITFORGE_BALANCED_STYLE_STRENGTH = 50
+
+_BITFORGE_PATH = "/create-image-bitforge"
+
+
+def create_image_bitforge(
+    *,
+    prompt: str,
+    width: int,
+    height: int,
+    style_image: Image.Image | None = None,
+    style_strength: int | None = None,
+    negative_description: str = "",
+    coverage_percentage: float | None = None,
+    init_image: Image.Image | None = None,
+    init_image_strength: int | None = None,
+    oblique_projection: bool = False,
+    isometric: bool = False,
+    seed: int | None = None,
+    no_background: bool = True,
+    forced_palette: list[tuple[int, int, int]] | None = None,
+    outline: str | None = None,
+    shading: str | None = None,
+    detail: str | None = None,
+    view: str | None = None,
+    text_guidance_scale: float = DEFAULT_TEXT_GUIDANCE,
+) -> tuple[Image.Image, dict[str, Any]]:
+    """Call ``/create-image-bitforge`` and return ``(image, usage)``.
+
+    Synchronous like ``generate_image``: 200 with ``{"image": ..., "usage":
+    ...}``, no polling. It is the endpoint that carries the controls pixflux
+    does not have, which is the whole reason for a second image path:
+
+    * ``style_image`` + ``style_strength`` (0-100) — "draw it like this
+      picture". Nothing in pixflux does this; the game's palette lock is the
+      closest it gets, and a palette cannot carry line weight, proportion, or
+      shading habits.
+    * ``negative_description`` — here it is a live field
+      (``"Text description of what to avoid in the generated image"``),
+      whereas pixflux marks the same field ``(Deprecated)``. That difference
+      is why exclusions are dropped on one path and sent on this one.
+    * ``coverage_percentage`` — how much of the canvas the subject fills,
+      which is the field that actually addresses "the figure came out cropped"
+      rather than stretching the canvas ratio until it stops happening.
+    * ``init_image`` + ``init_image_strength`` (1-999) — start from a drawing.
+    * ``oblique_projection`` / ``isometric`` — real booleans, not camera views.
+
+    The cost is reach: ``image_size`` stops at 200 per side (``pixflux``
+    allows 400), so a large asset still has to go through ``generate_image``.
+
+    ``style_image`` and ``init_image`` are resized to the requested canvas
+    before they are sent. The endpoint requires an exact match and says so
+    with a 500 rather than a 422, which is not something a caller can be
+    expected to discover from the schema.
+    """
+
+    _reject_style_enums(
+        "create-image-pixflux",
+        outline=outline,
+        shading=shading,
+        detail=detail,
+        view=view,
+    )
+    _reject_text_guidance(text_guidance_scale)
+    low, high = BITFORGE_SIDE_RANGE
+    if not (low <= width <= high and low <= height <= high):
+        raise PixelLabUnavailable(
+            f"bitforge size must be {low}-{high}px per side, got {width}x{height}; "
+            "use generate_image for a larger canvas"
+        )
+    if style_strength is not None and not 0 <= style_strength <= 100:
+        raise PixelLabUnavailable(
+            f"style_strength must be 0-100, got {style_strength!r}"
+        )
+    if coverage_percentage is not None and not 0 <= coverage_percentage <= 100:
+        raise PixelLabUnavailable(
+            f"coverage_percentage must be 0-100, got {coverage_percentage!r}"
+        )
+    if init_image_strength is not None and not 1 <= init_image_strength <= 999:
+        raise PixelLabUnavailable(
+            f"init_image_strength must be 1-999, got {init_image_strength!r}"
+        )
+
+    api_key = os.getenv("PIXELLAB_API_KEY")
+    if not api_key:
+        raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+
+    payload: dict[str, Any] = {
+        "description": prompt,
+        "image_size": {"width": width, "height": height},
+        "no_background": no_background,
+        "text_guidance_scale": text_guidance_scale,
+    }
+    if style_image is not None:
+        # Undocumented and answered with a 500, not a 422: the style image must
+        # be exactly the requested canvas. Measured 2026-08-22 — a 128x256
+        # reference against a 32x64 request returned
+        # ``style_image must be size (64, 32), not torch.Size([256, 128])``.
+        # Stored sprites are upscaled copies of their generated canvas, so this
+        # is normally an exact integer downscale back to the pixels the
+        # reference was drawn at.
+        if style_image.size != (width, height):
+            style_image = style_image.resize((width, height), Image.NEAREST)
+        payload["style_image"] = {
+            "type": "base64",
+            "base64": _image_b64(style_image),
+            "format": "png",
+        }
+        # Only defaulted when there is a reference to weigh: sending a strength
+        # with no style image would claim an influence that does not exist.
+        payload["style_strength"] = (
+            BITFORGE_BALANCED_STYLE_STRENGTH if style_strength is None else style_strength
+        )
+    elif style_strength is not None:
+        payload["style_strength"] = style_strength
+    if init_image is not None:
+        if init_image.size != (width, height):
+            init_image = init_image.resize((width, height), Image.NEAREST)
+        payload["init_image"] = {
+            "type": "base64",
+            "base64": _image_b64(init_image),
+            "format": "png",
+        }
+        if init_image_strength is not None:
+            payload["init_image_strength"] = init_image_strength
+    if negative_description.strip():
+        payload["negative_description"] = negative_description.strip()
+    if coverage_percentage is not None:
+        payload["coverage_percentage"] = coverage_percentage
+    if oblique_projection:
+        payload["oblique_projection"] = True
+    if isometric:
+        payload["isometric"] = True
+    if seed is not None:
+        payload["seed"] = seed
+    if forced_palette:
+        payload["color_image"] = {
+            "type": "base64",
+            "base64": _palette_swatch_b64(forced_palette),
+            "format": "png",
+        }
+    for field, value in (
+        ("outline", outline),
+        ("shading", shading),
+        ("detail", detail),
+        ("view", view),
+    ):
+        if value is not None:
+            payload[field] = value
+
+    try:
+        response = httpx.post(
+            f"{BASE_URL}{_BITFORGE_PATH}",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except httpx.HTTPError as exc:
+        raise PixelLabUnavailable(f"PixelLab bitforge request failed: {exc}") from exc
+
+    try:
+        image = _decode(data["image"]["base64"])
+    except (KeyError, TypeError, ValueError, OSError) as exc:
+        raise PixelLabUnavailable(f"malformed PixelLab bitforge response: {exc}") from exc
+
+    return image, dict(data.get("usage") or {})
+
 
 def generate_with_style(
     *,

@@ -151,16 +151,73 @@ Server: `AssetGenMcpServer`.
 - PixelLab MCP failures arrive inside a `TaskGroup`, whose own message names no cause. The client
   flattens the group to its leaf exceptions, so the returned message carries the provider's real
   error type and text.
-- `generate_2d_variations` accepts only approved MCP prototypes as style anchors and uses
-  PixelLab's `generate-with-style-v2` REST endpoint for same-direction batch variations. The
-  primary `prototypeAssetId` plus optional `styleAssetIds` form a deduplicated bank of one to four
-  references.
-- That endpoint takes no output size. `GenerateWithStyleV2Request.image_size` is marked
+- `generate_2d_variations` takes any approved PixelLab asset of the same game as a style anchor.
+  The primary `prototypeAssetId` plus optional `styleAssetIds` form a deduplicated bank of one to
+  four references. Anchor eligibility used to require `provenance.method == "pixellab-mcp"`
+  exactly, which excluded every REST-generated asset and every approved variation; what matters is
+  that a human approved a PixelLab image of this game, not which endpoint drew it. A tileset or
+  other non-sprite kind is still refused, because its `asset_path` is a JSON index.
+- **There is no square requirement.** Every character is a 1:2 kind, so every character prototype
+  is non-square; the previous square gate made the server's only style-reference path unusable for
+  exactly the assets whose style matters most. Neither endpoint requires a square reference.
+- The batch picks its endpoint from the reference count and the native canvas:
+
+  | condition | endpoint | what it gives up |
+  | --- | --- | --- |
+  | 1 reference, ≤200px per side | `create-image-bitforge` | at most one reference |
+  | otherwise | `generate-with-style-v2` | `styleStrength`, `coveragePercentage`, `negativeDescription` |
+
+  The chosen endpoint is returned as `endpoint` and recorded in each asset's provenance.
+  `styleStrength`, `coveragePercentage`, and `negativeDescription` exist only on the bitforge path;
+  passing one when the batch would fall back is a validation error, not a silent no-op.
+- The provider is asked for the **native** canvas, not the stored one. Sprites are stored at four
+  times their generated size, so requesting the stored size would generate a different asset — and
+  a 128x256 request exceeds bitforge's 200px limit outright. The result is upscaled to the stored
+  size with nearest-neighbour, as the sprite paths do.
+- `style_strength` is 0-100 and its schema default is **0**, which means "ignore the style image".
+  A reference sent with no explicit strength therefore gets the schema's own documented midpoint,
+  50 (`BITFORGE_BALANCED_STYLE_STRENGTH`); leaving the provider default would silently discard the
+  reference.
+- `generate-with-style-v2` takes no output size. `GenerateWithStyleV2Request.image_size` is marked
   `deprecated` with the description `REMOVED. Output size is deduced from the style images.`, so
   no size is sent and the returned size is recorded rather than checked against a size that was
   never requested. Reference images are capped at 512px per side, which is the model's own size.
-- `generate_2d_variations` still accepts square primary prototypes only. That gate is this server's,
-  not the provider's, and it excludes every character (a 1:2 kind).
+- `create-image-bitforge` stops at 200px per side, half of pixflux's 400. That is the trade for its
+  controls: a larger asset still has to go through `generate_2d_sprite`.
+- **The style reference must be exactly the requested canvas.** This is not in the schema and the
+  provider reports it as a 500, not a 422: a 128x256 reference against a 32x64 request answered
+  `style_image must be size (64, 32), not torch.Size([256, 128])` (measured 2026-08-22). The client
+  therefore resizes `style_image` and `init_image` to the requested canvas before sending. Stored
+  sprites are upscaled copies of their generated canvas, so this is normally an exact integer
+  downscale back to the pixels the reference was drawn at. A reference whose *aspect* differs from
+  the target — a 1:2 character anchoring a 1:1 prop — is squashed, so anchor a kind with its own
+  aspect ratio.
+- **Measured, and it is not what "style transfer" suggests** (2026-08-22, shared seed per prompt,
+  `var/assets/experiments/round-1-character/` and `round-1-prop/`). `style_image` carries the
+  reference's *subject*, not only its look, and it outranks the description:
+
+  | prompt | anchor | pixflux | bitforge s30 / s50 / s80 |
+  | --- | --- | --- | --- |
+  | a **blue**-cloaked girl with a lantern | **red**-cloaked boy with a lantern | blue cloak, as asked | red cloak at every strength; pose and proportions follow the anchor; at 80 the face is gone and a second lantern appears |
+  | a small iron **lantern** | a wooden **chest** | a clean lantern | a chest at every strength; at 80 it is the anchor with a glowing panel |
+
+  The prop row is the important one: the described subject never appeared. Treat `style_image` as
+  "another take on *this* asset", not "a different asset drawn in this asset's style".
+
+  | goal | path |
+  | --- | --- |
+  | a new subject exactly as described | pixflux (`generate_2d_sprite`) |
+  | variations of an asset that already exists | bitforge (`generate_2d_variations`) |
+  | a *different* subject sharing a game's look | neither — use the locked palette and structured style fields |
+
+  This is why `generate_2d_variations` is the right home for bitforge: its prompts vary an existing
+  prototype ("red treasure chest", "blue treasure chest"), which is exactly the case the endpoint
+  serves. A prompt there that names a different subject comes back as the anchor.
+- `styleStrength` above ~50 buys reference adherence by overriding the description, including
+  colours the prompt names. Below 30 was not measured. Treat it as a knob to turn down, not up.
+- `readyForVariations` means "this asset can anchor a batch" and is true for any approved PixelLab
+  asset, including an approved variation. `nextAction` still distinguishes a prototype from a
+  batch's output: an approved variation is told to `import_asset`, not to generate more variations.
 - `detail` and `shading` are fields of the game's frozen `ArtStyle`, set once through
   `establish_art_style` and stored in `var/assets/styles/<gameId>.json`. They are not per-call
   arguments: a game whose concept art holds two tones per material needs the same setting on every
@@ -199,7 +256,14 @@ Server: `AssetGenMcpServer`.
 - `tileSize` is an enum, not a range: `TileSize` declares 16, 32, and 64, and 64 additionally
   requires a `pro` mode this server never sends, so only 16 and 32 are accepted. Values such as 24
   and 48 sit inside the old 16-64 range and are still rejected by the provider.
-- Negations never reach the provider. PixelLab draws the noun and ignores the negation:
+- Negations never reach the provider's **description**, and on the bitforge path they are recovered
+  as `negative_description`. That field is live in `CreateImageBitforgeRequest`
+  (`Text description of what to avoid in the generated image`) and `(Deprecated)` in
+  `CreateImagePixfluxRequest`, so the same clause is usable on one path and inert on the other.
+  `promptMetrics.negativeDescription` reports what would be sent: `no city, without buildings`
+  becomes `city, buildings`, with the negation word taken off — the field wants the thing to avoid,
+  not the instruction to avoid it.
+- Negations never reach the provider description. PixelLab draws the noun and ignores the negation:
   `no city, no buildings, no street` returned a city, while the same subject without those clauses
   returned none, and the positive `empty background` worked. `prepare_asset_prompt` therefore
   returns `avoid` answers as `exclusions` instead of writing them into the prompt, and prompt
