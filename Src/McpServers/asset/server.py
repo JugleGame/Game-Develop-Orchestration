@@ -223,10 +223,28 @@ def _claim_paid_prototype(asset_id: str) -> dict[str, Any] | None:
         except (OSError, json.JSONDecodeError):
             return {"status": "submission_state_unreadable"}
     with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        json.dump({"assetId": asset_id, "status": "SUBMITTING", "createdAt": _now()}, stream)
+        json.dump(_fresh_prototype_claim(asset_id), stream)
         stream.flush()
         os.fsync(stream.fileno())
     return None
+
+
+def _fresh_prototype_claim(asset_id: str) -> dict[str, Any]:
+    return {"assetId": asset_id, "status": "SUBMITTING", "createdAt": _now()}
+
+
+def _claim_is_retryable(claim: dict[str, Any]) -> bool:
+    """Whether a non-completed claim may be retaken by the same prompt.
+
+    Only a failure that never reached PixelLab's meter qualifies. Anything
+    else — a billable failure, or a claim left at ``SUBMITTING`` because the
+    process died mid-call — stays blocked so the same image is not paid for
+    twice; the blocked response names the file to delete.
+    """
+
+    # ponytail: no age cutoff on SUBMITTING. Add one only if crashed calls
+    # turn out to be common enough that manual deletion is a burden.
+    return claim.get("status") == "FAILED" and not claim.get("billable", True)
 
 
 def _save_prototype_claim(asset_id: str, value: dict[str, Any]) -> None:
@@ -560,12 +578,29 @@ def _generate_prototype(
                 "workflowStage": "prototype",
                 "styleSeed": style.seed,
             }
-        return {
-            "assetId": asset_id,
-            "gameId": resolved_game,
-            "status": "duplicate_blocked",
-            "recoveryRequired": existing_claim.get("status") != "COMPLETED",
-        }
+        if _claim_is_retryable(existing_claim):
+            # Nothing was generated and nothing was billed, so the prompt is
+            # free again. Retaking the claim keeps the prompt — and therefore
+            # the seed (render.rng_for) — identical, which is the whole point:
+            # editing the prompt just to dodge the claim regenerates the asset
+            # with a different seed.
+            _save_prototype_claim(asset_id, _fresh_prototype_claim(asset_id))
+        else:
+            return {
+                "assetId": asset_id,
+                "gameId": resolved_game,
+                "status": "duplicate_blocked",
+                "recoveryRequired": True,
+                "claimPath": str(_prototype_claim_path(asset_id)),
+                "reason": existing_claim.get("error")
+                or f"an earlier request for this prompt is recorded as {existing_claim.get('status')}",
+                "recovery": (
+                    "An earlier request for this exact prompt may already have been billed. "
+                    "Review it, then delete the file at claimPath and call this tool again with "
+                    "the same prompt to force one more generation. Do not reword the prompt: "
+                    "that changes the seed and the asset."
+                ),
+            }
     palette_rgb = _pixellab_palette(style, kind, prompt)
     palette = [f"#{red:02x}{green:02x}{blue:02x}" for red, green, blue in palette_rgb or []]
 
@@ -581,6 +616,18 @@ def _generate_prototype(
             palette=palette,
         )
     except pixellab_client.PixelLabUnavailable as exc:
+        # No image came back, so record how the claim ended instead of leaving
+        # it at SUBMITTING, which used to block this prompt forever.
+        _save_prototype_claim(
+            asset_id,
+            {
+                "assetId": asset_id,
+                "status": "FAILED",
+                "error": str(exc),
+                "billable": bool(getattr(exc, "job_started", False)),
+                "failedAt": _now(),
+            },
+        )
         raise tool_error(
             MCP_ERROR, f"PixelLab MCP prototype failed: {exc}", featureId=feature_id
         ) from exc
