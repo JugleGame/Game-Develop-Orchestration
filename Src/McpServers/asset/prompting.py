@@ -1,8 +1,22 @@
 """Deterministic PixelLab prompt composition.
 
-The host owns the asset intent. This module only removes instructions already
-represented by PixelLab's structured fields and appends the minimum framing
-needed for each asset kind. It never calls a model or invents subject details.
+The host owns the asset intent. This module normalises it, drops exact
+duplicates, and appends the minimum framing needed for each asset kind. It
+never calls a model or invents subject details.
+
+It used to also *delete* wording that a structured field could carry —
+"flat shading", "side view", "pixel art" — on the belief that the fields
+outrank the description. PixelLab's own schema says the opposite about every
+one of them:
+
+    outline  "Outline style reference (weakly guiding)"
+    shading  "Shading style reference (weakly guiding)"
+    detail   "Detail style reference (weakly guiding)"
+    view     "Camera view angle (weakly guiding)"
+
+Weakly guiding fields bias a result; they do not override a description. So
+deleting the description's own wording removed the strong signal and left only
+the weak one. Both are sent now.
 """
 
 from __future__ import annotations
@@ -16,8 +30,10 @@ from .render import AssetKind
 _SPACE = re.compile(r"\s+")
 _SEPARATOR = re.compile(r"\s*[,;|]\s*")
 
-# These clauses duplicate API fields set by server._pixellab_style_params or
-# the request payload. Matching whole clauses keeps subject phrases intact.
+# Clauses that a structured field also carries. They are **kept** in the
+# description — see the module docstring — and only reported, so a caller can
+# still see which parts of a prompt are duplicated by a field. Exact repeats
+# within one prompt are still collapsed, as they are for any other clause.
 _STRUCTURED_CLAUSES = frozenset(
     {
         "pixel art",
@@ -88,6 +104,9 @@ class PromptPlan:
     prompt: str
     original_characters: int
     composed_characters: int
+    #: Clauses a structured field also carries. Kept in the prompt, not removed
+    #: — the name is retained so existing readers of ``promptMetrics`` keep
+    #: working, and ``structuredClauses`` in the metadata says what it means.
     removed_structured_clauses: tuple[str, ...]
     removed_negations: tuple[str, ...] = ()
 
@@ -114,7 +133,10 @@ class PromptPlan:
             "originalCharacters": self.original_characters,
             "composedCharacters": self.composed_characters,
             "characterDelta": self.composed_characters - self.original_characters,
-            "removedStructuredClauses": list(self.removed_structured_clauses),
+            # Reported, not removed. The old key keeps its name for readers
+            # that already look for it; both now list what was *kept*.
+            "removedStructuredClauses": [],
+            "structuredClauses": list(self.removed_structured_clauses),
             "removedNegations": list(self.removed_negations),
             "negativeDescription": self.negative_description,
         }
@@ -238,38 +260,46 @@ def prepare(
 
 
 def compose(prompt: str, kind: AssetKind) -> PromptPlan:
-    """Preserve intent, remove structured duplicates, and add kind framing."""
+    """Preserve intent, drop exact repeats, and add kind framing.
+
+    Style wording is kept rather than stripped: the fields that would carry it
+    are all ``(weakly guiding)`` in PixelLab's schema, so removing it from the
+    description traded a strong signal for a weak one. The clauses a field also
+    covers are reported in ``structuredClauses`` instead.
+    """
 
     normalized = _SPACE.sub(" ", prompt).strip()
     kept: list[str] = []
-    removed: list[str] = []
+    structured: list[str] = []
     negated: list[str] = []
     for clause in _SEPARATOR.split(normalized):
         clause = clause.strip(" .")
         if not clause:
             continue
         lowered = clause.casefold()
-        if lowered in _STRUCTURED_CLAUSES or _SIZE_CLAUSE.fullmatch(lowered):
-            removed.append(clause)
-        elif _NEGATION_CLAUSE.match(clause):
+        if _NEGATION_CLAUSE.match(clause):
             negated.append(clause)
-        elif lowered not in {item.casefold() for item in kept}:
-            kept.append(clause)
+            continue
+        if lowered in {item.casefold() for item in kept}:
+            continue
+        if lowered in _STRUCTURED_CLAUSES or _SIZE_CLAUSE.fullmatch(lowered):
+            structured.append(clause)
+        kept.append(clause)
 
     subject = ", ".join(kept) or normalized
     framing = _FRAMING[kind]
-    structured_brief = all(
-        marker in subject.casefold()
-        for marker in ("composition:", "required visual structure:")
-    )
-    if not structured_brief and framing.casefold() not in subject.casefold():
+    # No exemption for a structured brief. The check used to skip the framing
+    # whenever the prompt contained "Composition:" and "Required visual
+    # structure:" — which is exactly what ``prepare`` writes, so following the
+    # intake procedure was the one way to always lose the framing.
+    if framing.casefold() not in subject.casefold():
         subject = f"{subject}; {framing}"
 
     return PromptPlan(
         prompt=subject,
         original_characters=len(normalized),
         composed_characters=len(subject),
-        removed_structured_clauses=tuple(removed),
+        removed_structured_clauses=tuple(structured),
         removed_negations=tuple(negated),
     )
 

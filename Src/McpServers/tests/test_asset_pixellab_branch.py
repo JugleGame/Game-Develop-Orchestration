@@ -70,21 +70,37 @@ def test_prompt_composition_removes_structured_duplication(kind, prompt, framing
     plan = prompting.compose(prompt, kind)
 
     assert framing in plan.prompt
-    assert plan.composed_characters <= plan.original_characters
+    # Style wording is kept, not deleted: every field that would carry it is
+    # documented "(weakly guiding)" in PixelLab's schema, so removing it from
+    # the description traded the strong signal for the weak one. The prompt
+    # therefore grows by the framing rather than shrinking.
+    assert plan.composed_characters > plan.original_characters
     assert plan.removed_structured_clauses
+    for clause in plan.removed_structured_clauses:
+        assert clause in plan.prompt
+    assert plan.metadata()["structuredClauses"] == list(plan.removed_structured_clauses)
 
 
-def test_prompt_composition_does_not_repeat_a_complete_prepared_brief():
-    prompt = (
-        "a brass lantern. Composition: centered with a broad base and narrow top handle. "
-        "Required visual structure: one connected silhouette; three support feet. "
-        "Readability target: a 32 px pickup. Exclude: text."
+def test_a_prepared_brief_still_gets_its_framing():
+    """The framing used to be skipped whenever the prompt carried both
+    "Composition:" and "Required visual structure:" — which is exactly what
+    ``prepare`` writes. Following the intake procedure was therefore the one
+    reliable way to lose the framing."""
+
+    prepared = prompting.prepare(
+        "prop",
+        subject="a brass lantern",
+        purpose="a 32 px pickup",
+        composition="centered with a broad base and narrow top handle",
+        must_have=["one connected silhouette", "three support feet"],
+        art_style="pixel art",
     )
+    assert prepared["readyForPrototype"] is True
 
-    plan = prompting.compose(prompt, "prop")
+    plan = prompting.compose(prepared["prompt"], "prop")
 
-    assert "single centered isolated object" not in plan.prompt
-    assert plan.composed_characters <= plan.original_characters
+    assert "single centered isolated object" in plan.prompt
+    assert "a brass lantern" in plan.prompt
 
 
 # --------------------------------------------------------------------------
@@ -341,7 +357,18 @@ def test_defaults_reproduce_the_previous_hardcoded_values(style):
         "shading": "medium shading",
         "detail": "medium detail",
         "view": style.camera_view,
+        "direction": style.direction,
+        "isometric": style.isometric,
     }
+
+
+def test_a_per_asset_direction_overrides_only_that_call(style):
+    """A game locks which way its sprites face; one asset may need another
+    (a door on the west wall, an NPC turned toward the player)."""
+
+    assert _pixellab_style_params(style, "character")["direction"] == style.direction
+    assert _pixellab_style_params(style, "character", "west")["direction"] == "west"
+    assert style.direction == "east"
 
 
 def test_a_style_json_written_before_these_fields_still_loads(tmp_path):
@@ -864,3 +891,96 @@ def test_pixellab_asset_check_accepts_every_generation_path():
         assert _is_pixellab_asset({"provenance": {"method": method}}) is True
     assert _is_pixellab_asset({"provenance": {"method": "placeholder"}}) is False
     assert _is_pixellab_asset({}) is False
+
+
+# --------------------------------------------------------------------------
+# isometric is a projection, not a camera view (issue #65)
+# --------------------------------------------------------------------------
+
+
+def test_isometric_is_its_own_field_not_a_camera_view():
+    """"isometric" used to be a keyword in the CameraView table, so a game
+    asking for it was sent "high top-down" — a vertical axis, not a diagonal
+    one — and no field ever carried the actual request."""
+
+    from asset.style import derive as derive_style
+
+    iso = derive_style("t-iso", "isometric pixel art")
+    assert iso.isometric is True
+    # Still a downward-looking camera, which is what such a game already got.
+    assert iso.camera_view == "high top-down"
+
+    plain = derive_style("t-plain", "pixel art")
+    assert plain.isometric is False
+    assert plain.camera_view == "side"
+
+    side_iso = derive_style("t-side-iso", "side-scroll isometric")
+    assert side_iso.isometric is True
+    assert side_iso.camera_view == "side"
+
+
+def test_direction_defaults_per_game_and_is_locked():
+    from asset.style import derive as derive_style
+
+    assert derive_style("t-dir", "pixel art").direction == "east"
+    assert derive_style("t-dir2", "pixel art, front-facing").direction == "south"
+    assert derive_style("t-dir3", "pixel art, 뒷모습").direction == "north"
+
+
+def test_a_style_json_without_the_new_fields_still_loads(tmp_path):
+    """The frozen-style guarantee again: both new fields are defaulted, so a
+    game locked before they existed keeps working."""
+
+    import json
+
+    from asset.style import ArtStyle, derive as derive_style, load_or_create as load_style
+
+    reference = derive_style("t-old", "pixel art")
+    stored = {
+        "game_id": "t-old",
+        "art_style": "pixel art",
+        "seed": reference.seed,
+        "palette": reference.palette,
+        "pixel_grid": 32,
+        "outline": True,
+        "camera_view": "side",
+        "detail": "medium detail",
+        "shading": "medium shading",
+    }
+    path = tmp_path / "styles" / "t-old.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(stored), encoding="utf-8")
+
+    loaded = load_style(tmp_path, "t-old", "pixel art")
+    assert isinstance(loaded, ArtStyle)
+    assert loaded.isometric is False
+    assert loaded.direction == "east"
+
+
+def test_server_rejects_a_direction_outside_the_enum():
+    from asset.server import _direction
+
+    assert _direction(None, "f-1") is None
+    assert _direction("  West ", "f-1") == "west"
+
+    with pytest.raises(Exception) as excinfo:
+        _direction("left", "f-1")
+
+    assert '"errorCode": 1000' in str(excinfo.value)
+
+
+def test_structured_style_wording_survives_composition():
+    """The fields that would carry it are all "(weakly guiding)", so deleting
+    it from the description left only the weak signal."""
+
+    plan = prompting.compose("flat shading, a mossy rock, side view", "prop")
+
+    assert "flat shading" in plan.prompt
+    assert "side view" in plan.prompt
+    assert plan.metadata()["structuredClauses"] == ["flat shading", "side view"]
+
+
+def test_an_exact_repeat_is_still_collapsed():
+    plan = prompting.compose("a mossy rock, a mossy rock, flat shading", "prop")
+
+    assert plan.prompt.count("a mossy rock") == 1

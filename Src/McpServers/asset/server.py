@@ -308,6 +308,25 @@ def _resolve_game_id(explicit: str | None) -> str:
     return _require_identifier(os.getenv("ASSET_DEFAULT_GAME_ID", "default"), "gameId")
 
 
+def _direction(value: str | None, feature_id: str) -> str | None:
+    """Validate a per-asset facing before it costs a request.
+
+    ``None`` means "use the game's locked direction"; a wrong value would
+    otherwise come back as a 422 that has already been paid for.
+    """
+
+    if value is None or not value.strip():
+        return None
+    direction = value.strip().lower()
+    if direction not in pixellab_client.DIRECTIONS:
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"direction must be one of {pixellab_client.DIRECTIONS}",
+            featureId=feature_id,
+        )
+    return direction
+
+
 def _asset_kind(value: str | None) -> render.AssetKind | None:
     """Validate an optional explicit kind before prompt classification."""
 
@@ -420,14 +439,14 @@ def _images_generated(usage: dict[str, Any]) -> int:
         return 0
 
 
-def _pixellab_style_params(style: Any, kind: render.AssetKind) -> dict[str, str]:
-    """PixelLab's structured style controls (12문서 §10-7 prompting eval).
+def _pixellab_style_params(
+    style: Any, kind: render.AssetKind, direction: str | None = None
+) -> dict[str, Any]:
+    """PixelLab's structured style controls.
 
-    Confirmed enums, not free text — stuffing style words into the
-    description competes with the subject for the model's attention; these
-    fields don't. ``view`` comes from the locked ``ArtStyle`` (not per-kind),
-    the same way the palette is locked: a game mixing camera angles per asset
-    call reads as broken.
+    Confirmed enums, not free text. ``view`` comes from the locked
+    ``ArtStyle`` (not per-kind), the same way the palette is locked: a game
+    mixing camera angles per asset call reads as broken.
 
     ``shading`` is the one axis that had to differ by kind — the game's own
     setting reads fine on a character or creature body, but the same setting
@@ -435,10 +454,15 @@ def _pixellab_style_params(style: Any, kind: render.AssetKind) -> dict[str, str]
     pixel art (measured, scored 3/5). Flattened for anything that isn't a
     character or monster, whatever the game asks for.
 
-    ``detail`` and ``shading`` come from the locked ``ArtStyle`` for the same
-    reason ``view`` does. A game whose concept art holds two tones per
-    material needs them lowered for every asset, and saying so in the prompt
-    does not work: these fields outrank the description by design.
+    These fields are all documented ``(weakly guiding)``. They bias a result,
+    they do not override the description — which is why ``prompting.compose``
+    keeps the description's own style wording instead of deleting it as a
+    duplicate. Sending both is the point.
+
+    ``direction`` is the one control that is genuinely per-asset: a game locks
+    which way its sprites face, but a single asset may need another (a door on
+    the west wall, an NPC turned to the player). ``None`` means the game's
+    locked value. ``isometric`` is a boolean here, not a camera view.
     """
 
     return {
@@ -446,6 +470,8 @@ def _pixellab_style_params(style: Any, kind: render.AssetKind) -> dict[str, str]
         "shading": style.shading if kind in ("character", "monster") else "flat shading",
         "detail": style.detail,
         "view": style.camera_view,
+        "direction": direction or style.direction,
+        "isometric": style.isometric,
     }
 
 
@@ -465,6 +491,7 @@ def _map_object_style_params(style: Any) -> dict[str, str]:
     """
 
     outline = _pixellab_style_params(style, "prop")["outline"]
+    # No "direction"/"isometric": CreateMapObjectRequest declares neither.
     return {
         "view": style.camera_view,
         "outline": _MAP_OBJECT_OUTLINE.get(outline, outline),
@@ -474,7 +501,12 @@ def _map_object_style_params(style: Any) -> dict[str, str]:
 
 
 def _generate_image(
-    style: Any, kind: render.AssetKind, rng: Any, prompt: str, feature_id: str
+    style: Any,
+    kind: render.AssetKind,
+    rng: Any,
+    prompt: str,
+    feature_id: str,
+    direction: str | None = None,
 ) -> tuple[Image.Image, dict[str, Any]]:
     """PixelLab only. A missing key or a failed call is a tool error.
 
@@ -499,7 +531,7 @@ def _generate_image(
             height=height,
             seed=seed,
             forced_palette=_pixellab_palette(style, kind, prompt),
-            **_pixellab_style_params(style, kind),
+            **_pixellab_style_params(style, kind, direction),
         )
     except pixellab_client.PixelLabUnavailable as exc:
         raise tool_error(
@@ -592,10 +624,12 @@ def _generate_prototype(
     forced_kind: render.AssetKind | None = None,
     art_style: str | None = None,
     grid_size: int | None = None,
+    direction: str | None = None,
 ) -> dict[str, Any]:
     """Generate the reviewable style prototype through PixelLab's official MCP."""
 
     feature_id = _require_identifier(feature_id, "featureId")
+    direction = _direction(direction, feature_id)
     prompt = _require(prompt, "prompt")
     resolved_game = _resolve_game_id(game_id)
     style = load_or_create(
@@ -659,7 +693,7 @@ def _generate_prototype(
             kind=kind,
             seed=seed,
             style_description=style.art_style,
-            style_params=_pixellab_style_params(style, kind),
+            style_params=_pixellab_style_params(style, kind, direction),
             palette=palette,
         )
     except pixellab_client.PixelLabUnavailable as exc:
@@ -782,7 +816,8 @@ def prepare_asset_prompt(
     description=(
         "Generate the initial 2D style prototype through PixelLab's official MCP. "
         "Approve it before requesting API variations. Pass gridSize to generate one "
-        "asset at a different in-world size without changing the game's locked grid."
+        "asset at a different in-world size without changing the game's locked grid, "
+        "and direction to turn one asset without changing which way the game faces."
     )
 )
 @expects_dict_return
@@ -793,12 +828,19 @@ def generate_2d_sprite(
     artStyle: str | None = None,
     assetKind: str | None = None,
     gridSize: int | None = None,
+    direction: str | None = None,
 ) -> dict[str, Any]:
     """``gridSize`` overrides the game's pixel grid for this one asset.
 
     Same density, different in-world size: a 32 grid character generates
     32x64, a 56 grid character 56x112, and both upscale by the same factor.
     The game's stored style is untouched either way.
+
+    ``direction`` is which way the subject faces — one of ``north``,
+    ``north-east``, ``east``, ``south-east``, ``south``, ``south-west``,
+    ``west``, ``north-west``. It is PixelLab's own field; before it was wired
+    up, facing could only be asked for in the prompt text. Omit it to use the
+    game's locked direction.
     """
 
     return _generate_prototype(
@@ -808,6 +850,7 @@ def generate_2d_sprite(
         forced_kind=_asset_kind(assetKind),
         art_style=artStyle,
         grid_size=gridSize,
+        direction=direction,
     )
 
 
@@ -870,6 +913,7 @@ def generate_2d_variations(
     styleStrength: int | None = None,
     coveragePercentage: float | None = None,
     negativeDescription: str = "",
+    direction: str | None = None,
 ) -> dict[str, Any]:
     """Expand an approved prototype using one to four approved style anchors.
 
@@ -886,6 +930,7 @@ def generate_2d_variations(
     """
 
     feature_id = _require_identifier(featureId, "featureId")
+    resolved_direction = _direction(direction, feature_id)
     prototype_id = _require(prototypeAssetId, "prototypeAssetId")
     if not 1 <= len(prompts) <= 25:
         raise tool_error(VALIDATION_ERROR, "prompts must contain between 1 and 25 items")
@@ -1003,7 +1048,7 @@ def generate_2d_variations(
                     coverage_percentage=coveragePercentage,
                     seed=seed,
                     forced_palette=_pixellab_palette(style, kind, prompt),
-                    **_pixellab_style_params(style, kind),
+                    **_pixellab_style_params(style, kind, resolved_direction),
                 )
                 # No downsample: generated at the native canvas, so this is a
                 # crisp nearest-neighbour scale to the size the rest of the

@@ -121,6 +121,16 @@ class ArtStyle:
     # server sent before these fields existed.
     detail: str = "medium detail"
     shading: str = "medium shading"
+    # Isometric is its own boolean in the schema, not a ``CameraView`` value.
+    # It used to be folded into ``camera_view`` as "high top-down", which is a
+    # different projection: top-down looks straight down a vertical axis,
+    # isometric looks along a diagonal one. A game asking for isometric got
+    # top-down and no field ever said otherwise.
+    isometric: bool = False
+    # Which way the subject faces, locked per game like the view. PixelLab has
+    # a field for this (``Direction``); before this existed the only way to ask
+    # was prose in the description, competing with the subject for attention.
+    direction: str = "east"
 
     def rgb(self, role: str) -> RGB:
         return _unhex(self.palette[role])
@@ -267,13 +277,62 @@ def _grid_for(art_style: str) -> int:
 # confirmed v2/openapi.json). Locked per game alongside the palette — measured
 # 2026-08-02: a game mixing views per asset call reads as broken, the same way
 # mixing palettes per call did before ``color_image`` locked colour.
+#
+# "isometric" is deliberately *not* here. It is a separate boolean in the same
+# request and naming it a camera view sent a diagonal-axis projection request
+# as a straight-down one.
 _VIEW_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("high top-down", ("top-down", "top down", "topdown", "탑뷰", "쿼터뷰", "isometric")),
+    ("high top-down", ("top-down", "top down", "topdown", "탑뷰", "쿼터뷰")),
     (
         "side",
         ("side-scroll", "sidescroll", "side scroll", "platformer", "횡스크롤", "사이드스크롤"),
     ),
 )
+
+_ISOMETRIC_KEYWORDS = ("isometric", "아이소메트릭", "쿼터뷰", "quarter view")
+
+# Keyword → PixelLab Direction enum. "east" is the default because a
+# side-scroller's sprite faces the way it walks, and left-facing frames are
+# produced by mirroring rather than by a second generation.
+DIRECTIONS = (
+    "north",
+    "north-east",
+    "east",
+    "south-east",
+    "south",
+    "south-west",
+    "west",
+    "north-west",
+)
+
+_DIRECTION_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("south", ("facing camera", "front-facing", "front facing", "정면", "앞모습")),
+    ("north", ("facing away", "back-facing", "back facing", "뒷모습")),
+    ("west", ("facing left", "left-facing", "왼쪽", "좌향")),
+    ("east", ("facing right", "right-facing", "오른쪽", "우향")),
+)
+
+
+def _isometric_for(art_style: str) -> bool:
+    """Whether this game is drawn on a diagonal axis.
+
+    "쿼터뷰" appears in both tables on purpose: Korean usage covers the
+    isometric family, so such a game gets the boolean *and* the top-down view
+    it previously got alone.
+    """
+
+    lowered = art_style.lower()
+    return any(keyword in lowered for keyword in _ISOMETRIC_KEYWORDS)
+
+
+def _direction_for(art_style: str) -> str:
+    """The direction every asset in this game faces unless one asks otherwise."""
+
+    lowered = art_style.lower()
+    for direction, keywords in _DIRECTION_KEYWORDS:
+        if any(keyword in lowered for keyword in keywords):
+            return direction
+    return "east"
 
 
 def _view_for(art_style: str) -> str:
@@ -289,7 +348,11 @@ def _view_for(art_style: str) -> str:
     for view, keywords in _VIEW_KEYWORDS:
         if any(keyword in lowered for keyword in keywords):
             return view
-    return "side"
+    # An isometric game looks down a diagonal axis, so "side" would contradict
+    # the projection. This is the view such a game already got before
+    # ``isometric`` became its own field; the boolean is added to it, not
+    # instead of it.
+    return "high top-down" if _isometric_for(art_style) else "side"
 
 
 def derive(game_id: str, art_style: str) -> ArtStyle:
@@ -349,6 +412,8 @@ def derive(game_id: str, art_style: str) -> ArtStyle:
         pixel_grid=_grid_for(art_style),
         outline=True,
         camera_view=_view_for(art_style),
+        isometric=_isometric_for(art_style),
+        direction=_direction_for(art_style),
     )
 
 
