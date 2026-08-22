@@ -353,17 +353,22 @@ def _pixellab_style_params(style: Any, kind: render.AssetKind) -> dict[str, str]
     the same way the palette is locked: a game mixing camera angles per asset
     call reads as broken.
 
-    ``shading`` is the one axis that had to differ by kind — "medium shading"
-    reads fine on a character or creature body, but the same setting made a
-    boxy prop (a treasure chest) look like a 3D render instead of flat pixel
-    art (measured, scored 3/5). Flattened for anything that isn't a
-    character or monster.
+    ``shading`` is the one axis that had to differ by kind — the game's own
+    setting reads fine on a character or creature body, but the same setting
+    made a boxy prop (a treasure chest) look like a 3D render instead of flat
+    pixel art (measured, scored 3/5). Flattened for anything that isn't a
+    character or monster, whatever the game asks for.
+
+    ``detail`` and ``shading`` come from the locked ``ArtStyle`` for the same
+    reason ``view`` does. A game whose concept art holds two tones per
+    material needs them lowered for every asset, and saying so in the prompt
+    does not work: these fields outrank the description by design.
     """
 
     return {
         "outline": "single color black outline",
-        "shading": "medium shading" if kind in ("character", "monster") else "flat shading",
-        "detail": "medium detail",
+        "shading": style.shading if kind in ("character", "monster") else "flat shading",
+        "detail": style.detail,
         "view": style.camera_view,
     }
 
@@ -1235,21 +1240,40 @@ def generate_map_object(
 
 @mcp.tool(description="Lock a game's art style and return its palette. Idempotent.")
 @expects_dict_return
-def establish_art_style(gameId: str, artStyle: str = DEFAULT_ART_STYLE) -> dict[str, Any]:
+def establish_art_style(
+    gameId: str,
+    artStyle: str = DEFAULT_ART_STYLE,
+    detail: str = "",
+    shading: str = "",
+) -> dict[str, Any]:
     """Freeze the palette before any asset exists.
 
     Call this right after Planning, using the design document's ``art_style``,
     so every later asset inherits one deliberate look.
+
+    ``detail`` and ``shading`` are PixelLab's structured controls. A concept
+    with few tones per material needs them lowered, and prose in the prompt
+    cannot do it — the structured field wins over the description by design.
+    They apply on first use only, like the rest of the frozen style; an
+    existing game's values live in ``var/assets/styles/<gameId>.json``.
     """
 
     game_id = _require_identifier(gameId, "gameId")
-    style = load_or_create(ROOT, game_id, artStyle or DEFAULT_ART_STYLE)
+    style = load_or_create(
+        ROOT,
+        game_id,
+        artStyle or DEFAULT_ART_STYLE,
+        detail=detail.strip(),
+        shading=shading.strip(),
+    )
     return {
         "gameId": style.game_id,
         "artStyle": style.art_style,
         "palette": style.palette,
         "pixelGrid": style.pixel_grid,
         "seed": style.seed,
+        "detail": style.detail,
+        "shading": style.shading,
     }
 
 

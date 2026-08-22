@@ -119,8 +119,13 @@ async def test_prompt_preflight_orders_structure_and_revision_feedback():
     assert body["readyForPrototype"] is True
     assert body["feedbackApplied"] is True
     assert prompt.index("Required visual structure") < prompt.index("Revision target")
-    assert prompt.index("Revision target") < prompt.index("Exclude")
+    assert prompt.index("Revision target") < prompt.index("Readability target")
     assert body["artStyle"] not in prompt
+    # Exclusions are recorded but never handed to PixelLab: it draws the noun
+    # and drops the negation, so the list would summon what it forbids.
+    assert body["exclusions"] == ["floating parts"]
+    assert "floating parts" not in prompt
+    assert "Exclude" not in prompt
 
 
 async def test_explicit_asset_kind_overrides_ambiguous_prompt_keywords():

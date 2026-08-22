@@ -24,7 +24,7 @@ from __future__ import annotations
 import colorsys
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 RGB = tuple[int, int, int]
@@ -114,6 +114,13 @@ class ArtStyle:
     # still loads (``ArtStyle(**stored)`` falls back to "side"), so this
     # doesn't invalidate a game's frozen style the way a required field would.
     camera_view: str = "side"
+    # PixelLab's structured detail/shading controls. They belong to the game,
+    # not to one call: a request-level knob would let two assets in the same
+    # game disagree about how many tones a surface has, which is the same
+    # failure ``camera_view`` is locked to avoid. Defaults reproduce what the
+    # server sent before these fields existed.
+    detail: str = "medium detail"
+    shading: str = "medium shading"
 
     def rgb(self, role: str) -> RGB:
         return _unhex(self.palette[role])
@@ -345,7 +352,14 @@ def derive(game_id: str, art_style: str) -> ArtStyle:
     )
 
 
-def load_or_create(root: Path, game_id: str, art_style: str) -> ArtStyle:
+def load_or_create(
+    root: Path,
+    game_id: str,
+    art_style: str,
+    *,
+    detail: str = "",
+    shading: str = "",
+) -> ArtStyle:
     """Return the game's frozen style, deriving and persisting it on first use.
 
     Once written, the stored palette wins: regenerating an asset months later
@@ -358,6 +372,12 @@ def load_or_create(root: Path, game_id: str, art_style: str) -> ArtStyle:
         return ArtStyle(**stored)
 
     style = derive(game_id, art_style)
+    if detail or shading:
+        # Only on first use: the branch above already returned for a game whose
+        # look is frozen, so this cannot re-skin work in progress.
+        style = replace(
+            style, detail=detail or style.detail, shading=shading or style.shading
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(asdict(style), indent=2, ensure_ascii=False), encoding="utf-8")
     return style

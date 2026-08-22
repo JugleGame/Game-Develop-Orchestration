@@ -4,14 +4,16 @@ There is no fallback tier: a missing key or a failing call is an MCP code-3000
 tool error, not a silent degrade to placeholder art.
 """
 
+import json
 import random
+from dataclasses import replace
 
 import pytest
 from PIL import Image
 
 from asset import pixellab_client, prompting, server
 from asset.server import _generate_image, _pixellab_palette, _pixellab_style_params, _size_for
-from asset.style import derive
+from asset.style import derive, load_or_create
 
 
 @pytest.fixture
@@ -310,3 +312,115 @@ async def test_generate_2d_sprite_without_key_is_a_tool_error(monkeypatch, tmp_p
     assert result.is_error is True
     text = "".join(getattr(block, "text", "") for block in result.content)
     assert '"errorCode": 3000' in text
+
+
+# --------------------------------------------------------------------------
+# detail/shading belong to the game's frozen style (#59)
+# --------------------------------------------------------------------------
+
+
+def test_style_detail_and_shading_reach_pixellab(style):
+    lowered = replace(style, detail="low detail", shading="flat shading")
+
+    params = _pixellab_style_params(lowered, "character")
+
+    assert params["detail"] == "low detail"
+    assert params["shading"] == "flat shading"
+
+
+def test_style_shading_is_still_flattened_for_inanimate_kinds(style):
+    heavy = replace(style, shading="highly detailed shading")
+
+    assert _pixellab_style_params(heavy, "prop")["shading"] == "flat shading"
+    assert _pixellab_style_params(heavy, "monster")["shading"] == "highly detailed shading"
+
+
+def test_defaults_reproduce_the_previous_hardcoded_values(style):
+    assert _pixellab_style_params(style, "character") == {
+        "outline": "single color black outline",
+        "shading": "medium shading",
+        "detail": "medium detail",
+        "view": style.camera_view,
+    }
+
+
+def test_a_style_json_written_before_these_fields_still_loads(tmp_path):
+    """The frozen-style guarantee: adding a field must not orphan a game."""
+
+    legacy = {
+        "game_id": "t-legacy",
+        "art_style": "pixel art",
+        "seed": 7,
+        "palette": derive("t-legacy", "pixel art").palette,
+        "pixel_grid": 32,
+        "outline": True,
+    }
+    path = tmp_path / "styles" / "t-legacy.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    loaded = load_or_create(tmp_path, "t-legacy", "pixel art")
+
+    assert loaded.detail == "medium detail"
+    assert loaded.shading == "medium shading"
+    assert loaded.camera_view == "side"
+
+
+async def test_establish_art_style_freezes_detail_and_shading(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+
+    from mcp import Client
+
+    async with Client(server.mcp) as client:
+        created = await client.call_tool(
+            "establish_art_style",
+            {
+                "gameId": "t-detail",
+                "artStyle": "pixel art dusk silhouette",
+                "detail": "low detail",
+                "shading": "flat shading",
+            },
+        )
+        # Idempotent: a frozen game keeps the look it was created with.
+        again = await client.call_tool(
+            "establish_art_style",
+            {"gameId": "t-detail", "artStyle": "pixel art", "detail": "highly detailed"},
+        )
+
+    assert created.structured_content["detail"] == "low detail"
+    assert created.structured_content["shading"] == "flat shading"
+    assert again.structured_content["detail"] == "low detail"
+
+
+# --------------------------------------------------------------------------
+# Negations never reach the provider (#59)
+# --------------------------------------------------------------------------
+
+
+def test_compose_drops_leading_negations_and_reports_them():
+    plan = prompting.compose(
+        "side view teenage boy protagonist, no city, no buildings, without a street", "character"
+    )
+
+    assert "city" not in plan.prompt
+    assert "buildings" not in plan.prompt
+    assert "street" not in plan.prompt
+    assert "teenage boy protagonist" in plan.prompt
+    assert plan.metadata()["removedNegations"] == ["no city", "no buildings", "without a street"]
+
+
+def test_compose_keeps_a_subject_that_merely_starts_with_those_letters():
+    plan = prompting.compose("nose ring detail, notched blade", "prop")
+
+    assert "nose ring detail" in plan.prompt
+    assert "notched blade" in plan.prompt
+    assert plan.metadata()["removedNegations"] == []
+
+
+def test_compose_keeps_an_inline_negation_rather_than_losing_the_subject():
+    """Dropping the clause would drop the knight with the helmet."""
+
+    plan = prompting.compose("a knight with no helmet", "character")
+
+    assert "a knight with no helmet" in plan.prompt
+    assert plan.metadata()["removedNegations"] == []
