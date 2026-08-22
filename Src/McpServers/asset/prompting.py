@@ -161,6 +161,11 @@ def prepare(
     is_revision: bool = False,
     preserve: list[str] | None = None,
     change: list[str] | None = None,
+    grid_size: int | None = None,
+    palette_lock: bool | None = None,
+    init_asset_id: str | None = None,
+    init_image_strength: int | None = None,
+    direction: str | None = None,
 ) -> dict[str, object]:
     """Return deterministic intake questions and a host-ready prompt.
 
@@ -228,6 +233,49 @@ def prepare(
             }
         )
 
+    # Generation parameters, asked the same way the content is asked. They used
+    # to be optional arguments with defaults, so an agent that never asked the
+    # user still produced a sprite — and the cost of the guess landed on
+    # generation credits and human review. ``None`` is "nobody has answered
+    # this yet"; that is why ``palette_lock`` is a tri-state here while the
+    # provider call still sees a plain bool.
+    parameter_questions = (
+        (
+            "gridSize",
+            grid_size,
+            "Which pixel grid should this asset generate on? Answer 0 for the game's locked "
+            "grid. PixelLab's posed path grows 16, 32, and 64 to a square canvas, so a 1:2 "
+            "figure asked for at those grids comes back squashed.",
+        ),
+        (
+            "paletteLock",
+            palette_lock,
+            "Should the game's locked palette be forced onto this asset, or does it keep "
+            "its own colours?",
+        ),
+        (
+            "initAssetId",
+            init_asset_id,
+            "Which approved sprite or concept:<filename> reference should this start from? "
+            'Answer "none" to generate without one.',
+        ),
+        (
+            "initImageStrength",
+            init_image_strength,
+            "How much of that reference should survive (1-999)? Answer 0 when there is no "
+            "reference.",
+        ),
+        (
+            "direction",
+            direction,
+            "Which way does the subject face? Answer \"none\" to use the game's locked "
+            "direction.",
+        ),
+    )
+    for field, value, question in parameter_questions:
+        if value is None:
+            questions.append({"field": field, "question": question, "required": True})
+
     ready = not any(question["required"] for question in questions)
     prompt: str | None = None
     if ready:
@@ -243,11 +291,29 @@ def prepare(
         sections.append(f"Readability target: {purpose}")
         prompt = ". ".join(sections) + "."
 
+    # "none" and 0 are answers, not omissions: they say "no reference", "no
+    # direction override", "the game's locked grid". Normalising them here is
+    # what lets the caller store one answered brief and lets the generator tell
+    # an answered-as-nothing apart from an unasked question.
+    def _optional(value: object) -> object:
+        if isinstance(value, str) and value.strip().lower() in ("none", ""):
+            return None
+        if isinstance(value, int) and not isinstance(value, bool) and value == 0:
+            return None
+        return value
+
     return {
         "assetKind": kind,
         "readyForPrototype": ready,
         "questions": questions,
         "prompt": prompt,
+        "parameters": {
+            "gridSize": _optional(grid_size),
+            "paletteLock": palette_lock,
+            "initAssetId": _optional(init_asset_id),
+            "initImageStrength": _optional(init_image_strength),
+            "direction": _optional(direction),
+        },
         "artStyle": art_style or None,
         "exclusions": list(exclusions),
         "feedbackApplied": bool(preserved or changes),

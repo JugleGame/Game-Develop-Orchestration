@@ -13,6 +13,7 @@ from dataclasses import replace
 import pytest
 from PIL import Image
 
+from conftest import sprite_call
 from asset import pixellab_client, prompting, server
 from asset.server import _pixellab_palette, _pixellab_style_params, _size_for
 from asset.style import derive, load_or_create
@@ -96,6 +97,11 @@ def test_a_prepared_brief_still_gets_its_framing():
         composition="centered with a broad base and narrow top handle",
         must_have=["one connected silhouette", "three support feet"],
         art_style="pixel art",
+        grid_size=32,
+        palette_lock=True,
+        init_asset_id="none",
+        init_image_strength=0,
+        direction="none",
     )
     assert prepared["readyForPrototype"] is True
 
@@ -131,8 +137,8 @@ async def test_the_prototype_request_carries_the_locked_style_and_palette(
     from mcp import Client
 
     async with Client(server.mcp) as client:
-        result = await client.call_tool(
-            "generate_2d_sprite",
+        result = await sprite_call(
+            client,
             {
                 "featureId": "f-style",
                 "prompt": "a rock",
@@ -326,8 +332,8 @@ async def test_a_failing_provider_call_is_a_code_3000_tool_error(monkeypatch, tm
     from mcp import Client
 
     async with Client(server.mcp) as client:
-        result = await client.call_tool(
-            "generate_2d_sprite",
+        result = await sprite_call(
+            client,
             {
                 "featureId": "f-boom",
                 "prompt": "a rock",
@@ -372,8 +378,8 @@ async def test_generate_2d_sprite_reports_the_images_it_consumed(monkeypatch, tm
     from mcp import Client
 
     async with Client(server.mcp) as client:
-        result = await client.call_tool(
-            "generate_2d_sprite",
+        result = await sprite_call(
+            client,
             {"featureId": "f-1", "prompt": "a rock", "gameId": "t-pixellab-images", "assetKind": "prop"},
         )
 
@@ -390,8 +396,8 @@ async def test_generate_2d_sprite_without_key_is_a_tool_error(monkeypatch, tmp_p
     from mcp import Client
 
     async with Client(server.mcp) as client:
-        result = await client.call_tool(
-            "generate_2d_sprite",
+        result = await sprite_call(
+            client,
             {"featureId": "f-1", "prompt": "a rock", "gameId": "t-pixellab-nokey", "assetKind": "prop"},
         )
 
@@ -605,7 +611,7 @@ async def test_grid_size_reaches_pixellab_and_leaves_the_style_grid_alone(
             }
             if grid is not None:
                 arguments["gridSize"] = grid
-            result = await client.call_tool("generate_2d_sprite", arguments)
+            result = await sprite_call(client, arguments)
             assert result.is_error is False
 
     assert seen == [(32, 64), (56, 112)]
@@ -626,8 +632,8 @@ async def test_grid_size_below_the_floor_fails_the_tool_call(monkeypatch, tmp_pa
     from mcp import Client
 
     async with Client(server.mcp) as client:
-        result = await client.call_tool(
-            "generate_2d_sprite",
+        result = await sprite_call(
+            client,
             {
                 "featureId": "f-1",
                 "prompt": "a lone figure",
@@ -669,7 +675,7 @@ async def test_failure_before_billing_lets_the_same_prompt_retry(monkeypatch, tm
 
     arguments = {"featureId": "f-1", "prompt": "a rock", "gameId": "t-retry", "assetKind": "prop"}
     async with Client(server.mcp) as client:
-        failed = await client.call_tool("generate_2d_sprite", arguments)
+        failed = await sprite_call(client, arguments)
     assert failed.is_error is True
     assert "image size too small" in "".join(
         getattr(block, "text", "") for block in failed.content
@@ -686,7 +692,7 @@ async def test_failure_before_billing_lets_the_same_prompt_retry(monkeypatch, tm
     monkeypatch.setattr(pixellab_client, "generate_prototype", _succeed)
 
     async with Client(server.mcp) as client:
-        retried = await client.call_tool("generate_2d_sprite", arguments)
+        retried = await sprite_call(client, arguments)
 
     assert retried.is_error is False
     assert retried.structured_content["status"] != "duplicate_blocked"
@@ -717,8 +723,8 @@ async def test_failure_after_a_job_started_keeps_the_claim_and_says_what_to_do(
 
     arguments = {"featureId": "f-1", "prompt": "a rock", "gameId": "t-billed", "assetKind": "prop"}
     async with Client(server.mcp) as client:
-        failed = await client.call_tool("generate_2d_sprite", arguments)
-        blocked = await client.call_tool("generate_2d_sprite", arguments)
+        failed = await sprite_call(client, arguments)
+        blocked = await sprite_call(client, arguments)
 
     assert failed.is_error is True
     assert blocked.is_error is False
@@ -752,8 +758,8 @@ async def test_a_completed_claim_still_returns_the_existing_asset(monkeypatch, t
 
     arguments = {"featureId": "f-1", "prompt": "a rock", "gameId": "t-completed", "assetKind": "prop"}
     async with Client(server.mcp) as client:
-        first = await client.call_tool("generate_2d_sprite", arguments)
-        second = await client.call_tool("generate_2d_sprite", arguments)
+        first = await sprite_call(client, arguments)
+        second = await sprite_call(client, arguments)
 
     assert second.structured_content["duplicateBlocked"] is True
     assert second.structured_content["assetPath"] == first.structured_content["assetPath"]
@@ -1145,8 +1151,8 @@ async def test_palette_lock_reaches_the_prototype_request(monkeypatch, tmp_path)
 
     async with Client(server.mcp) as client:
         for feature, lock in (("f-locked", True), ("f-unlocked", False)):
-            result = await client.call_tool(
-                "generate_2d_sprite",
+            result = await sprite_call(
+                client,
                 {
                     "featureId": feature,
                     "prompt": "a hero",
@@ -1172,8 +1178,8 @@ async def test_palette_lock_reaches_the_prototype_request(monkeypatch, tmp_path)
 
 
 async def _approved_sprite(client, *, game, feature, kind, prompt):
-    created = await client.call_tool(
-        "generate_2d_sprite",
+    created = await sprite_call(
+        client,
         {"featureId": feature, "prompt": prompt, "assetKind": kind, "gameId": game},
     )
     assert created.is_error is False, created.content
@@ -1218,8 +1224,8 @@ async def test_a_pose_reference_reaches_bitforge_as_coordinates(monkeypatch, tmp
         anchor = await _approved_sprite(
             client, game="t-pose", feature="f-anchor", kind="prop", prompt="a rock"
         )
-        result = await client.call_tool(
-            "generate_2d_sprite",
+        result = await sprite_call(
+            client,
             {
                 "featureId": "f-posed",
                 "prompt": "a mossy rock",
@@ -1290,8 +1296,8 @@ async def test_a_posed_character_is_grown_to_a_square_canvas(monkeypatch, tmp_pa
             kind="character",
             prompt="a knight",
         )
-        result = await client.call_tool(
-            "generate_2d_sprite",
+        result = await sprite_call(
+            client,
             {
                 "featureId": "f-posed-char",
                 "prompt": "a mage",
@@ -1333,8 +1339,8 @@ async def test_an_unapproved_reference_is_refused_before_any_call(monkeypatch, t
     from mcp import Client
 
     async with Client(server.mcp) as client:
-        pending = await client.call_tool(
-            "generate_2d_sprite",
+        pending = await sprite_call(
+            client,
             {
                 "featureId": "f-unapproved",
                 "prompt": "a rock",
@@ -1342,8 +1348,8 @@ async def test_an_unapproved_reference_is_refused_before_any_call(monkeypatch, t
                 "gameId": "t-unapproved",
             },
         )
-        result = await client.call_tool(
-            "generate_2d_sprite",
+        result = await sprite_call(
+            client,
             {
                 "featureId": "f-uses-it",
                 "prompt": "a mossy rock",
@@ -1352,8 +1358,8 @@ async def test_an_unapproved_reference_is_refused_before_any_call(monkeypatch, t
                 "poseFromAssetId": pending.structured_content["assetId"],
             },
         )
-        foreign = await client.call_tool(
-            "generate_2d_sprite",
+        foreign = await sprite_call(
+            client,
             {
                 "featureId": "f-foreign",
                 "prompt": "a mossy rock",
@@ -1394,8 +1400,8 @@ async def test_a_canvas_too_large_for_bitforge_is_refused_not_silently_posed(
         anchor = await _approved_sprite(
             client, game="t-too-big", feature="f-anchor", kind="prop", prompt="a rock"
         )
-        result = await client.call_tool(
-            "generate_2d_sprite",
+        result = await sprite_call(
+            client,
             {
                 "featureId": "f-huge",
                 "prompt": "a mossy rock",
@@ -1475,8 +1481,8 @@ async def test_a_square_kind_is_not_resized_when_posed(monkeypatch, tmp_path):
         anchor = await _approved_sprite(
             client, game="t-square-kind", feature="f-anchor", kind="prop", prompt="a rock"
         )
-        result = await client.call_tool(
-            "generate_2d_sprite",
+        result = await sprite_call(
+            client,
             {
                 "featureId": "f-posed-prop",
                 "prompt": "a mossy rock",
@@ -1531,8 +1537,8 @@ async def test_an_init_only_request_is_grown_too(monkeypatch, tmp_path):
             kind="character",
             prompt="a knight",
         )
-        result = await client.call_tool(
-            "generate_2d_sprite",
+        result = await sprite_call(
+            client,
             {
                 "featureId": "f-init-grow",
                 "prompt": "a mage",
@@ -1579,8 +1585,8 @@ async def test_a_concept_art_reference_reaches_bitforge_as_init_image(monkeypatc
     from mcp import Client
 
     async with Client(server.mcp) as client:
-        result = await client.call_tool(
-            "generate_2d_sprite",
+        result = await sprite_call(
+            client,
             {
                 "featureId": "f-concept",
                 "prompt": "the protagonist of the concept art",
@@ -1617,8 +1623,8 @@ async def test_a_concept_reference_outside_its_game_directory_is_refused(monkeyp
     from mcp import Client
 
     async with Client(server.mcp) as client:
-        escaped = await client.call_tool(
-            "generate_2d_sprite",
+        escaped = await sprite_call(
+            client,
             {
                 "featureId": "f-escape",
                 "prompt": "a mage",
@@ -1627,8 +1633,8 @@ async def test_a_concept_reference_outside_its_game_directory_is_refused(monkeyp
                 "initAssetId": "concept:../other-game/secret.png",
             },
         )
-        missing = await client.call_tool(
-            "generate_2d_sprite",
+        missing = await sprite_call(
+            client,
             {
                 "featureId": "f-missing",
                 "prompt": "a mage",
@@ -1665,8 +1671,8 @@ async def test_an_asset_id_reference_still_needs_approval_and_pixellab(monkeypat
     from mcp import Client
 
     async with Client(server.mcp) as client:
-        pending = await client.call_tool(
-            "generate_2d_sprite",
+        pending = await sprite_call(
+            client,
             {
                 "featureId": "f-still-gated",
                 "prompt": "a rock",
@@ -1674,8 +1680,8 @@ async def test_an_asset_id_reference_still_needs_approval_and_pixellab(monkeypat
                 "gameId": "t-still-gated",
             },
         )
-        refused = await client.call_tool(
-            "generate_2d_sprite",
+        refused = await sprite_call(
+            client,
             {
                 "featureId": "f-uses-it",
                 "prompt": "a mossy rock",
