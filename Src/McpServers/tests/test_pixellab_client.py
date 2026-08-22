@@ -249,11 +249,12 @@ def test_official_mcp_prototype_arguments_keep_style_structured():
         "dark fantasy pixel art",
         {"outline": "single color black outline", "view": "side"},
         ["#112233", "#445566"],
+        12.0,
     )
 
     assert arguments["description"] == "a mossy rock; single centered isolated object"
     assert arguments["image_size"] == {"width": 32, "height": 32}
-    assert arguments["text_guidance_scale"] == 16.0
+    assert arguments["text_guidance_scale"] == 12.0
     assert arguments["style_description"] == "dark fantasy pixel art"
     assert arguments["outline"] == "single color black outline"
     assert arguments["forced_palette"] == ["#112233", "#445566"]
@@ -274,6 +275,7 @@ def test_official_mcp_prototype_arguments_preserve_style_when_not_structured():
         "industrial fantasy pixel art",
         {},
         [],
+        8.0,
     )
 
     assert arguments["description"] == (
@@ -348,7 +350,6 @@ def test_generate_with_style_uses_reference_and_returns_all_candidates(monkeypat
             Image.new("RGBA", (64, 64), (1, 2, 3, 255)),
             Image.new("RGBA", (128, 256), (4, 5, 6, 255)),
         ],
-        output_size=(64, 64),
         style_description="dark fantasy pixel art",
         seed=9,
         poll_seconds=0,
@@ -357,8 +358,8 @@ def test_generate_with_style_uses_reference_and_returns_all_candidates(monkeypat
     assert captured["url"] == "https://api.pixellab.ai/v2/generate-with-style-v2"
     assert captured["payload"]["description"] == "a red treasure chest"
     assert captured["payload"]["style_images"][0]["width"] == 64
-    assert captured["payload"]["style_images"][1]["width"] == 32
-    assert captured["payload"]["style_images"][1]["height"] == 64
+    assert captured["payload"]["style_images"][1]["width"] == 128
+    assert captured["payload"]["style_images"][1]["height"] == 256
     assert len(captured["payload"]["style_images"]) == 2
     assert "image_size" not in captured["payload"]
     assert len(images) == 2
@@ -366,17 +367,49 @@ def test_generate_with_style_uses_reference_and_returns_all_candidates(monkeypat
     assert job_id == "job-1"
 
 
-def test_generate_with_style_rejects_non_square_output(monkeypatch):
-    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+def test_generate_with_style_accepts_a_non_square_reference(monkeypatch):
+    """``image_size`` is REMOVED from this endpoint's schema.
 
-    with pytest.raises(pixellab_client.PixelLabUnavailable, match="must be square"):
-        pixellab_client.generate_with_style(
-            prompt="a tall hero",
-            style_images=[Image.new("RGBA", (64, 128), (1, 2, 3, 255))],
-            output_size=(64, 128),
-            style_description="pixel art",
-            seed=9,
-        )
+    The output size is deduced from the style images, so a 1:2 character
+    reference is an ordinary request and the returned size is whatever came
+    back — not something to check against a size that was never sent.
+    """
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    encoded = base64.b64encode(_png_bytes(size=(64, 128))).decode()
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, json, headers):
+            captured["payload"] = json
+            return _FakeResponse({"background_job_id": "job-2"}, 202)
+
+        def get(self, url, headers):
+            return _FakeResponse(
+                {"status": "completed", "last_response": {"images": [{"base64": encoded}]}}
+            )
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+
+    images, _usage, _job = pixellab_client.generate_with_style(
+        prompt="a tall hero",
+        style_images=[Image.new("RGBA", (64, 128), (1, 2, 3, 255))],
+        style_description="pixel art",
+        seed=9,
+        poll_seconds=0,
+    )
+
+    assert "image_size" not in captured["payload"]
+    assert images[0].size == (64, 128)
 
 
 # --------------------------------------------------------------------------
@@ -539,6 +572,7 @@ def test_prototype_arguments_reject_a_detail_the_tool_does_not_offer():
             "pixel art",
             {"detail": "minimal detail"},
             [],
+            8.0,
         )
 
     message = str(excinfo.value)
@@ -556,6 +590,7 @@ def test_prototype_arguments_pass_a_detail_the_tool_offers():
         "pixel art",
         {"detail": "low detail"},
         [],
+        8.0,
     )
 
     assert arguments["detail"] == "low detail"
@@ -568,7 +603,321 @@ def test_prototype_arguments_still_pass_style_fields_without_a_declared_enum():
     )
 
     arguments = pixellab_client._prototype_arguments(
-        tool, "a mossy rock", 32, 32, 7, "pixel art", {"detail": "low detail"}, []
+        tool, "a mossy rock", 32, 32, 7, "pixel art", {"detail": "low detail"}, [], 8.0
     )
 
     assert arguments["detail"] == "low detail"
+
+
+# --------------------------------------------------------------------------
+# Endpoint style contracts (issue #63)
+#
+# These lock the values recorded from https://api.pixellab.ai/v2/openapi.json
+# on 2026-08-22. They are offline copies on purpose: a test that fetched the
+# live document would turn a provider outage into a red build, and would let a
+# silent provider change pass as green instead of failing here.
+# --------------------------------------------------------------------------
+
+SPEC_OUTLINE = (
+    "single color black outline",
+    "single color outline",
+    "selective outline",
+    "lineless",
+)
+SPEC_SHADING = (
+    "flat shading",
+    "basic shading",
+    "medium shading",
+    "detailed shading",
+    "highly detailed shading",
+)
+SPEC_DETAIL = ("low detail", "medium detail", "highly detailed")
+
+SPEC_STYLE_ENUMS = {
+    "create-image-pixflux": {
+        "outline": SPEC_OUTLINE,
+        "shading": SPEC_SHADING,
+        "detail": SPEC_DETAIL,
+        "view": ("side", "low top-down", "high top-down"),
+    },
+    "tilesets": {
+        "outline": SPEC_OUTLINE,
+        "shading": SPEC_SHADING,
+        "detail": SPEC_DETAIL,
+        "view": ("low top-down", "high top-down"),
+    },
+    "map-objects": {
+        "outline": ("single color outline", "selective outline", "lineless"),
+        "shading": ("flat shading", "basic shading", "medium shading", "detailed shading"),
+        "detail": ("low detail", "medium detail", "high detail"),
+        "view": ("low top-down", "high top-down", "side"),
+    },
+}
+
+
+def test_style_enums_match_the_recorded_schema():
+    assert pixellab_client.STYLE_ENUMS == SPEC_STYLE_ENUMS
+
+
+def _tileset_client(monkeypatch, captured):
+    """POST /tilesets answers 202 with a tileset_id; GET returns the tiles."""
+
+    encoded = base64.b64encode(_png_bytes()).decode()
+
+    class _FakeClient:
+        def __init__(self, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, json, headers):
+            captured["url"] = url
+            captured["payload"] = json
+            return _FakeResponse({"tileset_id": "ts-1"}, 202)
+
+        def get(self, url, headers):
+            return _FakeResponse(
+                {
+                    "tileset": {
+                        "tiles": [
+                            {
+                                "name": "wang_0",
+                                "image": {"base64": encoded},
+                                "corners": {"NW": "lower"},
+                            }
+                        ]
+                    }
+                }
+            )
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+
+
+def test_create_tileset_accepts_the_values_the_schema_declares(monkeypatch):
+    """The previous table refused every one of these."""
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+    _tileset_client(monkeypatch, captured)
+
+    pixellab_client.create_tileset(
+        lower_description="grass",
+        upper_description="stone",
+        tile_size=32,
+        view="high top-down",
+        outline="single color black outline",
+        shading="flat shading",
+        detail="low detail",
+        poll_seconds=0,
+    )
+
+    payload = captured["payload"]
+    assert payload["outline"] == "single color black outline"
+    assert payload["shading"] == "flat shading"
+    assert payload["detail"] == "low detail"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("outline", "thick outline"),
+        ("outline", "none"),
+        ("shading", "no shading"),
+        ("shading", "heavy shading"),
+        ("detail", "minimal detail"),
+        ("view", "side"),
+    ],
+)
+def test_create_tileset_rejects_values_the_schema_does_not_declare(
+    monkeypatch, field, value
+):
+    """The previous table offered "thick outline", "no shading" and
+    "minimal detail" as valid; none of the three exists in the schema."""
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(pixellab_client.PixelLabUnavailable) as excinfo:
+        pixellab_client.create_tileset(
+            lower_description="grass",
+            upper_description="stone",
+            **{field: value},
+        )
+
+    message = str(excinfo.value)
+    assert field in message
+    assert "/tilesets" in message
+
+
+@pytest.mark.parametrize("tile_size", [24, 48, 64])
+def test_create_tileset_rejects_a_tile_size_outside_the_enum(monkeypatch, tile_size):
+    """``TileSize`` is an enum: 24 and 48 sit inside 16-64 and still 422,
+    and 64 additionally needs a "pro" mode this client never sends."""
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(pixellab_client.PixelLabUnavailable, match="tile_size"):
+        pixellab_client.create_tileset(
+            lower_description="grass", upper_description="stone", tile_size=tile_size
+        )
+
+
+def test_create_tileset_sends_a_palette_as_color_image(monkeypatch):
+    """``CreateTilesetRequest`` has no ``forced_palette`` field."""
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+    _tileset_client(monkeypatch, captured)
+
+    pixellab_client.create_tileset(
+        lower_description="grass",
+        upper_description="stone",
+        color_palette=[(10, 20, 30), (40, 50, 60)],
+        poll_seconds=0,
+    )
+
+    payload = captured["payload"]
+    assert "forced_palette" not in payload
+    assert payload["color_image"]["type"] == "base64"
+    swatch = Image.open(io.BytesIO(base64.b64decode(payload["color_image"]["base64"])))
+    assert swatch.size == (2, 1)
+
+
+def _map_object_client(monkeypatch, captured):
+    class _FakeClient:
+        def __init__(self, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, json, headers):
+            captured["url"] = url
+            captured["payload"] = json
+            return _FakeResponse({"object_id": "mo-1"}, 202)
+
+        def get(self, url, headers=None):
+            if url.endswith("/map-objects/mo-1"):
+                return _FakeResponse(
+                    {"download_url": "https://example.invalid/mo-1.png", "usage": {}}
+                )
+            return SimpleNamespace(
+                content=_png_bytes(), raise_for_status=lambda: None, status_code=200
+            )
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+
+
+def test_create_map_object_sends_style_and_palette(monkeypatch):
+    """Sending no style let the endpoint default ``view`` to "high top-down",
+    so a side-view game had its decorations drawn from above. The palette also
+    has to travel as ``color_image``: there is no ``color_palette`` field."""
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+    _map_object_client(monkeypatch, captured)
+
+    pixellab_client.create_map_object(
+        description="a mossy rock",
+        width=64,
+        height=64,
+        color_palette=[(10, 20, 30)],
+        view="side",
+        outline="single color outline",
+        shading="flat shading",
+        detail="medium detail",
+        poll_seconds=0,
+    )
+
+    payload = captured["payload"]
+    assert "color_palette" not in payload
+    assert payload["color_image"]["type"] == "base64"
+    assert payload["view"] == "side"
+    assert payload["outline"] == "single color outline"
+    assert payload["text_guidance_scale"] == pixellab_client.DEFAULT_TEXT_GUIDANCE
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("outline", "single color black outline"),
+        ("shading", "highly detailed shading"),
+        ("detail", "highly detailed"),
+    ],
+)
+def test_create_map_object_rejects_pixflux_only_wordings(monkeypatch, field, value):
+    """Valid for pixflux, invalid here. The difference is why the table is
+    keyed by endpoint rather than shared."""
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(pixellab_client.PixelLabUnavailable) as excinfo:
+        pixellab_client.create_map_object(description="a mossy rock", **{field: value})
+
+    assert "/map-objects" in str(excinfo.value)
+
+
+def test_create_map_object_rejects_a_size_below_its_own_floor(monkeypatch):
+    """``CreateMapObjectRequest.image_size`` starts at 32, not pixflux's 16."""
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(pixellab_client.PixelLabUnavailable, match="32-400"):
+        pixellab_client.create_map_object(description="a mossy rock", width=16, height=16)
+
+
+def test_generate_image_relays_text_guidance_scale(monkeypatch):
+    """Both generation paths must follow the description equally literally.
+
+    The MCP path hard-coded 16 while this one sent nothing and got PixelLab's
+    own 8, so two assets in one game were generated at different strengths.
+    """
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+
+    def _fake_post(url, json, headers, timeout):
+        captured["payload"] = json
+        return _FakeResponse(
+            {"image": {"base64": base64.b64encode(_png_bytes()).decode()}, "usage": {}}
+        )
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+
+    pixellab_client.generate_image(prompt="a rock", width=32, height=32)
+    assert pixellab_client.DEFAULT_TEXT_GUIDANCE == 8.0
+    assert captured["payload"]["text_guidance_scale"] == 8.0
+
+    pixellab_client.generate_image(
+        prompt="a rock", width=32, height=32, text_guidance_scale=12.0
+    )
+    assert captured["payload"]["text_guidance_scale"] == 12.0
+
+
+@pytest.mark.parametrize("value", [0.5, 20.5])
+def test_generate_image_rejects_text_guidance_outside_the_schema_range(
+    monkeypatch, value
+):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(pixellab_client.PixelLabUnavailable, match="1-20"):
+        pixellab_client.generate_image(
+            prompt="a rock", width=32, height=32, text_guidance_scale=value
+        )
+
+
+def test_generate_image_rejects_a_style_value_outside_the_schema(monkeypatch):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(pixellab_client.PixelLabUnavailable) as excinfo:
+        pixellab_client.generate_image(
+            prompt="a rock", width=32, height=32, detail="minimal detail"
+        )
+
+    assert "/create-image-pixflux" in str(excinfo.value)

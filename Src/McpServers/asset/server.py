@@ -99,11 +99,14 @@ _KIND_SIZE_RATIO: dict[str, tuple[float, float]] = {
 }
 
 
-# PixelLab (Pixflux) accepts 32-400px per side. Below the floor the call fails
-# with a TaskGroup exception that names no cause (measured 2026-08-22: a 16x32
-# character request, two of two samples); above the ceiling it 400s. Both are
-# cheaper to catch here than to rediscover from an opaque provider error.
-_PIXELLAB_MIN_SIDE = 32
+# PixelLab (Pixflux) accepts 16-400px per side — ``CreateImagePixfluxRequest.
+# image_size`` declares ``minimum: 16``, ``maximum: 400`` (v2/openapi.json,
+# re-verified 2026-08-22). The floor used to sit at 32 on the strength of one
+# opaque failure (a 16x32 request through the *MCP* path answered with a
+# TaskGroup exception that named no cause, two of two samples). That failure
+# was never explained and the REST schema contradicts it, so the contract
+# follows the schema; if 16px fails again it must be diagnosed, not re-guessed.
+_PIXELLAB_MIN_SIDE = 16
 _PIXELLAB_MAX_SIDE = 400
 
 
@@ -428,6 +431,30 @@ def _pixellab_style_params(style: Any, kind: render.AssetKind) -> dict[str, str]
         "shading": style.shading if kind in ("character", "monster") else "flat shading",
         "detail": style.detail,
         "view": style.camera_view,
+    }
+
+
+# ``/map-objects`` declares its own style enums and they are narrower than
+# pixflux's, so the game's locked values cannot be passed straight through.
+_MAP_OBJECT_OUTLINE = {"single color black outline": "single color outline"}
+_MAP_OBJECT_DETAIL = {"highly detailed": "high detail"}
+
+
+def _map_object_style_params(style: Any) -> dict[str, str]:
+    """The locked ``ArtStyle`` expressed in ``/map-objects``' own vocabulary.
+
+    Sending nothing let the endpoint apply its defaults, and its ``view``
+    default is "high top-down" — which drew a side-view game's props as if
+    seen from above. Decorations are inanimate, so ``shading`` is flattened
+    for the same reason ``_pixellab_style_params`` flattens it.
+    """
+
+    outline = _pixellab_style_params(style, "prop")["outline"]
+    return {
+        "view": style.camera_view,
+        "outline": _MAP_OBJECT_OUTLINE.get(outline, outline),
+        "shading": "flat shading",
+        "detail": _MAP_OBJECT_DETAIL.get(style.detail, style.detail),
     }
 
 
@@ -882,7 +909,6 @@ def generate_2d_variations(
             images, usage, job_id = pixellab_client.generate_with_style(
                 prompt=plan.prompt,
                 style_images=style_images,
-                output_size=output_size,
                 style_description=style_description,
                 seed=seed,
             )
@@ -924,7 +950,7 @@ def generate_2d_variations(
                     "candidate": candidate_index,
                     "seed": seed,
                     "style_asset_ids": style_asset_ids,
-                    "expected_size": list(output_size),
+                    "size": list(image.size),
                     "usage": usage,
                     "prompt": plan.metadata(),
                     "commercial_use": "see PixelLab terms of service",
@@ -1179,8 +1205,13 @@ def generate_tileset(
     upper = _require(upperDescription, "upperDescription")
     resolved_game = _resolve_game_id(gameId)
 
-    if not 16 <= tileSize <= 64:
-        raise tool_error(VALIDATION_ERROR, "tileSize must be between 16 and 64")
+    if tileSize not in pixellab_client.TILE_SIZES:
+        # An enum in the schema, not a range: 24 and 48 sit inside 16-64 and
+        # are still 422s, and 64 needs a "pro" mode this server never sends.
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"tileSize must be one of {pixellab_client.TILE_SIZES}",
+        )
 
     style = load_or_create(ROOT, resolved_game, os.getenv("ASSET_ART_STYLE", DEFAULT_ART_STYLE))
 
@@ -1291,12 +1322,19 @@ def generate_map_object(
     description = _require(prompt, "prompt")
     resolved_game = _resolve_game_id(gameId)
 
-    if not 16 <= size <= 128:
-        raise tool_error(VALIDATION_ERROR, "size must be between 16 and 128")
+    low, high = pixellab_client.MAP_OBJECT_SIDE_RANGE
+    if not low <= size <= high:
+        raise tool_error(VALIDATION_ERROR, f"size must be between {low} and {high}")
+
+    style = load_or_create(ROOT, resolved_game, os.getenv("ASSET_ART_STYLE", DEFAULT_ART_STYLE))
 
     try:
         image, usage = pixellab_client.create_map_object(
-            description=description, width=size, height=size
+            description=description,
+            width=size,
+            height=size,
+            color_palette=_pixellab_palette(style, "prop", description),
+            **_map_object_style_params(style),
         )
     except pixellab_client.PixelLabUnavailable as exc:
         raise tool_error(
@@ -1320,7 +1358,13 @@ def generate_map_object(
         "created_at": _now(),
         "reviewed_at": None,
         "review_note": None,
-        "provenance": {"method": "pixellab", "endpoint": "map-objects", "usage": usage},
+        "provenance": {
+            "method": "pixellab",
+            "endpoint": "map-objects",
+            "style_seed": style.seed,
+            "style_params": _map_object_style_params(style),
+            "usage": usage,
+        },
     }
     _save_manifest(manifest)
 
@@ -1352,14 +1396,26 @@ def establish_art_style(
     Call this right after Planning, using the design document's ``art_style``,
     so every later asset inherits one deliberate look.
 
-    ``detail`` and ``shading`` are PixelLab's structured controls. A concept
-    with few tones per material needs them lowered, and prose in the prompt
-    cannot do it — the structured field wins over the description by design.
-    They apply on first use only, like the rest of the frozen style; an
-    existing game's values live in ``var/assets/styles/<gameId>.json``.
+    ``detail`` and ``shading`` are PixelLab's structured controls and must be
+    values from ``Detail``/``Shading`` — see
+    ``pixellab_client.STYLE_ENUMS["create-image-pixflux"]``. They apply on
+    first use only, like the rest of the frozen style; an existing game's
+    values live in ``var/assets/styles/<gameId>.json``.
     """
 
     game_id = _require_identifier(gameId, "gameId")
+    # Checked before freezing, not at generation time: these are written into
+    # var/assets/styles/<gameId>.json and every later asset reads them, so a
+    # value outside PixelLab's enum would 422 every asset in the game with no
+    # way back short of editing the frozen file.
+    allowed = pixellab_client.STYLE_ENUMS["create-image-pixflux"]
+    for field, value in (("detail", detail.strip()), ("shading", shading.strip())):
+        if value and value not in allowed[field]:
+            raise tool_error(
+                VALIDATION_ERROR,
+                f"{field} must be one of {allowed[field]}",
+                gameId=game_id,
+            )
     style = load_or_create(
         ROOT,
         game_id,

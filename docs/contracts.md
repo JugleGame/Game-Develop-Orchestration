@@ -130,10 +130,14 @@ Server: `AssetGenMcpServer`.
   different in-world size (a boy and the giant chasing him) generate at the same pixel density
   without editing the game's stored style. The stored grid never changes, and omitting `gridSize`
   keeps the previous size and the previous asset id.
-- Both derived sides must fall inside PixelLab's 32-400px per-side range. A request outside it fails
-  validation before any provider call, naming the derived size and the range; below the floor the
-  provider otherwise fails with an error that names no cause, and a character generated under 32
-  wide crops the figure below the thigh.
+- Both derived sides must fall inside PixelLab's 16-400px per-side range, which is what
+  `CreateImagePixfluxRequest.image_size` declares. A request outside it fails validation before any
+  provider call, naming the derived size and the range. The floor previously sat at 32 on the
+  strength of one 16x32 request that failed through the MCP path with a `TaskGroup` exception
+  naming no cause; that failure was never explained and the schema contradicts it, so the contract
+  follows the schema. A character generated under 32 wide still crops the figure below the thigh,
+  which is a composition caution, not a validation rule.
+- `/map-objects` has its own floor: `CreateMapObjectRequest.image_size` starts at 32, not 16.
 - A prototype request claims its prompt digest under `var/assets/submissions/<assetId>.json` before
   PixelLab is paid, and the claim always records how the request ended. A failure that never
   reached PixelLab's meter is stored as `FAILED` with `billable: false`, and the next call with the
@@ -150,18 +154,51 @@ Server: `AssetGenMcpServer`.
 - `generate_2d_variations` accepts only approved MCP prototypes as style anchors and uses
   PixelLab's `generate-with-style-v2` REST endpoint for same-direction batch variations. The
   primary `prototypeAssetId` plus optional `styleAssetIds` form a deduplicated bank of one to four
-  references. The primary prototype fixes the output canvas size for every variation. This endpoint
-  accepts square primary prototypes only; non-square character batches must use a provider-specific
-  character workflow rather than silent padding or distortion.
+  references.
+- That endpoint takes no output size. `GenerateWithStyleV2Request.image_size` is marked
+  `deprecated` with the description `REMOVED. Output size is deduced from the style images.`, so
+  no size is sent and the returned size is recorded rather than checked against a size that was
+  never requested. Reference images are capped at 512px per side, which is the model's own size.
+- `generate_2d_variations` still accepts square primary prototypes only. That gate is this server's,
+  not the provider's, and it excludes every character (a 1:2 kind).
 - `detail` and `shading` are fields of the game's frozen `ArtStyle`, set once through
   `establish_art_style` and stored in `var/assets/styles/<gameId>.json`. They are not per-call
   arguments: a game whose concept art holds two tones per material needs the same setting on every
-  asset, and prompt prose cannot substitute for them because PixelLab's structured fields outrank
-  the description. A style file written before these fields existed still loads and keeps the
-  previous defaults (`medium detail`; `medium shading` for characters and monsters). `shading`
-  stays flattened for inanimate kinds whatever the game asks for.
-- Structured style values are checked against the selected PixelLab tool's declared enum before the
-  request is sent, so a wrong value costs no generation and the error names the accepted values.
+  asset. A style file written before these fields existed still loads and keeps the previous
+  defaults (`medium detail`; `medium shading` for characters and monsters). `shading` stays
+  flattened for inanimate kinds whatever the game asks for.
+- `establish_art_style` rejects a `detail` or `shading` outside the schema before freezing the
+  style. The value is written into the game's style file and read by every later asset, so an
+  invalid one would otherwise fail every generation in that game with no way back short of editing
+  the frozen file by hand.
+- Structured style values are checked against the endpoint's own declared enum before the request is
+  sent, so a wrong value costs no generation and the error names the accepted values. **The allowed
+  values differ per endpoint** and the differences are not guessable, so they live in one table,
+  `pixellab_client.STYLE_ENUMS`:
+
+  | field | `create-image-pixflux` | `tilesets` | `map-objects` |
+  | --- | --- | --- | --- |
+  | `outline` | `single color black outline`, `single color outline`, `selective outline`, `lineless` | same as pixflux | `single color outline`, `selective outline`, `lineless` |
+  | `shading` | `flat shading`, `basic shading`, `medium shading`, `detailed shading`, `highly detailed shading` | same as pixflux | `flat shading`, `basic shading`, `medium shading`, `detailed shading` |
+  | `detail` | `low detail`, `medium detail`, `highly detailed` | same as pixflux | `low detail`, `medium detail`, `high detail` |
+  | `view` | `side`, `low top-down`, `high top-down` | `low top-down`, `high top-down` | `low top-down`, `high top-down`, `side` |
+
+  The server therefore translates the locked `ArtStyle` onto `/map-objects`' vocabulary rather than
+  passing it through: `single color black outline` becomes `single color outline` and
+  `highly detailed` becomes `high detail`.
+- A map object that is sent no style takes the endpoint's defaults, and its `view` default is
+  `high top-down` — which drew a side-view game's decorations as if seen from above.
+  `generate_map_object` therefore always sends the game's locked `view`, outline, shading, and
+  detail, plus the material palette.
+- Palettes travel as `color_image`, a base64 PNG PixelLab samples colours from. Neither
+  `CreateImagePixfluxRequest`, `CreateTilesetRequest`, nor `CreateMapObjectRequest` has an
+  array-of-colours or string palette field.
+- `text_guidance_scale` is how literally the description is followed, 1-20, provider default 8.
+  Both generation paths send the same value. The MCP path previously hard-coded 16 while the REST
+  path sent nothing at all, so two assets in one game were generated at different strengths.
+- `tileSize` is an enum, not a range: `TileSize` declares 16, 32, and 64, and 64 additionally
+  requires a `pro` mode this server never sends, so only 16 and 32 are accepted. Values such as 24
+  and 48 sit inside the old 16-64 range and are still rejected by the provider.
 - Negations never reach the provider. PixelLab draws the noun and ignores the negation:
   `no city, no buildings, no street` returned a city, while the same subject without those clauses
   returned none, and the positive `empty background` worked. `prepare_asset_prompt` therefore

@@ -4,17 +4,17 @@ One function that returns pixels, one exception type callers fall back on.
 Schema verified against PixelLab's own
 OpenAPI document, v2 (``https://api.pixellab.ai/v2/openapi.json``,
 2026-08-02) — see `12_PixelLab_에셋생성_연동_구현계획.md` §3 for the confirmed
-fields. Only ``create-image-pixflux`` is implemented: it is the endpoint the
-asset server actually calls (text prompt in, pixel art out); the rest of
-PixelLab's v2 surface (bitforge, animation, rotate, inpaint, tilesets, ...)
-has no caller yet.
+fields. ``create-image-pixflux``, ``generate-with-style-v2``, ``tilesets``,
+``map-objects``, and ``animate-with-text-v3`` have callers; the rest of
+PixelLab's v2 surface (bitforge, rotate, inpaint, ...) does not. The style
+enums differ per endpoint — see ``STYLE_ENUMS``.
 
 **v1 vs v2**: an earlier pass of this module (and §3) verified v1
 (``/v1/generate-image-pixflux``). PixelLab's own marketing/pricing page
 (``pixellab.ai/pixellab-api``, checked 2026-08-02) now exclusively advertises
 v2 paths (``/v2/create-image-pixflux`` — the ``generate-`` verb became
-``create-``, ``no_background``/``seed``/response shape unchanged, minimum
-image size rose from 16px to 32px). Whether v1 still resolves was not
+``create-``, ``no_background``/``seed``/response shape unchanged, and
+``image_size`` stayed 16-400px per side). Whether v1 still resolves was not
 tested — this module targets v2 because it is the only version PixelLab
 currently documents as current.
 
@@ -45,6 +45,60 @@ from PIL import Image
 #: Frame counts ``/animate-with-text-v3`` accepts. Odd values are refused with
 #: 422 by the provider, so they are refused here before a request is spent.
 ANIMATION_FRAME_COUNTS = (4, 6, 8, 10, 12, 14, 16)
+
+# PixelLab's shared style enums (``Outline``/``Shading``/``Detail``/
+# ``CameraView`` in ``v2/openapi.json``, re-verified 2026-08-22).
+_OUTLINE = (
+    "single color black outline",
+    "single color outline",
+    "selective outline",
+    "lineless",
+)
+_SHADING = (
+    "flat shading",
+    "basic shading",
+    "medium shading",
+    "detailed shading",
+    "highly detailed shading",
+)
+_DETAIL = ("low detail", "medium detail", "highly detailed")
+_CAMERA_VIEW = ("side", "low top-down", "high top-down")
+
+#: Allowed style values per endpoint. These are *not* the same everywhere and
+#: the differences are not guessable: ``/tilesets`` uses ``TilesetCameraView``,
+#: which has no "side", and ``/map-objects`` declares its own inline enums that
+#: drop "single color black outline" and "highly detailed shading" and spell
+#: the top detail level "high detail" rather than "highly detailed". One table
+#: so a caller learns the difference here instead of from a 422 body.
+STYLE_ENUMS: dict[str, dict[str, tuple[str, ...]]] = {
+    "create-image-pixflux": {
+        "outline": _OUTLINE,
+        "shading": _SHADING,
+        "detail": _DETAIL,
+        "view": _CAMERA_VIEW,
+    },
+    "tilesets": {
+        "outline": _OUTLINE,
+        "shading": _SHADING,
+        "detail": _DETAIL,
+        "view": ("low top-down", "high top-down"),
+    },
+    "map-objects": {
+        "outline": ("single color outline", "selective outline", "lineless"),
+        "shading": ("flat shading", "basic shading", "medium shading", "detailed shading"),
+        "detail": ("low detail", "medium detail", "high detail"),
+        "view": ("low top-down", "high top-down", "side"),
+    },
+}
+
+#: ``TileSize.width``/``height`` is an enum, not a range. 64 additionally
+#: requires ``mode="pro"``, which no caller here sends.
+TILE_SIZES = (16, 32)
+
+#: ``text_guidance_scale`` bounds, shared by every endpoint that takes it.
+#: The provider's own default is 8; anything outside 1-20 is a 422.
+TEXT_GUIDANCE_RANGE = (1.0, 20.0)
+DEFAULT_TEXT_GUIDANCE = 8.0
 
 BASE_URL = "https://api.pixellab.ai/v2"
 MCP_URL = "https://api.pixellab.ai/mcp"
@@ -161,6 +215,7 @@ def _prototype_arguments(
     style_description: str,
     style_params: dict[str, str],
     palette: list[str],
+    text_guidance_scale: float,
 ) -> dict[str, Any]:
     """Map the common prototype request onto the selected official tool schema."""
 
@@ -187,10 +242,10 @@ def _prototype_arguments(
     if "seed" in properties:
         arguments["seed"] = seed
     if "text_guidance_scale" in properties:
-        # PixelLab defaults to 8, which favored atmosphere over required
-        # object structure in review prototypes. A stronger literal setting
-        # keeps named parts such as bottle necks and platform edges readable.
-        arguments["text_guidance_scale"] = 16.0
+        # Relayed, not fixed: this used to hard-code 16 while the REST path
+        # sent nothing and got PixelLab's own 8, so two assets in one game were
+        # generated at different literal-following strengths.
+        arguments["text_guidance_scale"] = text_guidance_scale
     if "style_description" in properties:
         arguments["style_description"] = style_description
     for field, value in style_params.items():
@@ -354,7 +409,9 @@ async def _generate_prototype_async(
     style_description: str,
     style_params: dict[str, str],
     palette: list[str],
+    text_guidance_scale: float,
 ) -> tuple[Image.Image, dict[str, Any], str]:
+    _reject_text_guidance(text_guidance_scale)
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
         raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
@@ -385,6 +442,7 @@ async def _generate_prototype_async(
                             style_description,
                             style_params,
                             palette,
+                            text_guidance_scale,
                         ),
                         read_timeout_seconds=_TIMEOUT_SECONDS,
                     )
@@ -494,6 +552,7 @@ def generate_prototype(
     style_description: str,
     style_params: dict[str, str],
     palette: list[str],
+    text_guidance_scale: float = DEFAULT_TEXT_GUIDANCE,
 ) -> tuple[Image.Image, dict[str, Any], str]:
     """Generate one style prototype through PixelLab's official remote MCP."""
 
@@ -508,6 +567,7 @@ def generate_prototype(
             style_description=style_description,
             style_params=style_params,
             palette=palette,
+            text_guidance_scale=text_guidance_scale,
         )
     )
 
@@ -524,10 +584,11 @@ def generate_image(
     shading: str | None = None,
     detail: str | None = None,
     view: str | None = None,
+    text_guidance_scale: float = DEFAULT_TEXT_GUIDANCE,
 ) -> tuple[Image.Image, dict[str, Any]]:
     """Call ``/create-image-pixflux`` and return ``(image, usage)``.
 
-    ``width``/``height`` must be 32-400 (Pixflux v2's own limit — verified);
+    ``width``/``height`` must be 16-400 (Pixflux v2's own limit);
     the asset server derives both from ``style.pixel_grid`` times a per-kind
     ratio (``server.py::_size_for``), which stays in range for every
     configured kind. ``usage`` is PixelLab's own consumption report, relayed
@@ -549,11 +610,24 @@ def generate_image(
     ``Outline``: "single color black outline"/"single color outline"/
     "selective outline"/"lineless"; ``Shading``: "flat shading" through
     "highly detailed shading"; ``Detail``: "low"/"medium"/"highly detailed";
-    ``CameraView``: "side"/"low top-down"/"high top-down". Passing these
-    structurally, instead of stuffing style words into ``description``, is
-    what the API actually offers for controlling look — untested until a
-    caller sets them (12문서 §10-7 prompting eval, in progress).
+    ``CameraView``: "side"/"low top-down"/"high top-down" — see
+    ``STYLE_ENUMS["create-image-pixflux"]`` for the exact wordings.
+
+    ``text_guidance_scale`` is how literally the description is followed
+    (1-20). It is relayed rather than fixed here so both generation paths use
+    one value: the MCP path used to hard-code 16 while this one sent nothing
+    at all, which left two assets in the same game generated at different
+    strengths. The default is PixelLab's own.
     """
+
+    _reject_style_enums(
+        "create-image-pixflux",
+        outline=outline,
+        shading=shading,
+        detail=detail,
+        view=view,
+    )
+    _reject_text_guidance(text_guidance_scale)
 
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
@@ -563,6 +637,7 @@ def generate_image(
         "description": prompt,
         "image_size": {"width": width, "height": height},
         "no_background": no_background,
+        "text_guidance_scale": text_guidance_scale,
     }
     if seed is not None:
         payload["seed"] = seed
@@ -602,32 +677,38 @@ def generate_image(
     return image, dict(data.get("usage") or {})
 
 
+#: ``StyleImage.width``/``height`` cap. The model works at this size, and the
+#: output follows the style images rather than a requested size.
+STYLE_IMAGE_MAX_SIDE = 512
+
+
 def generate_with_style(
     *,
     prompt: str,
     style_images: list[Image.Image],
-    output_size: tuple[int, int],
     style_description: str,
     seed: int,
     poll_seconds: float = 5.0,
     max_polls: int = 60,
 ) -> tuple[list[Image.Image], dict[str, Any], str]:
-    """Generate a variation set through the style-reference REST endpoint."""
+    """Generate a variation set through the style-reference REST endpoint.
+
+    There is no output-size argument. ``GenerateWithStyleV2Request.image_size``
+    is marked ``deprecated`` with the description "REMOVED. Output size is
+    deduced from the style images." — so this neither sends a size nor checks
+    the returned one against a size it never asked for. The caller records the
+    size that actually came back.
+    """
 
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
         raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
     if not 1 <= len(style_images) <= 4:
         raise PixelLabUnavailable("style_images must contain between 1 and 4 images")
-    if any(max(image.size) > 512 for image in style_images):
-        raise PixelLabUnavailable("style image dimensions must not exceed 512 pixels")
-    if output_size[0] != output_size[1] or not 16 <= output_size[0] <= 512:
-        raise PixelLabUnavailable("generate-with-style-v2 output must be square and 16-512 pixels")
 
-    target = output_size[0]
     normalized_style_images = []
     for image in style_images:
-        scale = min(1.0, target / max(image.size))
+        scale = min(1.0, STYLE_IMAGE_MAX_SIDE / max(image.size))
         size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
         normalized_style_images.append(
             image if size == image.size else image.resize(size, Image.Resampling.NEAREST)
@@ -710,24 +791,34 @@ def generate_with_style(
 
     usage = data.get("usage") or created_data.get("usage") or response_dict.get("usage") or {}
     images = [_decode(encoded) for encoded in encoded_images]
-    if any(image.size != output_size for image in images):
-        raise PixelLabUnavailable(
-            f"PixelLab returned an inconsistent variation size; expected {output_size}"
-        )
     return images, dict(usage), job_id
 
 
-def _reject_unless_in(field: str, value: str | None, allowed: tuple[str, ...]) -> None:
-    """Fail before the request when a style enum is wrong.
+def _reject_style_enums(endpoint: str, **values: str | None) -> None:
+    """Fail before the request when a style value is wrong for this endpoint.
 
     PixelLab answers 422 with the offending field buried in a JSON body; a
     caller that passes a value from elsewhere (e.g. an ArtStyle whose
     ``camera_view`` is "side") otherwise learns that only after a round trip.
+    The allowed set is per endpoint — see ``STYLE_ENUMS``.
     """
 
-    if value is not None and value not in allowed:
+    allowed_by_field = STYLE_ENUMS[endpoint]
+    for field, value in values.items():
+        allowed = allowed_by_field[field]
+        if value is not None and value not in allowed:
+            raise PixelLabUnavailable(
+                f"{field}={value!r} is not accepted by /{endpoint}; use one of {allowed}"
+            )
+
+
+def _reject_text_guidance(value: float) -> None:
+    """``text_guidance_scale`` is 1-20 on every endpoint that accepts it."""
+
+    low, high = TEXT_GUIDANCE_RANGE
+    if not low <= value <= high:
         raise PixelLabUnavailable(
-            f"{field}={value!r} is not accepted by /tilesets; use one of {allowed}"
+            f"text_guidance_scale must be {low:g}-{high:g}, got {value!r}"
         )
 
 
@@ -741,7 +832,8 @@ def create_tileset(
     outline: str | None = None,
     shading: str | None = None,
     detail: str | None = None,
-    forced_palette: list[str] | None = None,
+    color_palette: list[tuple[int, int, int]] | None = None,
+    text_guidance_scale: float = DEFAULT_TEXT_GUIDANCE,
     poll_seconds: float = 5.0,
     max_polls: int = 60,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
@@ -759,25 +851,26 @@ def create_tileset(
     tiles for the default ``transition_size``; PixelLab names them
     ``wang_0``..``wang_15``.
 
-    ``tile_size`` is 16-64 (PixelLab's own limit), squared. ``usage`` is
-    relayed verbatim as with ``generate_image``; measured it comes back
-    ``null`` on the retrieval call, so callers must not assume a dict.
+    ``tile_size`` is one of ``TILE_SIZES``, squared — ``TileSize`` is an enum,
+    not a range, so 24 or 48 is a 422 even though both sit inside 16-64.
+    ``color_palette`` is sent as ``color_image``: like pixflux, this endpoint
+    has no array-of-colours field. ``usage`` is relayed verbatim as with
+    ``generate_image``; measured it comes back ``null`` on the retrieval call,
+    so callers must not assume a dict.
     """
 
     # Argument checks come before the key check: a wrong enum is wrong whether
     # or not the environment is configured, and reporting the env first hides it.
-    # Reject bad enums here rather than paying a round trip to learn it. These
-    # differ from create-image-pixflux's — ``view`` has no "side" and the
-    # outline/shading/detail wordings are the tileset endpoint's own (verified
-    # against v2/openapi.json and a live 422, 2026-08-03).
-    _reject_unless_in("view", view, ("low top-down", "high top-down"))
-    _reject_unless_in("outline", outline, ("none", "single color outline", "thick outline"))
-    _reject_unless_in(
-        "shading", shading, ("no shading", "light shading", "medium shading", "heavy shading")
+    # ``view`` is the one that differs from pixflux here — ``TilesetCameraView``
+    # has no "side" — while outline/shading/detail share pixflux's wordings.
+    _reject_style_enums(
+        "tilesets", view=view, outline=outline, shading=shading, detail=detail
     )
-    _reject_unless_in("detail", detail, ("minimal detail", "medium detail", "highly detailed"))
-    if not 16 <= tile_size <= 64:
-        raise PixelLabUnavailable(f"tile_size must be 16-64, got {tile_size}")
+    _reject_text_guidance(text_guidance_scale)
+    if tile_size not in TILE_SIZES:
+        raise PixelLabUnavailable(
+            f"tile_size must be one of {TILE_SIZES}, got {tile_size}"
+        )
 
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
@@ -787,6 +880,7 @@ def create_tileset(
         "lower_description": lower_description,
         "upper_description": upper_description,
         "tile_size": {"width": tile_size, "height": tile_size},
+        "text_guidance_scale": text_guidance_scale,
     }
     if transition_description is not None:
         payload["transition_description"] = transition_description
@@ -798,8 +892,12 @@ def create_tileset(
         payload["shading"] = shading
     if detail is not None:
         payload["detail"] = detail
-    if forced_palette:
-        payload["forced_palette"] = forced_palette
+    if color_palette:
+        payload["color_image"] = {
+            "type": "base64",
+            "base64": _palette_swatch_b64(color_palette),
+            "format": "png",
+        }
 
     headers = {"Authorization": f"Bearer {api_key}"}
 
@@ -991,12 +1089,21 @@ def create_animation(
     return frames, dict(usage), str(job_id)
 
 
+#: ``CreateMapObjectRequest.image_size`` starts at 32, not at pixflux's 16.
+MAP_OBJECT_SIDE_RANGE = (32, 400)
+
+
 def create_map_object(
     *,
     description: str,
     width: int = 32,
     height: int = 32,
-    color_palette: str | None = None,
+    color_palette: list[tuple[int, int, int]] | None = None,
+    view: str | None = None,
+    outline: str | None = None,
+    shading: str | None = None,
+    detail: str | None = None,
+    text_guidance_scale: float = DEFAULT_TEXT_GUIDANCE,
     poll_seconds: float = 5.0,
     max_polls: int = 24,
 ) -> tuple[Image.Image, dict[str, Any]]:
@@ -1005,10 +1112,31 @@ def create_map_object(
     Scattered on a layer above the floor, these are what break up a tiled
     ground without needing a variant for every cell.
 
+    The style arguments are what keep a decoration in the same game as the
+    rest: without them this endpoint applies its own defaults, and ``view``
+    defaults to "high top-down" — so a side-view game used to get its props
+    drawn from above. Their allowed values are this endpoint's own and are
+    narrower than pixflux's (see ``STYLE_ENUMS``), which is why the caller
+    must map a locked ``ArtStyle`` onto them rather than pass it through.
+
+    ``color_palette`` is sent as ``color_image``; there is no
+    ``color_palette`` field in ``CreateMapObjectRequest``, so the string this
+    used to send was silently dropped or rejected.
+
     The finished object comes back as a ``download_url``, not base64, and
     PixelLab deletes it 8 hours after creation — so this fetches the bytes
     immediately rather than handing the URL to the caller.
     """
+
+    _reject_style_enums(
+        "map-objects", view=view, outline=outline, shading=shading, detail=detail
+    )
+    _reject_text_guidance(text_guidance_scale)
+    low, high = MAP_OBJECT_SIDE_RANGE
+    if not (low <= width <= high and low <= height <= high):
+        raise PixelLabUnavailable(
+            f"map object size must be {low}-{high}px per side, got {width}x{height}"
+        )
 
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
@@ -1017,9 +1145,22 @@ def create_map_object(
     payload: dict[str, Any] = {
         "description": description,
         "image_size": {"width": width, "height": height},
+        "text_guidance_scale": text_guidance_scale,
     }
+    for field, value in (
+        ("view", view),
+        ("outline", outline),
+        ("shading", shading),
+        ("detail", detail),
+    ):
+        if value is not None:
+            payload[field] = value
     if color_palette:
-        payload["color_palette"] = color_palette
+        payload["color_image"] = {
+            "type": "base64",
+            "base64": _palette_swatch_b64(color_palette),
+            "format": "png",
+        }
 
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
