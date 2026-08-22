@@ -57,6 +57,10 @@ def _configured_asset_root(value: str | None = None) -> Path:
 
 
 ROOT = _configured_asset_root()
+# Human-supplied reference drawings, one directory per game. Deliberately not
+# under ASSET_ROOT: nothing here is generated, reviewed, or served as an asset.
+CONCEPT_ART_ROOT = REPO_ROOT / "var" / "concept-art"
+CONCEPT_REFERENCE_PREFIX = "concept:"
 DEFAULT_ART_STYLE = "pixel art"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?")
 
@@ -383,6 +387,40 @@ def _posable_canvas(width: int, height: int) -> tuple[int, int] | None:
     return None
 
 
+def _concept_reference(name: str, game_id: str, field: str, feature_id: str) -> Image.Image:
+    """Open a concept-art image of this game to reuse as a reference.
+
+    The approval gates below exist to stop an *unreviewed generation* from
+    being laundered into approved work. Concept art is the opposite case: a
+    human put the file in ``var/concept-art/<gameId>/`` deliberately, and it is
+    the drawing the generated asset is meant to match. Without this path the
+    settled design can only be described in prose, and every regeneration
+    drifts on proportion, clothing, and prop placement.
+
+    The directory is the whole gate, so the name is resolved against it and a
+    result outside it is refused rather than clamped.
+    """
+
+    root = (CONCEPT_ART_ROOT / game_id).resolve()
+    path = (root / name).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"{field} concept reference must stay within {root}",
+            featureId=feature_id,
+        ) from exc
+    if not path.is_file():
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"unknown {field} concept reference: {path}",
+            featureId=feature_id,
+        )
+    with Image.open(path) as opened:
+        return opened.convert("RGBA").copy()
+
+
 def _approved_reference(
     asset_id: str, game_id: str, field: str, feature_id: str
 ) -> Image.Image:
@@ -392,8 +430,15 @@ def _approved_reference(
     approved it, and PixelLab drew it. A reference is a second asset's pose or
     starting pixels, so an unreviewed one would launder an unapproved image
     into approved work.
+
+    ``concept:<filename>`` takes the concept-art path instead — see
+    ``_concept_reference`` for why that one is not an approval hole.
     """
 
+    if asset_id.startswith(CONCEPT_REFERENCE_PREFIX):
+        return _concept_reference(
+            asset_id[len(CONCEPT_REFERENCE_PREFIX) :], game_id, field, feature_id
+        )
     if asset_id.split("__", 1)[0] != game_id:
         raise tool_error(
             VALIDATION_ERROR, f"{field} must belong to gameId", featureId=feature_id
@@ -898,6 +943,11 @@ def generate_2d_sprite(
 
     ``initAssetId`` names an approved sprite to start the generation from, with
     ``initImageStrength`` (1-999) setting how much of it survives.
+
+    Either field also takes ``concept:<filename>``, naming a human-supplied
+    drawing in ``var/concept-art/<gameId>/`` instead of a generated asset. That
+    is how a settled concept design reaches the generator as pixels rather than
+    as prose; a name resolving outside that directory is refused.
 
     Both require ``create-image-bitforge``, which stops at 200px per side; a
     larger request is refused rather than generated without the pose it asked

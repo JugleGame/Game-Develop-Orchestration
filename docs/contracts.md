@@ -356,6 +356,13 @@ Server: `AssetGenMcpServer`.
   `create-image-bitforge`, so a request larger than 200px per side is refused rather than generated
   without the pose it asked for. `skeletonGuidance` is 0-5 (provider default 1) and
   `initImageStrength` is 1-999.
+- Either field also accepts `concept:<filename>`, resolved against `var/concept-art/<gameId>/`.
+  That directory holds human-supplied reference drawings, not generated assets, so the approval and
+  PixelLab-provenance gates do not apply to it — those gates exist to stop an unreviewed
+  *generation* from being laundered into approved work, and a concept drawing a human committed is
+  the design the asset is meant to match. The directory is the whole gate: a filename that resolves
+  outside `var/concept-art/<gameId>/` is refused, as is one that names no file, and neither spends a
+  generation. An asset id in the same field is gated exactly as before.
 - **Keypoints are normalised to 0-1, not pixels.** The schema types `x`/`y` as bare numbers and
   says nothing about their range, so this had to be measured: a full-body 128x256 sprite came back
   with every joint between 0.4 and 0.9. They therefore transfer to any canvas unchanged. Scaling
