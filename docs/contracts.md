@@ -175,7 +175,7 @@ Server: `AssetGenMcpServer`.
 
   | condition | endpoint | what it gives up |
   | --- | --- | --- |
-  | 1 reference, ≤200px per side | `create-image-bitforge` | at most one reference |
+  | 1 reference, **square**, ≤200px per side | `create-image-bitforge` | at most one reference |
   | otherwise | `generate-with-style-v2` | `styleStrength`, `coveragePercentage`, `negativeDescription` |
 
   The chosen endpoint is returned as `endpoint` and recorded in each asset's provenance.
@@ -325,6 +325,31 @@ Server: `AssetGenMcpServer`.
   swatches are what the earlier "not enough colour range" objection was asking for.
 - Caveats on that measurement: three subjects, one game, one `art_style`. The locked sprites are
   also darker and lower-contrast overall, which is worth watching at small on-screen sizes.
+- **`create-image-bitforge` needs a square canvas, and the server grows the request to one.**
+  Measured 2026-08-22 (`var/assets/experiments/round-5-canvas/`, same prompt and seed): a slim
+  character asked for at 32x64 came back as a detached hat floating above a body, while the same
+  prompt at 64x64 came back as a complete figure. The provider only documents this as a keypoint
+  caveat — "Warning! Sizes that are not 16x16, 32x32 and 64x64 can cause the generations to be
+  lower quality" — but the control had no keypoints in it at all, so the canvas is the problem on
+  its own.
+- The rule is stated about canvases, not about characters, so it holds for any kind:
+  `_posable_canvas` grows a bitforge request to the **smallest square that still contains it**
+  (`SKELETON_FRIENDLY_SIZES`: 16, 32, 64). Growing rather than shrinking is what keeps the original
+  measurement intact — a character has 64 rows because 48 cropped the figure below the thigh, and
+  64x64 keeps every one of them; only the width changes. It is a no-op for `monster`, `prop`,
+  `icon`, and `tile`, which are already square. A canvas with no square to grow to comes back with
+  a warning instead.
+- **`_KIND_SIZE_RATIO` is unchanged.** The ordinary path (PixelLab's MCP prototype tool, and
+  pixflux) produces clean 32x64 characters and always has; only bitforge fails there. Changing the
+  ratio globally would have re-sized every character in every game to fix a problem that lives on
+  one endpoint.
+- A grown request reports `canvas` and `requestedCanvas` in its result, plus a `warnings` entry
+  saying what changed, so the size difference from the game's other characters is stated rather
+  than discovered.
+- `generate_2d_variations` cannot grow its canvas — its output has to stay the size of the asset it
+  varies — so a non-square batch takes `generate-with-style-v2` instead, and the bitforge-only
+  arguments are refused with that reason. A 1:2 character batch therefore works, without the
+  controls bitforge would have added.
 - `generate_2d_sprite` accepts `poseFromAssetId` and `initAssetId`, both naming an approved PixelLab
   asset of the same game. The first reads that sprite's joints with `/estimate-skeleton` and sends
   them as `skeleton_keypoints`; the second sends it as `init_image`. Both need
@@ -350,11 +375,9 @@ Server: `AssetGenMcpServer`.
   | 32x64 (the character ratio) | messy, smeared figure | **noise, no figure at all** |
   | 64x64 (keypoint-friendly) | clean knight | clean knight in the reference's stride |
 
-  So today posing works on the **square** kinds — `monster`, `prop`, `icon`, `tile` at grid 16, 32,
-  or 64 — and does not work on `character`, whose 1:2 ratio can never be square. A posed character
-  is answered with a `warnings` entry rather than blocked, because the request is legal and the
-  caller may still want to see it. Making characters posable needs the canvas ratio revisited,
-  which is a separate question from wiring the field.
+  Posing therefore requires a square canvas — and the server now grows the request to one rather
+  than refusing or warning, so a `character` is posable despite its 1:2 ratio. See the canvas rule
+  above.
 - High guidance costs quality even on a good canvas: the 64x64 posed knight is muddier and darker
   than the unposed one. Turn `skeletonGuidance` down before turning it up.
 - `/estimate-skeleton` is billed separately from the generation — measured at 0.1 generations

@@ -939,17 +939,22 @@ def test_an_inline_negation_stays_in_the_subject():
 
 
 def test_variation_endpoint_prefers_bitforge_only_where_it_fits():
-    """One reference and a small canvas gets the controls; anything else falls
-    back to the multi-reference endpoint, which has none of them."""
+    """One reference, square, and small enough gets the controls; anything else
+    falls back to the multi-reference endpoint, which has none of them."""
 
     from asset.server import _BITFORGE, _STYLE_V2, _variation_endpoint
 
-    assert _variation_endpoint(1, (32, 64)) == _BITFORGE
+    assert _variation_endpoint(1, (32, 32)) == _BITFORGE
     assert _variation_endpoint(1, (200, 200)) == _BITFORGE
     # 201 per side is past CreateImageBitforgeRequest.image_size's maximum.
-    assert _variation_endpoint(1, (201, 64)) == _STYLE_V2
+    assert _variation_endpoint(1, (201, 201)) == _STYLE_V2
     # bitforge takes exactly one style_image.
-    assert _variation_endpoint(2, (32, 64)) == _STYLE_V2
+    assert _variation_endpoint(2, (32, 32)) == _STYLE_V2
+    # Non-square is where bitforge falls apart (measured: a 32x64 character
+    # came back as a detached hat above a body). A batch cannot grow its canvas
+    # the way the prototype path does, because the output has to stay the size
+    # of the reference it varies — so it takes the endpoint that works there.
+    assert _variation_endpoint(1, (32, 64)) == _STYLE_V2
 
 
 def test_pixellab_asset_check_accepts_every_generation_path():
@@ -1243,9 +1248,14 @@ async def test_a_pose_reference_reaches_bitforge_as_coordinates(monkeypatch, tmp
     assert body["imagesGenerated"] == 2
 
 
-async def test_a_posed_character_is_warned_about_its_canvas(monkeypatch, tmp_path):
-    """Every keypoint-friendly canvas is square and a character is 1:2, so the
-    provider's own warning applies to the常 case. Warned, not blocked."""
+async def test_a_posed_character_is_grown_to_a_square_canvas(monkeypatch, tmp_path):
+    """Every keypoint-friendly canvas is square and a character is 1:2.
+
+    Rather than run on a canvas the provider warns about — measured to return
+    noise — the request is grown to the smallest square that still contains it.
+    A character's 64 rows are why 48 was rejected in the first place, and
+    64x64 keeps every one of them; only the width changes.
+    """
 
     monkeypatch.setattr(server, "ROOT", tmp_path)
     monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
@@ -1257,7 +1267,10 @@ async def test_a_posed_character_is_warned_about_its_canvas(monkeypatch, tmp_pat
     def _fake_skeleton(image):
         return [{"x": 1.0, "y": 2.0, "label": "NECK", "z_index": 0}], {}
 
+    captured_size: dict[str, tuple[int, int]] = {}
+
     def _fake_bitforge(**kwargs):
+        captured_size["size"] = (kwargs["width"], kwargs["height"])
         return (
             Image.new("RGBA", (kwargs["width"], kwargs["height"]), (7, 7, 7, 255)),
             {"type": "generations", "generations": 1.0},
@@ -1290,7 +1303,13 @@ async def test_a_posed_character_is_warned_about_its_canvas(monkeypatch, tmp_pat
 
     body = result.structured_content
     assert result.is_error is False
-    assert any("32x64" in warning for warning in body["warnings"])
+    assert body["requestedCanvas"] == [32, 64]
+    assert body["canvas"] == [64, 64]
+    assert any("64x64" in warning for warning in body["warnings"])
+    # The generated canvas is the square one, and the stored sprite follows it.
+    assert captured_size["size"] == (64, 64)
+    with Image.open(body["assetPath"]) as saved:
+        assert saved.size == (64 * server._PIXELLAB_UPSCALE,) * 2
 
 
 async def test_an_unapproved_reference_is_refused_before_any_call(monkeypatch, tmp_path):
@@ -1392,3 +1411,140 @@ async def test_a_canvas_too_large_for_bitforge_is_refused_not_silently_posed(
     assert "200px per side" in text
     assert "240x240" in text
 
+
+
+def test_the_posable_canvas_rule_is_about_canvases_not_kinds():
+    """Stated as a rule about canvases so it holds for any kind, including ones
+    this repository has not defined yet."""
+
+    from asset.server import _posable_canvas
+
+    # Already square and friendly: nothing to do, for every such kind.
+    assert _posable_canvas(32, 32) == (32, 32)
+    assert _posable_canvas(64, 64) == (64, 64)
+    # Grown to the smallest square that still contains the request, so every
+    # row the original canvas had survives.
+    assert _posable_canvas(32, 64) == (64, 64)
+    assert _posable_canvas(16, 32) == (32, 32)
+    # Past the largest friendly square there is nothing to grow to.
+    assert _posable_canvas(96, 64) is None
+    assert _posable_canvas(64, 128) is None
+
+
+def test_growing_the_canvas_never_drops_a_row():
+    """The 1:2 ratio exists because 48 rows cropped a humanoid below the thigh.
+    A rule that shrank the canvas would bring that back."""
+
+    from asset.server import _posable_canvas
+
+    for width, height in ((32, 64), (16, 32), (32, 32), (64, 64)):
+        grown = _posable_canvas(width, height)
+        assert grown is not None
+        assert grown[0] >= width and grown[1] >= height
+
+
+async def test_a_square_kind_is_not_resized_when_posed(monkeypatch, tmp_path):
+    """A no-op for the kinds that were already posable, so nothing that worked
+    before changes shape."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured: dict[str, Any] = {}
+
+    def _fake_prototype(**kwargs):
+        image = Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255))
+        return image, {"type": "generations", "generations": 1.0}, "create_image"
+
+    def _fake_skeleton(image):
+        return [{"x": 0.5, "y": 0.5, "label": "NECK", "z_index": 0}], {}
+
+    def _fake_bitforge(**kwargs):
+        captured.update(kwargs)
+        return (
+            Image.new("RGBA", (kwargs["width"], kwargs["height"]), (7, 7, 7, 255)),
+            {"type": "generations", "generations": 1.0},
+        )
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
+    monkeypatch.setattr(pixellab_client, "estimate_skeleton", _fake_skeleton)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _fake_bitforge)
+
+    from mcp import Client
+
+    async with Client(server.mcp) as client:
+        anchor = await _approved_sprite(
+            client, game="t-square-kind", feature="f-anchor", kind="prop", prompt="a rock"
+        )
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-posed-prop",
+                "prompt": "a mossy rock",
+                "assetKind": "prop",
+                "gameId": "t-square-kind",
+                "poseFromAssetId": anchor,
+            },
+        )
+
+    body = result.structured_content
+    assert result.is_error is False
+    assert (captured["width"], captured["height"]) == (32, 32)
+    assert "canvas" not in body
+    assert "warnings" not in body
+
+
+async def test_an_init_only_request_is_grown_too(monkeypatch, tmp_path):
+    """Keypoints were the reason to look at the canvas, but the control showed
+    the canvas is the problem by itself: bitforge with no keypoints at all
+    still came back broken at 32x64. So every bitforge request is grown, not
+    only the posed ones."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured: dict[str, Any] = {}
+
+    def _fake_prototype(**kwargs):
+        image = Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255))
+        return image, {"type": "generations", "generations": 1.0}, "create_image"
+
+    def _unexpected_skeleton(image):
+        raise AssertionError("no pose was requested, so no skeleton call")
+
+    def _fake_bitforge(**kwargs):
+        captured.update(kwargs)
+        return (
+            Image.new("RGBA", (kwargs["width"], kwargs["height"]), (7, 7, 7, 255)),
+            {"type": "generations", "generations": 1.0},
+        )
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
+    monkeypatch.setattr(pixellab_client, "estimate_skeleton", _unexpected_skeleton)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _fake_bitforge)
+
+    from mcp import Client
+
+    async with Client(server.mcp) as client:
+        anchor = await _approved_sprite(
+            client,
+            game="t-init-grow",
+            feature="f-anchor",
+            kind="character",
+            prompt="a knight",
+        )
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-init-grow",
+                "prompt": "a mage",
+                "assetKind": "character",
+                "gameId": "t-init-grow",
+                "initAssetId": anchor,
+            },
+        )
+
+    body = result.structured_content
+    assert result.is_error is False
+    assert (captured["width"], captured["height"]) == (64, 64)
+    assert body["requestedCanvas"] == [32, 64]
+    assert body["canvas"] == [64, 64]
+    assert "skeletonKeypoints" not in body
