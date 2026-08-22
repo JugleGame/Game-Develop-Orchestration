@@ -125,6 +125,15 @@ Server: `AssetGenMcpServer`.
   ambiguous prompts.
 - `generate_2d_sprite` and `generate_ui_asset` create the initial reviewable prototype through
   PixelLab's official remote MCP server.
+- Canvas size comes from the game's locked pixel grid times a per-kind ratio. `generate_2d_sprite`
+  additionally accepts `gridSize`, which replaces that grid for one asset only, so things of
+  different in-world size (a boy and the giant chasing him) generate at the same pixel density
+  without editing the game's stored style. The stored grid never changes, and omitting `gridSize`
+  keeps the previous size and the previous asset id.
+- Both derived sides must fall inside PixelLab's 32-400px per-side range. A request outside it fails
+  validation before any provider call, naming the derived size and the range; below the floor the
+  provider otherwise fails with an error that names no cause, and a character generated under 32
+  wide crops the figure below the thigh.
 - `generate_2d_variations` accepts only approved MCP prototypes as style anchors and uses
   PixelLab's `generate-with-style-v2` REST endpoint for same-direction batch variations. The
   primary `prototypeAssetId` plus optional `styleAssetIds` form a deduplicated bank of one to four
