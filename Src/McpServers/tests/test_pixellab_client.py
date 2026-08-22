@@ -639,6 +639,16 @@ SPEC_STYLE_ENUMS = {
         "shading": SPEC_SHADING,
         "detail": SPEC_DETAIL,
         "view": ("side", "low top-down", "high top-down"),
+        "direction": (
+            "north",
+            "north-east",
+            "east",
+            "south-east",
+            "south",
+            "south-west",
+            "west",
+            "north-west",
+        ),
     },
     "tilesets": {
         "outline": SPEC_OUTLINE,
@@ -1095,3 +1105,115 @@ def test_bitforge_side_range_is_half_of_pixflux(monkeypatch):
 
     pixellab_client.generate_image(prompt="a rock", width=201, height=201)
     assert captured["payload"]["image_size"] == {"width": 201, "height": 201}
+
+
+# --------------------------------------------------------------------------
+# direction / isometric / tile terrains (issue #65)
+# --------------------------------------------------------------------------
+
+
+def test_generate_image_sends_direction_and_isometric(monkeypatch):
+    """Both are real fields. Facing used to be expressible only as prose, and
+    isometric was sent as the camera view "high top-down" — a different
+    projection: top-down looks down a vertical axis, isometric a diagonal one.
+    """
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+
+    def _fake_post(url, json, headers, timeout):
+        captured["payload"] = json
+        return _FakeResponse(
+            {"image": {"base64": base64.b64encode(_png_bytes()).decode()}, "usage": {}}
+        )
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+
+    pixellab_client.generate_image(
+        prompt="a knight", width=32, height=64, direction="west", isometric=True
+    )
+    assert captured["payload"]["direction"] == "west"
+    assert captured["payload"]["isometric"] is True
+
+    pixellab_client.generate_image(prompt="a knight", width=32, height=64)
+    assert "direction" not in captured["payload"]
+    assert "isometric" not in captured["payload"]
+
+
+def test_bitforge_sends_direction_too(monkeypatch):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+    _bitforge_post(monkeypatch, captured)
+
+    pixellab_client.create_image_bitforge(
+        prompt="a knight", width=32, height=64, direction="south-east"
+    )
+    assert captured["payload"]["direction"] == "south-east"
+
+
+@pytest.mark.parametrize("value", ["left", "East", "up", "sideways"])
+def test_direction_outside_the_enum_is_rejected_before_the_call(monkeypatch, value):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(pixellab_client.PixelLabUnavailable) as excinfo:
+        pixellab_client.generate_image(
+            prompt="a knight", width=32, height=64, direction=value
+        )
+
+    assert "direction" in str(excinfo.value)
+
+
+def test_direction_is_not_a_field_on_every_endpoint():
+    """``CreateTilesetRequest`` and ``CreateMapObjectRequest`` do not declare
+    it, so passing one is a caller error rather than a wrong value."""
+
+    assert "direction" not in pixellab_client.STYLE_ENUMS["tilesets"]
+    assert "direction" not in pixellab_client.STYLE_ENUMS["map-objects"]
+
+    with pytest.raises(pixellab_client.PixelLabUnavailable, match="no 'direction' field"):
+        pixellab_client._reject_style_enums("tilesets", direction="east")
+
+
+def _tile_tool(*fields):
+    return SimpleNamespace(
+        name="create_isometric_tile",
+        input_schema={
+            "properties": {field: {} for field in fields},
+            "required": [],
+        },
+    )
+
+
+def test_tile_terrains_are_split_rather_than_duplicated():
+    """A Wang tileset derives its boundary from the two terrains differing.
+    Sending the same text as both left nothing to transition between."""
+
+    arguments = pixellab_client._prototype_arguments(
+        _tile_tool("lower", "upper"),
+        "grass meadow | grey stone cliff",
+        32,
+        32,
+        7,
+        "pixel art",
+        {},
+        [],
+        8.0,
+    )
+
+    assert arguments["lower"] == "grass meadow"
+    assert arguments["upper"] == "grey stone cliff"
+
+
+def test_a_tile_prompt_without_two_terrains_is_refused():
+    with pytest.raises(pixellab_client.PixelLabUnavailable, match="two terrains"):
+        pixellab_client._prototype_arguments(
+            _tile_tool("lower", "upper"),
+            "grass meadow",
+            32,
+            32,
+            7,
+            "pixel art",
+            {},
+            [],
+            8.0,
+        )

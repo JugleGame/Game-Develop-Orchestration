@@ -63,6 +63,19 @@ _SHADING = (
 )
 _DETAIL = ("low detail", "medium detail", "highly detailed")
 _CAMERA_VIEW = ("side", "low top-down", "high top-down")
+#: ``Direction`` — which way the subject faces. Its own field, and the one the
+#: server had no way to set: before this, facing could only be asked for in
+#: prose, where it competes with the subject for the model's attention.
+DIRECTIONS = (
+    "north",
+    "north-east",
+    "east",
+    "south-east",
+    "south",
+    "south-west",
+    "west",
+    "north-west",
+)
 
 #: Allowed style values per endpoint. These are *not* the same everywhere and
 #: the differences are not guessable: ``/tilesets`` uses ``TilesetCameraView``,
@@ -76,6 +89,7 @@ STYLE_ENUMS: dict[str, dict[str, tuple[str, ...]]] = {
         "shading": _SHADING,
         "detail": _DETAIL,
         "view": _CAMERA_VIEW,
+        "direction": DIRECTIONS,
     },
     "tilesets": {
         "outline": _OUTLINE,
@@ -83,6 +97,9 @@ STYLE_ENUMS: dict[str, dict[str, tuple[str, ...]]] = {
         "detail": _DETAIL,
         "view": ("low top-down", "high top-down"),
     },
+    # No "direction" row: CreateTilesetRequest and CreateMapObjectRequest do
+    # not declare the field at all. Passing one is a caller error, not a value
+    # error, so it fails on the missing keyword rather than a wrong value.
     "map-objects": {
         "outline": ("single color outline", "selective outline", "lineless"),
         "shading": ("flat shading", "basic shading", "medium shading", "detailed shading"),
@@ -272,10 +289,24 @@ def _prototype_arguments(
         arguments["color_image_base64"] = _palette_swatch_b64(colors)
     if "n_directions" in properties:
         arguments["n_directions"] = 4
-    if "lower" in properties:
-        arguments["lower"] = prompt
-    if "upper" in properties:
-        arguments["upper"] = prompt
+    if "lower" in properties or "upper" in properties:
+        # A Wang tileset is defined by the boundary between two terrains, and
+        # it derives that boundary from the two descriptions differing. Sending
+        # the same text as both produced a set with nothing to transition
+        # between. The caller writes them as "lower | upper"; without a
+        # separator the whole prompt is the lower terrain and the upper is left
+        # for the provider to default, which at least is not a contradiction.
+        lower, _, upper = prompt.partition("|")
+        lower, upper = lower.strip(), upper.strip()
+        if "upper" in properties and not upper:
+            raise PixelLabUnavailable(
+                f"PixelLab tool {tool.name!r} builds a tileset from two terrains; "
+                'write the prompt as "<lower terrain> | <upper terrain>"'
+            )
+        if "lower" in properties:
+            arguments["lower"] = lower or prompt
+        if upper:
+            arguments["upper"] = upper
 
     missing = set(schema.get("required") or ()) - set(arguments)
     if missing:
@@ -584,6 +615,8 @@ def generate_image(
     shading: str | None = None,
     detail: str | None = None,
     view: str | None = None,
+    direction: str | None = None,
+    isometric: bool = False,
     text_guidance_scale: float = DEFAULT_TEXT_GUIDANCE,
 ) -> tuple[Image.Image, dict[str, Any]]:
     """Call ``/create-image-pixflux`` and return ``(image, usage)``.
@@ -613,6 +646,17 @@ def generate_image(
     ``CameraView``: "side"/"low top-down"/"high top-down" — see
     ``STYLE_ENUMS["create-image-pixflux"]`` for the exact wordings.
 
+    ``direction`` is one of ``DIRECTIONS`` and says which way the subject
+    faces. ``isometric`` is a boolean and is **not** a camera view: top-down
+    looks straight down a vertical axis, isometric looks along a diagonal one,
+    so a game asking for isometric used to be sent "high top-down" and nothing
+    ever carried the actual request.
+
+    All of these are documented ``(weakly guiding)``. They bias the result;
+    they do not override the description, which is why the description keeps
+    its own wording rather than having it stripped out (see
+    ``prompting.compose``).
+
     ``text_guidance_scale`` is how literally the description is followed
     (1-20). It is relayed rather than fixed here so both generation paths use
     one value: the MCP path used to hard-code 16 while this one sent nothing
@@ -626,6 +670,7 @@ def generate_image(
         shading=shading,
         detail=detail,
         view=view,
+        direction=direction,
     )
     _reject_text_guidance(text_guidance_scale)
 
@@ -639,6 +684,10 @@ def generate_image(
         "no_background": no_background,
         "text_guidance_scale": text_guidance_scale,
     }
+    if direction is not None:
+        payload["direction"] = direction
+    if isometric:
+        payload["isometric"] = True
     if seed is not None:
         payload["seed"] = seed
     if forced_palette:
@@ -708,6 +757,7 @@ def create_image_bitforge(
     init_image_strength: int | None = None,
     oblique_projection: bool = False,
     isometric: bool = False,
+    direction: str | None = None,
     seed: int | None = None,
     no_background: bool = True,
     forced_palette: list[tuple[int, int, int]] | None = None,
@@ -752,6 +802,7 @@ def create_image_bitforge(
         shading=shading,
         detail=detail,
         view=view,
+        direction=direction,
     )
     _reject_text_guidance(text_guidance_scale)
     low, high = BITFORGE_SIDE_RANGE
@@ -823,6 +874,8 @@ def create_image_bitforge(
         payload["oblique_projection"] = True
     if isometric:
         payload["isometric"] = True
+    if direction is not None:
+        payload["direction"] = direction
     if seed is not None:
         payload["seed"] = seed
     if forced_palette:
@@ -983,7 +1036,11 @@ def _reject_style_enums(endpoint: str, **values: str | None) -> None:
 
     allowed_by_field = STYLE_ENUMS[endpoint]
     for field, value in values.items():
-        allowed = allowed_by_field[field]
+        allowed = allowed_by_field.get(field)
+        if allowed is None:
+            # Not a wrong value — a field this endpoint does not declare at all
+            # (``direction`` exists on the image endpoints and nowhere else).
+            raise PixelLabUnavailable(f"/{endpoint} has no {field!r} field")
         if value is not None and value not in allowed:
             raise PixelLabUnavailable(
                 f"{field}={value!r} is not accepted by /{endpoint}; use one of {allowed}"

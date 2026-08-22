@@ -228,6 +228,47 @@ Server: `AssetGenMcpServer`.
   style. The value is written into the game's style file and read by every later asset, so an
   invalid one would otherwise fail every generation in that game with no way back short of editing
   the frozen file by hand.
+- **PixelLab's structured style fields are `(weakly guiding)`, in its own words.** Every one of
+  them says so in `CreateImagePixfluxRequest`:
+
+  ```
+  outline    "Outline style reference (weakly guiding)"
+  shading    "Shading style reference (weakly guiding)"
+  detail     "Detail style reference (weakly guiding)"
+  view       "Camera view angle (weakly guiding)"
+  direction  "Subject direction (weakly guiding)"
+  isometric  "Generate in isometric view (weakly guiding)"
+  ```
+
+  They bias a result; they do not override a description. Prompt composition therefore **keeps**
+  style wording rather than deleting it as a duplicate of a field — the previous policy removed the
+  strong signal and left only the weak one. Both are sent. `promptMetrics.structuredClauses` lists
+  which clauses a field also covers; `removedStructuredClauses` is retained as an empty list so
+  existing readers do not break.
+- Framing is always appended. It used to be skipped whenever a prompt contained both `Composition:`
+  and `Required visual structure:` — exactly what `prepare_asset_prompt` writes — so following the
+  intake procedure was the one reliable way to lose it.
+- `direction` is which way the subject faces: `north`, `north-east`, `east`, `south-east`, `south`,
+  `south-west`, `west`, `north-west`. It is locked per game like the view, and `generate_2d_sprite`
+  and `generate_2d_variations` accept a per-asset override for the cases that genuinely differ (a
+  door on the west wall, an NPC turned toward the player). A value outside the enum is refused
+  before the request. `CreateTilesetRequest` and `CreateMapObjectRequest` do not declare the field
+  at all, so passing one there is a caller error rather than a wrong value.
+- `isometric` is a boolean, **not** a camera view. Top-down looks straight down a vertical axis;
+  isometric looks along a diagonal one. The keyword used to be listed in the `CameraView` table, so
+  a game asking for isometric was sent `high top-down` and no field ever carried the request. It is
+  now its own locked `ArtStyle` field; such a game still gets `high top-down` as its view, plus the
+  boolean.
+- A Wang tileset derives its boundary from its two terrain descriptions differing, so the tile
+  prototype path splits the prompt on `|` — `grass meadow | grey stone cliff`. It used to send the
+  same text as both, which left nothing to transition between. A prompt with no separator is
+  refused with that instruction rather than silently producing a flat set.
+- Measured (2026-08-22, `var/assets/experiments/round-2-compose/`, one character and one prop, same
+  seed per subject): `direction: west` visibly turned the walking character around, while the prop —
+  a symmetric lantern — was unchanged, which is the correct behaviour for something with no facing.
+  Keeping the style wording instead of deleting it was a **small** effect: the prop's shading came
+  out flatter and its glass more rectangular, closer to the requested `flat shading`; the character
+  was near-identical. The change rests on the schema quote above, not on a large visual difference.
 - Structured style values are checked against the endpoint's own declared enum before the request is
   sent, so a wrong value costs no generation and the error names the accepted values. **The allowed
   values differ per endpoint** and the differences are not guessable, so they live in one table,
@@ -280,7 +321,8 @@ Server: `AssetGenMcpServer`.
 - Prompt composition may normalize and remove duplicated structured directives, but it must
   preserve the host-authored subject intent and report original/composed character counts. The
   provider prompt orders subject and required structure before exclusions, and keeps the shared
-  art style in PixelLab's structured controls instead of duplicating it in prose.
+  art style in PixelLab's structured controls **and** in prose: the controls are `(weakly guiding)`
+  and do not replace the description.
 - `generate_2d_animation` turns one approved prototype into an ordered frame sequence through
   PixelLab's `animate-with-text-v3`. The approved asset is submitted as the first frame, so the
   human gate that guards a static sprite also guards every frame derived from it. The endpoint
