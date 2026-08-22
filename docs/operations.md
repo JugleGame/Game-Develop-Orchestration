@@ -3,12 +3,32 @@
 ## Requirements
 
 - Python 3.12+
+- Codex CLI installed and signed in for automatic Phase Runner execution
 - Unity 6 Editor and Unity MCP relay
 - `RESEARCH_DSN` for Research
 - `PIXELLAB_API_KEY` for Asset generation
 - `MESHY_API_KEY` for 3D Asset generation
 
-Node, Docker, a job database, and Redis are not required.
+Docker, a job database, and Redis are not required. Node is required only when using npm to
+install or update the standalone Codex CLI.
+
+On Windows, Phase Runner must be able to launch a standalone Codex CLI as a child process. A
+protected desktop-app binary under `WindowsApps` is not sufficient. Install and authenticate the
+CLI, then verify the exact executable before starting a run:
+
+```powershell
+npm install -g @openai/codex
+codex --version
+codex
+python scripts/bootstrap.py --check
+```
+
+When PATH discovery is ambiguous, set `GDAI_CODEX_COMMAND` to the standalone executable. An
+explicit but invalid override fails closed and is not silently replaced by another PATH candidate:
+
+```powershell
+$env:GDAI_CODEX_COMMAND = Join-Path (npm prefix -g) "codex.cmd"
+```
 
 ## Setup
 
@@ -17,12 +37,164 @@ python scripts/bootstrap.py
 python scripts/bootstrap.py --check  # verify only
 ```
 
-Setup creates root `.venv`, installs MCP and test dependencies, and creates local `.env` and
-`.mcp.json` without overwriting existing files.
+Setup creates root `.venv`, installs MCP and test dependencies, and creates local `.env`,
+`.mcp.json`, and `.codex/config.toml` without overwriting existing files. Codex reads the
+project-scoped `.codex/config.toml`; `.mcp.json` remains for compatible hosts. Both default to the
+`research` profile, so a new host session loads one server's tool schemas instead of every project
+tool.
+
+Select the role for the next session and restart the host after the configuration changes:
+
+```powershell
+python scripts/bootstrap.py --repair-mcp-config --mcp-profile research
+python scripts/bootstrap.py --repair-mcp-config --mcp-profile unity
+python scripts/bootstrap.py --repair-mcp-config --mcp-profile asset2d
+python scripts/bootstrap.py --repair-mcp-config --mcp-profile asset3d
+```
+
+Use `--mcp-profile all` only for a host that cannot switch profiles between phases. The first
+replacement preserves the previous local configurations as `.mcp.json.bak` and
+`.codex/config.toml.bak`; later profile switches keep those original backups. The generated
+profiles contain these server sets:
+
+| Profile | MCP servers | Use |
+|---|---|---|
+| `research` | `research` | evidence, concepts, game design, hand-off |
+| `unity` | `unity` | implementation and Unity QA |
+| `asset2d` | `asset` | 2D sprites, UI, tiles, and review |
+| `asset3d` | `asset3d` | 3D request, generation, and finalization |
+| `all` | all four | compatibility only; largest fixed tool context |
+
+## Automatic Phase Runner
+
+The automatic path keeps approval, retry, and resume decisions in a deterministic local Python
+controller. Every phase applies one MCP profile, starts a fresh `codex exec` thread, validates its
+final response against a bounded JSON Schema, and stores only that result plus artifact paths for
+the next phase. The selected MCP is marked `required`, so a phase fails instead of silently running
+without its role boundary. Install and sign in to Codex CLI before the first real run; `codex exec`
+reuses its saved authentication. The manual profile commands above remain the fallback.
+
+Start a run from a prompt file. `start` executes planning only and then stops at the planning gate:
+
+```powershell
+.venv\Scripts\python.exe -m phase_runner start --prompt-file request.md
+.venv\Scripts\python.exe -m phase_runner status <run-id>
+```
+
+Review the planning result under `var/runs/<run-id>/phases/planning/result.json`, then approve or
+reject it. `resume` runs safe phases until it reaches the next human gate:
+
+```powershell
+.venv\Scripts\python.exe -m phase_runner approve <run-id> planning
+.venv\Scripts\python.exe -m phase_runner resume <run-id>
+
+.venv\Scripts\python.exe -m phase_runner approve <run-id> asset-generation
+.venv\Scripts\python.exe -m phase_runner resume <run-id>
+
+.venv\Scripts\python.exe -m phase_runner approve <run-id> asset-review
+.venv\Scripts\python.exe -m phase_runner resume <run-id>
+```
+
+For a plan with `assetsRequired: false`, the asset gates are `not-required` and the first resume
+after planning approval completes Unity implementation and final integration. Otherwise,
+`visualDimension` selects `asset2d`, `asset3d`, or both sequentially. Reject a pending gate with a
+reason; a rejected run is terminal:
+
+```powershell
+.venv\Scripts\python.exe -m phase_runner reject <run-id> planning --reason "기획 수정 필요"
+```
+
+`state.json` is replaced atomically. Profile changes replace `.mcp.json` and
+`.codex/config.toml` as one logical operation and restore the previous contents if the second
+write fails. Generated MCP process environments force UTF-8 stdin/stdout on Windows.
+
+Each phase records `pending`, `running`, `completed`, or
+`failed`, its attempt count, profile, fresh Codex thread ID, bounded result path, and error. A
+process interruption can leave a phase as `running`; both `running` and `failed` require the user
+to accept possible repeated external effects by invoking the explicit retry command:
+
+```powershell
+.venv\Scripts\python.exe -m phase_runner status <run-id>
+.venv\Scripts\python.exe -m phase_runner retry <run-id>
+.venv\Scripts\python.exe -m phase_runner resume <run-id>
+```
+
+Never approve `asset-generation` until provider cost and external changes are acceptable, and
+never approve `asset-review` until the generated artifacts have been inspected. Run commands for
+one run sequentially; an OS lock rejects concurrent controller processes. Full Codex JSONL events
+and stderr remain beside each phase result for diagnosis but are not passed to later phases.
+Before creating a run or mutating retry state, Phase Runner probes `codex --version`. A failed
+execution removes stale result and log files, surfaces a bounded and credential-redacted cause
+from JSONL when available, and never treats an earlier result as the current attempt. Unity phases
+also fail closed unless their functional QA status is `PASS`.
+
+Default tests use a fake executor and make no model or paid provider calls. The real CLI smoke test
+is deliberately opt-in:
+
+```powershell
+$env:GDAI_RUN_CODEX_SMOKE = "1"
+.venv\Scripts\python.exe -m pytest Src/McpServers/tests/test_phase_runner.py -k smoke
+Remove-Item Env:GDAI_RUN_CODEX_SMOKE
+```
 
 `requirements.lock` fixes the verified Python dependency set. Bootstrap installs
 that lock file first, then installs the local MCP package without resolving a
 new dependency graph or downloading isolated build dependencies.
+
+## Issue Work Runner
+
+Use the repository-local `issue-work-runner` Skill for natural-language requests such as
+`Issue #54 작업 시작`, `이 Issue 구현 시작`, or `Issue 작업 자동화`. In a new Desktop session the
+Skill reads the complete open Issue with the GitHub connector, writes only its bounded snapshot
+under ignored `var/issue-snapshots/`, and invokes the CLI in the Desktop built-in terminal.
+
+Developers do not need to memorize the CLI or read this guide before starting. Repository source
+changes without an established open Issue number must stop before any edit or branch creation and
+return a copyable correction:
+
+- No Issue exists: request `이 작업으로 Issue 생성해줘`.
+- An Issue exists: request `Issue #<number> 작업 시작`.
+- Immediately after Issue creation: the response must include
+  `Issue #<created-number> 작업 시작` as the next request and must not start implementation.
+
+An ongoing conversation that has already established the open Issue may continue without repeating
+the trigger. The current branch alone is never evidence of user intent or a substitute for the Issue
+number.
+
+Use `.venv\Scripts\python.exe` as `<venv-python>` on Windows and `.venv/bin/python` on macOS/Linux.
+All snapshot and artifact values use repository-relative POSIX paths so a run does not embed the
+checkout location of one developer.
+
+```powershell
+<venv-python> -m issue_runner start --snapshot-file var/issue-snapshots/54.json --branch 54-feat-issue-work-runner
+<venv-python> -m issue_runner status <run-id>
+<venv-python> -m issue_runner approve <run-id>
+<venv-python> -m issue_runner resume <run-id>
+```
+
+`start` requires an open Issue snapshot, clean `dev`, an absent work branch, and the
+`<issue-number>-<type>-<short-description>` naming contract. It creates the branch and runs only
+analysis. Branch creation or checkout by itself is never a trigger. Inspect
+`var/issue-runs/<run-id>/phases/analysis/result.json` before approval.
+
+The Issue URL and required Objective, Scope, Out of Scope, Acceptance Criteria, and Test sections
+are validated before branch creation. Analysis and review use a read-only Codex sandbox;
+verification may write ignored test output but cannot change the repository fingerprint. Every
+phase rejects a changed HEAD, and every reported artifact must exist beneath the repository using a
+portable POSIX relative path.
+
+Failures persist atomically and require explicit recovery. Completed phases remain idempotent, and
+an OS lock rejects concurrent commands for the same run.
+
+```powershell
+.venv\Scripts\python.exe -m issue_runner retry <run-id>
+.venv\Scripts\python.exe -m issue_runner resume <run-id>
+```
+
+The Runner never commits, pushes, opens or merges a PR, or updates the Issue. Those actions remain
+subject to user approval and the native Git/GitHub workflow. See
+[the Issue Work Runner guide](../issue_runner/README.md) for snapshot format, state files, rejection,
+failure recovery, and opt-in Codex smoke testing.
 
 ## Environment
 
@@ -94,8 +266,8 @@ before buying credits or publishing generated assets.
 .venv\Scripts\python.exe Src/McpServers/verify_contract.py
 ```
 
-If a preserved `.mcp.json` points to another checkout, inspect the warning from
-bootstrap and repair it only when its backup is acceptable:
+If a preserved `.mcp.json` or `.codex/config.toml` points to another checkout, inspect the warning
+from bootstrap and repair it only when its backup is acceptable:
 
 ```powershell
 .venv\Scripts\python.exe scripts/bootstrap.py --repair-mcp-config
@@ -158,3 +330,61 @@ Set-Location Src/McpServers
 
 `var/` is disposable state. Commit only minimal test fixtures needed to reproduce a bug. Never
 commit user images, full generated games, or prompt experiment output.
+
+## Context budget
+
+Cache reads are expected for stable instructions and tool schemas. Optimize the absolute cached
+and fresh token counts, not the cache-read percentage by itself:
+
+- Keep shared policy and tool definitions stable at the start of the host prompt. Put the current
+  Issue, changing state, and failure excerpts last.
+- Read the Issue contract in full, but pass only relevant diff hunks and failure-adjacent console
+  lines. Keep full logs, screenshots, manifests, and generated request JSON on disk and refer to
+  their artifact paths.
+- Keep `list_assets` at its compact default and follow `nextCursor`. Request `detail=true` only for
+  the page whose prompt or provenance is needed.
+- Unity evidence tools return counts, representative failures, and artifact paths by default.
+  Repeat the call with `detail=true` only when full NUnit or raw bridge evidence is required.
+  `run_named_tests` always returns every requested focal result because functional QA requires it.
+- Do not delete `var/` as a token-cost measure. It affects prompt cost only when its contents are
+  read or pasted into the conversation.
+
+Measure 20-30 representative tasks before and after a profile or response change. Store the
+working ledger under ignored `var/`, with one row per task and these fields:
+
+```text
+task_type,mcp_profile,documents_read,tool_call_count,cache_read_tokens,fresh_input_tokens,output_tokens
+```
+
+Compare medians and totals per `task_type`. Provider usage data is the authority for token counts;
+repository file sizes cannot attribute billed cache reads to a particular document.
+
+## PixelLab 경로 비교 실험
+
+`scripts/pixellab_ab.py`는 같은 프롬프트와 같은 시드로 `create-image-pixflux`와
+`create-image-bitforge`를 나란히 생성해 `ASSET_ROOT/assets/experiments/<name>/`에
+이미지와 `runs.json`을 남깁니다. `runs.json`에는 이미지마다 실제로 보낸 요청이
+기록되므로, 나중에 어느 쪽이 나았는지 근거를 가지고 판단할 수 있습니다.
+
+**PixelLab 크레딧을 소모합니다.** 이미지 한 장에 1 generation입니다. 실행 계획과
+총 장수를 먼저 출력하고 확인을 받으며, `--yes`로 건너뛸 수 있습니다.
+
+```bash
+python scripts/pixellab_ab.py --name round-1 \
+    --prompt "a lone knight on a hill, no city" \
+    --kind character \
+    --style-image var/assets/<game>/<feature>/<asset>.png \
+    --style-strength 30 --style-strength 50 --style-strength 80
+```
+
+- `--style-image`는 이미 승인된 스프라이트를 가리킵니다. bitforge의 `style_image`가 됩니다.
+- `--style-strength`를 여러 번 주면 값마다 한 장씩 생성합니다. 기본값은 50입니다.
+- `--skip-pixflux`는 bitforge 쪽만 돌립니다.
+- 한 팔이 실패해도 나머지는 계속 진행하고, 실패는 `runs.json`에 `error`로 기록됩니다.
+
+크레딧을 쓰지 않고 계획 로직만 확인하려면:
+
+```bash
+python scripts/pixellab_ab.py --self-check
+```
+

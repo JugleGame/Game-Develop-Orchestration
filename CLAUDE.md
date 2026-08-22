@@ -17,6 +17,10 @@ Treat `var/` as disposable output, never source.
 
 ## GitHub Issue workflow
 
+This workflow governs source changes in this orchestration repository. Creating or operating an
+external Unity project does not by itself require or create a GitHub Issue. Open one only when the
+user explicitly requests Issue-backed tracking or the work changes this repository.
+
 Before starting normal development work, identify the related GitHub Issue and read it **in full**.
 Pay particular attention to Objective, Scope, Out of Scope, Acceptance Criteria, and Test.
 

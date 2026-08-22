@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -87,6 +88,29 @@ def _require_str(value: Any, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ArchitectureError(f"{label} 은 비어 있지 않은 문자열이어야 합니다")
     return value.strip()
+
+
+def _validate_transform(raw: Any, label: str) -> dict[str, list[float]]:
+    if not isinstance(raw, dict):
+        raise ArchitectureError(f"{label} 은 객체여야 합니다")
+    unknown = sorted(set(raw) - {"position", "rotation", "scale"})
+    if unknown:
+        raise ArchitectureError(f"{label} 에 알 수 없는 필드가 있습니다: {unknown}")
+
+    transform: dict[str, list[float]] = {}
+    for field in ("position", "rotation", "scale"):
+        value = raw.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, list) or len(value) != 3 or any(
+            not isinstance(item, (int, float))
+            or isinstance(item, bool)
+            or not math.isfinite(item)
+            for item in value
+        ):
+            raise ArchitectureError(f"{label}.{field} 은 유한한 숫자 3개짜리 배열이어야 합니다")
+        transform[field] = [float(item) for item in value]
+    return transform
 
 
 def _order_files(files: list[PlannedFile]) -> list[PlannedFile]:
@@ -285,15 +309,18 @@ def _validate_scene(raw: Any, known_types: set[str], prefab_names: set[str]) -> 
                 _require_list(entry.get("components"), f"scene.objects[{index}].components")
             )
         ]
-        objects.append(
-            {
-                "name": object_name,
-                "parent": str(entry.get("parent") or ""),
-                "components": components,
-                "prefab": prefab,
-                "generatedComponents": [item for item in components if item in known_types],
-            }
-        )
+        scene_object = {
+            "name": object_name,
+            "parent": str(entry.get("parent") or ""),
+            "components": components,
+            "prefab": prefab,
+            "generatedComponents": [item for item in components if item in known_types],
+        }
+        if "transform" in entry:
+            scene_object["transform"] = _validate_transform(
+                entry["transform"], f"scene.objects[{index}].transform"
+            )
+        objects.append(scene_object)
 
     for entry in objects:
         parent = entry["parent"]

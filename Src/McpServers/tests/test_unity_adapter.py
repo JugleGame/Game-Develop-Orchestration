@@ -118,6 +118,19 @@ def test_tools_use_camel_case_argument_names(tool_name: str, required: set[str])
     assert required <= set(tool.parameters["properties"])
 
 
+def test_large_evidence_tools_expose_explicit_detail_switch():
+    tools = {tool.name: tool for tool in unity_server.mcp._tool_manager.list_tools()}
+
+    for name in (
+        "build_project",
+        "run_playmode_smoke",
+        "run_playmode_test",
+        "run_playmode_function_tests",
+        "get_compile_errors",
+    ):
+        assert "detail" in tools[name].parameters["properties"], name
+
+
 # ---------------------------------------------------------------------------
 # 콘솔 항목 → CompileError 변환
 # ---------------------------------------------------------------------------
@@ -213,6 +226,30 @@ def test_build_defaults_to_webgl_with_a_project_relative_directory(monkeypatch):
         "WebGL",
         "Builds/slice-001",
     )
+
+
+async def test_build_omits_raw_unity_payload_until_detail_is_requested(monkeypatch):
+    payload = {
+        "result": {
+            "success": True,
+            "outputPath": "Builds/g1",
+            "totalErrors": 0,
+            "totalWarnings": 2,
+            "durationSeconds": 12,
+        },
+        "executionLogs": "a large raw bridge log",
+    }
+
+    async def _fake_call(*_args, **_kwargs):
+        return payload
+
+    monkeypatch.setattr(unity_server, "_call_unity", _fake_call)
+    compact = await unity_server.build_project("g1")
+    detailed = await unity_server.build_project("g1", detail=True)
+
+    assert "unity" not in compact
+    assert compact["totalWarnings"] == 2
+    assert detailed["unity"] == payload
 
 
 @pytest.mark.parametrize(

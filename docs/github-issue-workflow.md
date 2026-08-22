@@ -5,6 +5,13 @@
 An Issue is a **work contract**, a branch is a **private work desk**, and a
 Pull Request (PR) is **evidence that the work is complete**.
 
+This contract applies to source changes and Pull Requests in this orchestration repository. Creating
+or operating a user's external Unity project is an operational action, not a repository work
+contract: it has no orchestration-repository diff, PR, or independent rollback state. It therefore
+must not create a GitHub Issue merely because a project was created. An Issue is appropriate only
+when the user explicitly requests Issue-backed tracking or the work also changes this repository as
+an independently verifiable outcome.
+
 ```text
 Create pipeline Issue #123
   -> Create branch 123-fix-issue-contract-check
@@ -16,7 +23,7 @@ Create pipeline Issue #123
 
 ## Everyday rules
 
-1. Normal pipeline maintenance starts from one open Issue.
+1. Normal pipeline maintenance that changes this repository starts from one open Issue.
 2. Write Issue and PR titles and explanatory prose in Korean so reviewers
    share one working language. Keep the bracketed Issue contract type in its exact
    English form, for example `[pipeline]`; do not translate it. Also preserve
@@ -34,6 +41,21 @@ Create pipeline Issue #123
 7. Keep one Issue's work in one feature PR. Create a new Issue for a different
    problem.
 8. Merge only after the automated tests and contract check are green.
+
+## Agent entry guidance
+
+An agent must establish an open Issue number in the current conversation before editing repository
+source, creating a work branch, or starting an Issue runner. When the request is incomplete, stop
+before repository mutation and return a copyable correction:
+
+- If no Issue exists, ask the user to request `이 작업으로 Issue 생성해줘`.
+- If an Issue exists but its number is missing or ambiguous, ask for
+  `Issue #<number> 작업 시작`.
+- After creating an Issue, provide `Issue #<created-number> 작업 시작` as the exact next request;
+  Issue creation alone must not start implementation.
+
+Do not infer consent from the checked-out branch. Once the current conversation has established the
+open Issue, normal follow-up requests may continue without repeating the trigger.
 
 ## How to size an Issue
 
@@ -54,7 +76,7 @@ count, and implementation order do not define the boundary.
 
 ## Small exception
 
-The only no-Issue exception is a documentation typo. Use a
+For changes submitted to this repository, the only no-Issue exception is a documentation typo. Use a
 `docs/<short-description>` branch and include this line in the PR body:
 
 ```text

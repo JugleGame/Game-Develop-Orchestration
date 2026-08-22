@@ -1,8 +1,22 @@
 """Deterministic PixelLab prompt composition.
 
-The host owns the asset intent. This module only removes instructions already
-represented by PixelLab's structured fields and appends the minimum framing
-needed for each asset kind. It never calls a model or invents subject details.
+The host owns the asset intent. This module normalises it, drops exact
+duplicates, and appends the minimum framing needed for each asset kind. It
+never calls a model or invents subject details.
+
+It used to also *delete* wording that a structured field could carry —
+"flat shading", "side view", "pixel art" — on the belief that the fields
+outrank the description. PixelLab's own schema says the opposite about every
+one of them:
+
+    outline  "Outline style reference (weakly guiding)"
+    shading  "Shading style reference (weakly guiding)"
+    detail   "Detail style reference (weakly guiding)"
+    view     "Camera view angle (weakly guiding)"
+
+Weakly guiding fields bias a result; they do not override a description. So
+deleting the description's own wording removed the strong signal and left only
+the weak one. Both are sent now.
 """
 
 from __future__ import annotations
@@ -16,8 +30,10 @@ from .render import AssetKind
 _SPACE = re.compile(r"\s+")
 _SEPARATOR = re.compile(r"\s*[,;|]\s*")
 
-# These clauses duplicate API fields set by server._pixellab_style_params or
-# the request payload. Matching whole clauses keeps subject phrases intact.
+# Clauses that a structured field also carries. They are **kept** in the
+# description — see the module docstring — and only reported, so a caller can
+# still see which parts of a prompt are duplicated by a field. Exact repeats
+# within one prompt are still collapsed, as they are for any other clause.
 _STRUCTURED_CLAUSES = frozenset(
     {
         "pixel art",
@@ -40,6 +56,25 @@ _STRUCTURED_CLAUSES = frozenset(
 )
 
 _SIZE_CLAUSE = re.compile(r"\d{2,3}\s*[x×]\s*\d{2,3}(?:\s*(?:px|pixels?))?", re.IGNORECASE)
+
+# A clause that opens by naming what must not appear. PixelLab reads the noun,
+# not the negation: "no city, no buildings, no street" came back with a city in
+# it five times out of five, while the same subject without those clauses came
+# back clean, and the positive "empty background" worked (measured 2026-08-22).
+# Only clause-leading forms are matched — "a knight with no helmet" would lose
+# the knight along with the helmet, so it is left alone.
+_NEGATION_CLAUSE = re.compile(
+    r"^(?:no|not|never|without|avoid|avoiding|exclude|excluding)(?![A-Za-z])",
+    re.IGNORECASE,
+)
+
+# What a clause forbids, with the negation word taken off: "no city" -> "city".
+# ``negative_description`` wants the thing to avoid, not the instruction to
+# avoid it, so a clause is only useful there once the leading word is gone.
+_NEGATION_LEAD = re.compile(
+    r"^(?:no|not|never|without|avoid|avoiding|exclude|excluding)\b[\s:,-]*",
+    re.IGNORECASE,
+)
 
 _FRAMING: dict[AssetKind, str] = {
     "character": "full body centered, connected readable silhouette",
@@ -69,14 +104,37 @@ class PromptPlan:
     prompt: str
     original_characters: int
     composed_characters: int
-    removed_structured_clauses: tuple[str, ...]
+    #: Clauses that a structured field also carries. They stay in the prompt;
+    #: this only reports which parts of it are duplicated by a field.
+    structured_clauses: tuple[str, ...]
+    removed_negations: tuple[str, ...] = ()
+
+    @property
+    def negative_description(self) -> str:
+        """The removed negations as PixelLab's ``negative_description``.
+
+        Removing a negation from the description is right for pixflux, which
+        marks ``negative_description`` ``(Deprecated)`` and draws the noun
+        anyway. It was never right to *discard* the information: bitforge's
+        ``negative_description`` is live, so the same clauses become a usable
+        field there rather than something the caller has to remember.
+        """
+
+        subjects = [
+            stripped
+            for clause in self.removed_negations
+            if (stripped := _NEGATION_LEAD.sub("", clause).strip(" .,;"))
+        ]
+        return ", ".join(dict.fromkeys(subjects))
 
     def metadata(self) -> dict[str, object]:
         return {
             "originalCharacters": self.original_characters,
             "composedCharacters": self.composed_characters,
             "characterDelta": self.composed_characters - self.original_characters,
-            "removedStructuredClauses": list(self.removed_structured_clauses),
+            "structuredClauses": list(self.structured_clauses),
+            "removedNegations": list(self.removed_negations),
+            "negativeDescription": self.negative_description,
         }
 
 
@@ -107,8 +165,16 @@ def prepare(
     """Return deterministic intake questions and a host-ready prompt.
 
     The function does not invent visual content. It only orders answers so
-    required structures lead, feedback is explicit, and exclusions remain a
-    last-resort tail instead of dominating the subject.
+    required structures lead and feedback is explicit.
+
+    ``avoid`` answers are returned as ``exclusions`` and are deliberately kept
+    out of the provider *description*. PixelLab draws the noun and ignores the
+    negation, so an exclusion written into the description makes the excluded
+    thing more likely, not less (measured 2026-08-22). They are not thrown
+    away: on the bitforge path they are sent as ``negative_description``, a
+    live field there and ``(Deprecated)`` on pixflux. Restating an exclusion
+    positively in ``mustHave`` is still a judgement call and belongs to the
+    host: this server never calls a model.
     """
 
     subject = _SPACE.sub(" ", subject).strip(" .")
@@ -152,7 +218,12 @@ def prepare(
         questions.append(
             {
                 "field": "avoid",
-                "question": "Which misleading interpretations or production defects should be excluded?",
+                "question": (
+                    "Which misleading interpretations or production defects should be excluded? "
+                    "State the replacement positively in mustHave as well: exclusions travel as "
+                    "negative_description on the style-reference path and are dropped entirely "
+                    "on the plain one."
+                ),
                 "required": False,
             }
         )
@@ -170,8 +241,6 @@ def prepare(
         if changes:
             sections.append(f"Revision target: {'; '.join(changes)}")
         sections.append(f"Readability target: {purpose}")
-        if exclusions:
-            sections.append(f"Exclude: {'; '.join(exclusions)}")
         prompt = ". ".join(sections) + "."
 
     return {
@@ -180,41 +249,54 @@ def prepare(
         "questions": questions,
         "prompt": prompt,
         "artStyle": art_style or None,
+        "exclusions": list(exclusions),
         "feedbackApplied": bool(preserved or changes),
         "promptCharacters": len(prompt) if prompt else 0,
     }
 
 
 def compose(prompt: str, kind: AssetKind) -> PromptPlan:
-    """Preserve intent, remove structured duplicates, and add kind framing."""
+    """Preserve intent, drop exact repeats, and add kind framing.
+
+    Style wording is kept rather than stripped: the fields that would carry it
+    are all ``(weakly guiding)`` in PixelLab's schema, so removing it from the
+    description traded a strong signal for a weak one. The clauses a field also
+    covers are reported in ``structuredClauses`` instead.
+    """
 
     normalized = _SPACE.sub(" ", prompt).strip()
     kept: list[str] = []
-    removed: list[str] = []
+    structured: list[str] = []
+    negated: list[str] = []
     for clause in _SEPARATOR.split(normalized):
         clause = clause.strip(" .")
         if not clause:
             continue
         lowered = clause.casefold()
+        if _NEGATION_CLAUSE.match(clause):
+            negated.append(clause)
+            continue
+        if lowered in {item.casefold() for item in kept}:
+            continue
         if lowered in _STRUCTURED_CLAUSES or _SIZE_CLAUSE.fullmatch(lowered):
-            removed.append(clause)
-        elif lowered not in {item.casefold() for item in kept}:
-            kept.append(clause)
+            structured.append(clause)
+        kept.append(clause)
 
     subject = ", ".join(kept) or normalized
     framing = _FRAMING[kind]
-    structured_brief = all(
-        marker in subject.casefold()
-        for marker in ("composition:", "required visual structure:")
-    )
-    if not structured_brief and framing.casefold() not in subject.casefold():
+    # No exemption for a structured brief. The check used to skip the framing
+    # whenever the prompt contained "Composition:" and "Required visual
+    # structure:" — which is exactly what ``prepare`` writes, so following the
+    # intake procedure was the one way to always lose the framing.
+    if framing.casefold() not in subject.casefold():
         subject = f"{subject}; {framing}"
 
     return PromptPlan(
         prompt=subject,
         original_characters=len(normalized),
         composed_characters=len(subject),
-        removed_structured_clauses=tuple(removed),
+        structured_clauses=tuple(structured),
+        removed_negations=tuple(negated),
     )
 
 

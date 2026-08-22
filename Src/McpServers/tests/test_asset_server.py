@@ -29,10 +29,6 @@ def _pixellab_stub(monkeypatch):
 
     monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
 
-    def _fake_generate(*, prompt, width, height, seed, **kwargs):
-        colour = (seed & 0xFF, (seed >> 8) & 0xFF, (seed >> 16) & 0xFF, 255)
-        return Image.new("RGBA", (width, height), colour), {"type": "usd", "usd": 0.001}
-
     def _fake_prototype(*, prompt, width, height, seed, **kwargs):
         colour = (seed & 0xFF, (seed >> 8) & 0xFF, (seed >> 16) & 0xFF, 255)
         return (
@@ -41,7 +37,8 @@ def _pixellab_stub(monkeypatch):
             "create_image",
         )
 
-    monkeypatch.setattr(pixellab_client, "generate_image", _fake_generate)
+    # ``generate_image`` is no longer stubbed: no server path reaches it, so a
+    # stub for it would hide that rather than protect anything.
     monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
 
 
@@ -119,8 +116,13 @@ async def test_prompt_preflight_orders_structure_and_revision_feedback():
     assert body["readyForPrototype"] is True
     assert body["feedbackApplied"] is True
     assert prompt.index("Required visual structure") < prompt.index("Revision target")
-    assert prompt.index("Revision target") < prompt.index("Exclude")
+    assert prompt.index("Revision target") < prompt.index("Readability target")
     assert body["artStyle"] not in prompt
+    # Exclusions are recorded but never handed to PixelLab: it draws the noun
+    # and drops the negation, so the list would summon what it forbids.
+    assert body["exclusions"] == ["floating parts"]
+    assert "floating parts" not in prompt
+    assert "Exclude" not in prompt
 
 
 async def test_explicit_asset_kind_overrides_ambiguous_prompt_keywords():
@@ -152,7 +154,12 @@ async def test_invalid_explicit_asset_kind_is_a_validation_error():
 
     assert result.is_error is True
     text = "".join(getattr(block, "text", "") for block in result.content)
-    assert '"errorCode": 1000' in text
+    # Refused by the tool schema rather than by a hand-written check: the
+    # argument is typed as the AssetKind literal, so the accepted values are
+    # published in the schema and the rejection names them.
+    assert "portrait" in text
+    for kind in ("character", "monster", "tile", "prop", "icon"):
+        assert kind in text
 
 
 @pytest.mark.parametrize(
@@ -170,6 +177,7 @@ async def test_generation_rejects_path_like_identifiers(field, value):
         "featureId": "f-safe",
         "gameId": "g-safe",
         "prompt": "a lantern prop",
+        "assetKind": "prop",
     }
     arguments[field] = value
 
@@ -192,7 +200,7 @@ async def test_generate_2d_sprite_returns_asset_path_in_structured_content():
     async with session() as client:
         result = await client.call_tool(
             "generate_2d_sprite",
-            {"featureId": "f-1", "prompt": "player character", "gameId": "t-structured"},
+            {"featureId": "f-1", "prompt": "player character", "gameId": "t-structured", "assetKind": "character"},
         )
 
     assert result.is_error is False
@@ -225,7 +233,7 @@ async def test_validation_failure_carries_error_code_1000():
 
     async with session() as client:
         result = await client.call_tool(
-            "generate_2d_sprite", {"featureId": "", "prompt": "x", "gameId": "t-err"}
+            "generate_2d_sprite", {"featureId": "", "prompt": "x", "gameId": "t-err", "assetKind": "prop"}
         )
 
     assert result.is_error is True
@@ -264,7 +272,7 @@ async def test_style_is_locked_after_first_use():
 async def test_same_inputs_regenerate_identical_bytes():
     """Reproducibility: a rejected asset can be regenerated exactly."""
 
-    args = {"featureId": "f-repro", "prompt": "a tree prop", "gameId": "t-repro"}
+    args = {"featureId": "f-repro", "prompt": "a tree prop", "gameId": "t-repro", "assetKind": "prop"}
     async with session() as client:
         first = await client.call_tool("generate_2d_sprite", args)
         first_bytes = Path(first.structured_content["assetPath"]).read_bytes()
@@ -321,6 +329,7 @@ async def test_variation_batch_requires_an_approved_mcp_prototype(monkeypatch):
             {
                 "featureId": "f-batch-source",
                 "prompt": "treasure chest prop",
+                "assetKind": "prop",
                 "gameId": "t-batch-approval",
             },
         )
@@ -345,7 +354,9 @@ async def test_variation_batch_uses_approved_style_references(monkeypatch):
 
     def _fake_variations(**kwargs):
         captured.append(kwargs)
-        width, height = kwargs["output_size"]
+        # The provider deduces the output size from the style references, so
+        # the fake answers at the reference's size rather than a requested one.
+        width, height = kwargs["style_images"][0].size
         box = (width // 4, height // 4, width * 3 // 4, height * 3 // 4)
         first = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         first.paste((10, 20, 30, 255), box)
@@ -365,6 +376,7 @@ async def test_variation_batch_uses_approved_style_references(monkeypatch):
             {
                 "featureId": "f-batch-source",
                 "prompt": "treasure chest prop",
+                "assetKind": "prop",
                 "gameId": "t-batch-style",
                 "artStyle": "dark fantasy pixel art",
             },
@@ -409,10 +421,13 @@ async def test_variation_batch_uses_approved_style_references(monkeypatch):
     assert len(body["styleAssetIds"]) == 2
     assert len(captured[0]["style_images"]) == 2
     assert captured[0]["style_images"][0].tobytes() == captured[1]["style_images"][0].tobytes()
-    assert captured[0]["output_size"] == captured[0]["style_images"][0].size
+    assert "output_size" not in captured[0]
     assert all(Path(asset["assetPath"]).exists() for asset in body["assets"])
     assert selected.structured_content["semanticStatus"] == "approved"
-    assert selected.structured_content["readyForVariations"] is False
+    # An approved variation is itself a PixelLab image of this game, so it can
+    # anchor the next batch. Anchor eligibility used to demand the exact
+    # provenance string "pixellab-mcp", which excluded it and every REST asset.
+    assert selected.structured_content["readyForVariations"] is True
     assert selected.structured_content["readyForImport"] is True
     assert selected.structured_content["nextAction"] == "import_asset"
 
@@ -424,6 +439,7 @@ async def test_variation_batch_rejects_unapproved_style_reference(monkeypatch):
             {
                 "featureId": "f-approved",
                 "prompt": "chest prop",
+                "assetKind": "prop",
                 "gameId": "t-style-gate",
             },
         )
@@ -432,6 +448,7 @@ async def test_variation_batch_rejects_unapproved_style_reference(monkeypatch):
             {
                 "featureId": "f-pending",
                 "prompt": "key prop",
+                "assetKind": "prop",
                 "gameId": "t-style-gate",
             },
         )
@@ -456,21 +473,39 @@ async def test_variation_batch_rejects_unapproved_style_reference(monkeypatch):
     )
 
 
-async def test_variation_batch_rejects_non_square_primary_before_api_call(monkeypatch):
-    called = False
+async def test_variation_batch_accepts_a_character(monkeypatch):
+    """Every character is a 1:2 kind, so every character prototype is
+    non-square. The square gate made the server's only style-reference path
+    unusable for exactly the assets whose style matters most.
 
-    def _unexpected_variations(**kwargs):
-        nonlocal called
-        called = True
-        raise AssertionError("API must not be called for an unsupported canvas")
+    It routes to ``generate-with-style-v2`` rather than bitforge: measured
+    2026-08-22, bitforge on a non-square canvas returns a broken figure, and a
+    batch cannot grow its canvas because the output has to stay the size of the
+    reference it varies.
+    """
 
-    monkeypatch.setattr(pixellab_client, "generate_with_style", _unexpected_variations)
+    captured = []
+
+    def _fake_variations(**kwargs):
+        captured.append(kwargs)
+        width, height = kwargs["style_images"][0].size
+        return (
+            [Image.new("RGBA", (width, height), (7, 8, 9, 255))],
+            {"type": "generations", "generations": 1.0},
+            "job-char",
+        )
+
+    def _unexpected_bitforge(**kwargs):
+        raise AssertionError("a non-square canvas must not go through bitforge")
+
+    monkeypatch.setattr(pixellab_client, "generate_with_style", _fake_variations)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _unexpected_bitforge)
     async with session() as client:
         prototype = await client.call_tool(
             "generate_2d_sprite",
             {
                 "featureId": "f-character",
-                "prompt": "player character",
+                "prompt": "player character, no city",
                 "gameId": "t-square-gate",
                 "assetKind": "character",
             },
@@ -484,16 +519,113 @@ async def test_variation_batch_rejects_non_square_primary_before_api_call(monkey
             {
                 "featureId": "f-character-batch",
                 "prototypeAssetId": prototype.structured_content["assetId"],
-                "prompts": ["player character with a red cloak"],
+                "prompts": ["player character with a red cloak, no city"],
                 "gameId": "t-square-gate",
             },
         )
 
+    body = result.structured_content
+    assert result.is_error is False
+    assert body["endpoint"] == "generate-with-style-v2"
+    assert len(captured) == 1
+    # The 1:2 prototype is accepted as a reference; nothing is squared or
+    # padded, so the batch stays the size of the asset it varies.
+    assert captured[0]["style_images"][0].size == (128, 256)
+    with Image.open(body["assets"][0]["assetPath"]) as saved:
+        assert saved.size == (128, 256)
+
+
+async def test_bitforge_only_arguments_are_refused_for_a_character_batch(monkeypatch):
+    """The controls exist only on the endpoint a non-square batch cannot use,
+    so they fail loudly instead of doing nothing."""
+
+    def _unexpected(**kwargs):
+        raise AssertionError("nothing should be spent on a rejected request")
+
+    monkeypatch.setattr(pixellab_client, "generate_with_style", _unexpected)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _unexpected)
+    async with session() as client:
+        prototype = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-char-knobs",
+                "prompt": "player character",
+                "assetKind": "character",
+                "gameId": "t-char-knobs",
+            },
+        )
+        await client.call_tool(
+            "review_asset",
+            {"assetId": prototype.structured_content["assetId"], "approved": True},
+        )
+        result = await client.call_tool(
+            "generate_2d_variations",
+            {
+                "featureId": "f-char-knobs-batch",
+                "prototypeAssetId": prototype.structured_content["assetId"],
+                "prompts": ["player character with a red cloak"],
+                "gameId": "t-char-knobs",
+                "styleStrength": 70,
+            },
+        )
+
     assert result.is_error is True
-    assert "requires a square primary prototype" in "".join(
-        getattr(block, "text", "") for block in result.content
-    )
-    assert called is False
+    message = "".join(getattr(block, "text", "") for block in result.content)
+    assert "styleStrength" in message
+    assert "square canvas" in message
+
+
+async def test_variation_batch_rejects_bitforge_only_arguments_on_the_other_path(
+    monkeypatch,
+):
+    """Several references cannot use bitforge, which takes exactly one. The
+    controls that only exist there fail loudly rather than doing nothing."""
+
+    def _unexpected(**kwargs):
+        raise AssertionError("API must not be called for a rejected request")
+
+    monkeypatch.setattr(pixellab_client, "generate_with_style", _unexpected)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _unexpected)
+    async with session() as client:
+        first = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-two-anchor",
+                "prompt": "treasure chest prop",
+                "gameId": "t-two-anchor",
+                "assetKind": "prop",
+            },
+        )
+        second = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-two-anchor-b",
+                "prompt": "iron key prop",
+                "gameId": "t-two-anchor",
+                "assetKind": "prop",
+            },
+        )
+        for created in (first, second):
+            await client.call_tool(
+                "review_asset",
+                {"assetId": created.structured_content["assetId"], "approved": True},
+            )
+        result = await client.call_tool(
+            "generate_2d_variations",
+            {
+                "featureId": "f-two-anchor-batch",
+                "prototypeAssetId": first.structured_content["assetId"],
+                "styleAssetIds": [second.structured_content["assetId"]],
+                "prompts": ["red treasure chest prop"],
+                "gameId": "t-two-anchor",
+                "styleStrength": 70,
+            },
+        )
+
+    assert result.is_error is True
+    message = "".join(getattr(block, "text", "") for block in result.content)
+    assert "styleStrength" in message
+    assert "generate-with-style-v2" in message
 
 
 async def test_inspect_asset_reports_technical_failure_and_next_action():
@@ -601,13 +733,46 @@ async def test_list_assets_recovers_rejected_work_by_feature():
         )
         listed = await client.call_tool(
             "list_assets",
-            {"gameId": "t-resume", "status": "rejected", "featureId": "f-resume"},
+            {
+                "gameId": "t-resume",
+                "status": "rejected",
+                "featureId": "f-resume",
+                "detail": True,
+            },
         )
 
     assert listed.structured_content["count"] == 1
     assert listed.structured_content["assets"][0]["review_feedback"]["change"] == [
         "make the hands readable"
     ]
+
+
+async def test_list_assets_defaults_to_compact_bounded_pages():
+    async with session() as client:
+        for index in range(3):
+            await client.call_tool(
+                "generate_2d_sprite",
+                {
+                    "featureId": f"f-page-{index}",
+                    "prompt": f"clock prop {index}",
+                    "gameId": "t-pages",
+                    "assetKind": "prop",
+                },
+            )
+        first = await client.call_tool("list_assets", {"gameId": "t-pages", "limit": 2})
+        second = await client.call_tool(
+            "list_assets",
+            {"gameId": "t-pages", "limit": 2, "cursor": first.structured_content["nextCursor"]},
+        )
+
+    assert first.structured_content["count"] == 3
+    assert first.structured_content["pageCount"] == 2
+    assert first.structured_content["nextCursor"] == "2"
+    assert first.structured_content["detail"] is False
+    assert "prompt" not in first.structured_content["assets"][0]
+    assert "provenance" not in first.structured_content["assets"][0]
+    assert second.structured_content["pageCount"] == 1
+    assert second.structured_content["nextCursor"] is None
 
 
 async def test_inspect_solid_tile_passes_horizontal_seam_check():
@@ -639,7 +804,7 @@ async def test_generated_assets_start_pending_and_can_be_reviewed():
     async with session() as client:
         created = await client.call_tool(
             "generate_2d_sprite",
-            {"featureId": "f-rev", "prompt": "player character", "gameId": "t-review"},
+            {"featureId": "f-rev", "prompt": "player character", "gameId": "t-review", "assetKind": "character"},
         )
         asset_id = created.structured_content["assetId"]
         assert created.structured_content["status"] == "pending"
@@ -664,7 +829,7 @@ async def test_rejected_asset_is_kept_for_inspection():
     async with session() as client:
         created = await client.call_tool(
             "generate_2d_sprite",
-            {"featureId": "f-rej", "prompt": "a rock", "gameId": "t-reject"},
+            {"featureId": "f-rej", "prompt": "a rock", "gameId": "t-reject", "assetKind": "prop"},
         )
         rejected = await client.call_tool(
             "review_asset",
@@ -702,7 +867,7 @@ async def test_every_asset_records_pixellab_provenance():
     async with session() as client:
         created = await client.call_tool(
             "generate_2d_sprite",
-            {"featureId": "f-prov", "prompt": "a bush", "gameId": "t-prov"},
+            {"featureId": "f-prov", "prompt": "a bush", "gameId": "t-prov", "assetKind": "prop"},
         )
 
     root = Path(created.structured_content["assetPath"]).parents[2]
@@ -803,6 +968,7 @@ async def test_review_never_moves_the_file_unity_imported(approved):
             {
                 "featureId": "f-stable",
                 "prompt": "a rock",
+                "assetKind": "prop",
                 "gameId": f"t-stable-{approved}",
             },
         )
@@ -825,7 +991,7 @@ async def test_review_status_is_recorded_in_the_manifest_not_the_path():
     async with session() as client:
         created = await client.call_tool(
             "generate_2d_sprite",
-            {"featureId": "f-meta", "prompt": "a tree", "gameId": "t-meta"},
+            {"featureId": "f-meta", "prompt": "a tree", "gameId": "t-meta", "assetKind": "prop"},
         )
         asset_id = created.structured_content["assetId"]
         reviewed = await client.call_tool(
@@ -867,10 +1033,10 @@ async def test_omitting_game_id_collides_two_games_onto_one_project():
 
     async with session() as client:
         first = await client.call_tool(
-            "generate_2d_sprite", {"featureId": "f-collide", "prompt": "a knight"}
+            "generate_2d_sprite", {"featureId": "f-collide", "prompt": "a knight", "assetKind": "prop"}
         )
         second = await client.call_tool(
-            "generate_2d_sprite", {"featureId": "f-collide", "prompt": "a knight"}
+            "generate_2d_sprite", {"featureId": "f-collide", "prompt": "a knight", "assetKind": "prop"}
         )
 
     assert first.structured_content["gameId"] == second.structured_content["gameId"] == "default"
@@ -922,6 +1088,7 @@ async def test_art_style_argument_reaches_the_palette():
             {
                 "featureId": "f-style",
                 "prompt": "a knight",
+                "assetKind": "prop",
                 "gameId": "t-artstyle",
                 "artStyle": "dark fantasy",
             },
@@ -973,6 +1140,7 @@ async def _approved_prototype(client, game_id: str, feature_id: str) -> str:
         {
             "featureId": feature_id,
             "prompt": "treasure chest prop",
+            "assetKind": "prop",
             "gameId": game_id,
             "artStyle": "dark fantasy pixel art",
         },
@@ -992,6 +1160,7 @@ async def test_animation_requires_an_approved_first_frame(monkeypatch):
             {
                 "featureId": "f-anim-source",
                 "prompt": "treasure chest prop",
+                "assetKind": "prop",
                 "gameId": "t-anim-gate",
             },
         )
@@ -1160,3 +1329,101 @@ async def test_animation_reports_sequence_metrics_and_anchors(monkeypatch):
     # Every frame carries the anchor Unity needs to cancel that drift.
     assert all(len(frame["footAnchor"]) == 2 for frame in body["frames"])
     assert body["frames"][0]["footAnchor"] != body["frames"][-1]["footAnchor"]
+
+
+# --------------------------------------------------------------------------
+# assetKind is stated, not guessed (issue #71)
+# --------------------------------------------------------------------------
+
+
+async def test_sprite_without_an_asset_kind_is_refused_before_any_call(monkeypatch):
+    """A wrong guess set the canvas ratio, palette, shading, and framing at
+    once, and that bill is paid in generation credits and review time."""
+
+    def _unexpected(**kwargs):
+        raise AssertionError("PixelLab must not be called without an assetKind")
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _unexpected)
+    async with session() as client:
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {"featureId": "f-nokind", "prompt": "player character", "gameId": "t-nokind"},
+        )
+
+    assert result.is_error is True
+    message = "".join(getattr(block, "text", "") for block in result.content)
+    assert "assetKind" in message
+
+    # The allowed values travel in the tool schema rather than in the error,
+    # so a caller reads them before spending a call rather than after.
+    async with session() as client:
+        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+    schema = tools["generate_2d_sprite"].input_schema
+    assert "assetKind" in schema["required"]
+    allowed = json.dumps(schema["properties"]["assetKind"])
+    for kind in ("character", "monster", "tile", "prop", "icon"):
+        assert kind in allowed
+
+
+async def test_an_explicit_kind_beats_the_prompt_wording():
+    """"a lone figure" reads as a prop to the keyword table. The caller says
+    otherwise and the caller wins — that is the whole point of the argument."""
+
+    async with session() as client:
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-explicit",
+                "prompt": "a lone figure",
+                "assetKind": "character",
+                "gameId": "t-explicit",
+            },
+        )
+
+    body = result.structured_content
+    assert result.is_error is False
+    assert body["kind"] == "character"
+    assert body["kindSource"] == "explicit"
+    assert classify("a lone figure") == "prop"
+
+
+async def test_the_kind_source_is_recorded_in_provenance():
+    from asset import server
+
+    async with session() as client:
+        created = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-source",
+                "prompt": "treasure chest prop",
+                "assetKind": "prop",
+                "gameId": "t-source",
+            },
+        )
+        inspected = await client.call_tool(
+            "inspect_asset", {"assetId": created.structured_content["assetId"]}
+        )
+
+    assert inspected.is_error is False
+    manifest = json.loads(
+        (server.ROOT / "manifests" / "t-source.json").read_text(encoding="utf-8")
+    )
+    record = manifest["assets"][created.structured_content["assetId"]]
+    assert record["provenance"]["kind_source"] == "explicit"
+
+
+async def test_ui_assets_still_infer_between_button_panel_and_icon():
+    """``generate_ui_asset`` only ever produces UI, so narrowing between three
+    UI kinds by wording cannot pick a wrong canvas ratio family."""
+
+    async with session() as client:
+        result = await client.call_tool(
+            "generate_ui_asset",
+            {"featureId": "f-ui", "prompt": "an inventory panel", "gameId": "t-ui-infer"},
+        )
+
+    body = result.structured_content
+    assert result.is_error is False
+    assert body["kind"] == "ui_panel"
+    assert body["kindSource"] == "inferred"
+

@@ -20,6 +20,7 @@ git 이력에서 되살린다 (지운 검사 이름: ``TestMirrorStaysInSync``).
 from strategic.specs import (
     BANNED_WORDS,
     CARD_ID_PATTERN,
+    CONTAMINATION_GUARDS,
     OBSERVABLE_WORDS,
     REQUIRED_SECTIONS,
     SPEC_RULES,
@@ -40,3 +41,9 @@ class TestRulesLoadFromData:
             assert CARD_ID_PATTERN.fullmatch(card_id), card_id
         for bogus in ("ELEM-1", "elem-001", "SPEC-001", "GAME-1234"):
             assert not CARD_ID_PATTERN.fullmatch(bogus), bogus
+
+    def test_contamination_guards_have_unique_stable_ids(self) -> None:
+        ids = [guard.get("id") for guard in CONTAMINATION_GUARDS]
+
+        assert all(isinstance(guard_id, str) and guard_id for guard_id in ids)
+        assert len(ids) == len(set(ids))

@@ -74,6 +74,123 @@ def test_contamination_catches_foreign_system() -> None:
     assert not _lint_contamination(legit), "정당한 상호 참조를 오탐했다"
 
 
+def test_contamination_acceptance_applies_to_one_card_and_guard() -> None:
+    guidance = ArchGuidance(
+        card_id="ARCH-001",
+        title="이벤트 버스",
+        build_steps=["청크와 연동할 때 이벤트를 발행한다."],
+        anti_patterns=["해설자 시스템을 직접 호출하지 않는다."],
+        verification=["이벤트 왕복 검사"],
+    )
+    chunk_only = _spec(
+        refs=["ARCH-001"],
+        architecture=[guidance],
+        contamination_acceptance=[
+            {
+                "cardId": "ARCH-001",
+                "guardId": "chunk-streaming",
+                "reason": "이 게임에는 청크 스트리밍이 없고 카드의 상호 참조만 수용한다.",
+            }
+        ],
+    )
+
+    errors = _lint_contamination(chunk_only)
+
+    assert not any("청크/Chunk" in error for error in errors)
+    assert any("commentator/해설자" in error for error in errors)
+
+    accepted = _spec(
+        refs=["ARCH-001"],
+        architecture=[guidance],
+        contamination_acceptance=[
+            *chunk_only.contamination_acceptance,
+            {
+                "cardId": "ARCH-001",
+                "guardId": "commentator",
+                "reason": "이 게임에는 해설자가 없고 카드의 상호 참조만 수용한다.",
+            },
+        ],
+    )
+    assert not _lint_contamination(accepted)
+
+
+def test_contamination_acceptance_does_not_cover_another_card() -> None:
+    cards = [
+        ArchGuidance(
+            card_id=card_id,
+            title="상호 참조 카드",
+            build_steps=["청크 로더와 함께 쓸 때만 적용한다."],
+            anti_patterns=["직접 결합"],
+            verification=["왕복 검사"],
+        )
+        for card_id in ("ARCH-001", "ARCH-005", "ARCH-032")
+    ]
+    spec = _spec(
+        refs=[card.card_id for card in cards],
+        architecture=cards,
+        contamination_acceptance=[
+            {
+                "cardId": "ARCH-001",
+                "guardId": "chunk-streaming",
+                "reason": "이 게임에는 청크가 없고 ARCH-001의 상호 참조만 수용한다.",
+            }
+        ],
+    )
+
+    errors = _lint_contamination(spec)
+
+    assert len([error for error in errors if "청크/Chunk" in error]) == 2
+    assert any("ARCH-005" in error for error in errors)
+    assert any("ARCH-032" in error for error in errors)
+
+    accepted = _spec(
+        refs=[card.card_id for card in cards],
+        architecture=cards,
+        contamination_acceptance=[
+            {
+                "cardId": card.card_id,
+                "guardId": "chunk-streaming",
+                "reason": f"이 게임에는 청크가 없고 {card.card_id}의 상호 참조만 수용한다.",
+            }
+            for card in cards
+        ],
+    )
+    assert not _lint_contamination(accepted)
+
+
+def test_contamination_acceptance_rejects_unused_or_unexplained_records() -> None:
+    guidance = ArchGuidance(
+        card_id="ARCH-001",
+        title="이벤트 버스",
+        build_steps=["이벤트를 발행한다."],
+        anti_patterns=["직접 결합"],
+        verification=["왕복 검사"],
+    )
+    spec = _spec(
+        refs=["ARCH-001"],
+        architecture=[guidance],
+        contamination_acceptance=[
+            {"cardId": "ARCH-001", "guardId": "chunk-streaming", "reason": ""},
+            {
+                "cardId": "ARCH-001",
+                "guardId": "commentator",
+                "reason": "해설자 없는 게임의 상호 참조만 수용한다.",
+            },
+        ],
+    )
+
+    errors = _lint_contamination(spec)
+
+    assert any("reason" in error for error in errors)
+    assert any("실제 감지된 오염" in error for error in errors)
+
+
+def test_contamination_acceptance_must_be_an_array() -> None:
+    spec = _spec(contamination_acceptance={"cardId": "ARCH-001"})
+
+    assert "S7: contaminationAcceptance 는 배열이어야 함" in _lint_contamination(spec)
+
+
 def test_role_boundary_catches_csharp_names() -> None:
     """S8 — 기획이 클래스 이름을 지어버린 것을 잡는다."""
 

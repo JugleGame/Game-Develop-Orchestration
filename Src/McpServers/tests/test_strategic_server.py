@@ -27,8 +27,13 @@ KNOWN = {"ELEM-003", "GAME-013", "GENRE-006"}
 
 
 def test_unity_project_setup_guidance_routes_2d_and_3d_without_mixing_templates():
-    assert _unity_project_setup_guidance("2D")["unityHubTemplate"] == "Universal 2D"
-    assert _unity_project_setup_guidance("3D")["unityHubTemplate"] == "Universal 3D"
+    guidance_2d = _unity_project_setup_guidance("2D")
+    guidance_3d = _unity_project_setup_guidance("3D")
+
+    assert guidance_2d["unityHubTemplate"] == "Universal 2D"
+    assert guidance_3d["unityHubTemplate"] == "Universal 3D"
+    assert set(guidance_2d) == {"visualDimension", "unityHubTemplate", "initialSetup"}
+    assert set(guidance_3d) == {"visualDimension", "unityHubTemplate", "initialSetup"}
 
     with pytest.raises(Exception, match="requires visualDimension"):
         _unity_project_setup_guidance("hybrid")
@@ -139,6 +144,26 @@ def test_change_log_is_rendered_after_revision():
     assert "v2 (qa): 낙하 판정 추가" in spec.to_markdown()
 
 
+def test_contamination_acceptance_survives_documents_and_feature_prompt():
+    from strategic.specs import _from_dict
+
+    acceptance = [
+        {
+            "cardId": "ARCH-001",
+            "guardId": "chunk-streaming",
+            "reason": "이 게임에는 청크가 없고 카드의 상호 참조만 수용한다.",
+        }
+    ]
+    spec = _spec(contamination_acceptance=acceptance)
+    restored = _from_dict(spec.to_dict())
+    prompt = _to_feature_prompt(restored)
+
+    assert restored.contamination_acceptance == acceptance
+    assert "## Contamination acceptance" in restored.to_markdown()
+    assert "ARCH-001 / chunk-streaming" in prompt["description"]
+    assert prompt["contaminationAcceptance"] == acceptance
+
+
 # ---------------------------------------------------------------------------
 # 개발 AI 에게 전달되는 형태
 # ---------------------------------------------------------------------------
@@ -234,6 +259,32 @@ def test_dependencies_are_namespaced_per_game():
     assert spec.spec_id == "g1__spec-002"
     assert spec.dependencies == ["g1__spec-001"]
     assert spec.blueprint_version == 3
+
+
+def test_to_spec_accepts_host_contamination_judgment():
+    acceptance = [
+        {
+            "cardId": "ARCH-001",
+            "guardId": "chunk-streaming",
+            "reason": "상호 참조만 수용한다.",
+        }
+    ]
+    spec = _to_spec(
+        {
+            "specId": "spec-001",
+            "title": "이벤트 전달",
+            "goal": "g",
+            "implementationScope": ["a"],
+            "outOfScope": ["b"],
+            "acceptanceCriteria": ["테스트가 통과한다"],
+            "refs": ["ARCH-001"],
+            "contaminationAcceptance": acceptance,
+        },
+        game_id="g1",
+        blueprint_version=1,
+    )
+
+    assert spec.contamination_acceptance == acceptance
 
 
 def test_feature_prompt_priority_reflects_dependency_order():

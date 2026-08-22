@@ -233,6 +233,42 @@ def test_scene_command_carries_every_planned_object():
     assert "EditorBuildSettings" in source
 
 
+def test_scene_command_applies_transform_and_defaults():
+    objects = [
+        _SCENE_OBJECTS[0],
+        {
+            **_SCENE_OBJECTS[1],
+            "transform": {
+                "position": [3, 4.5, 0],
+                "rotation": [0, 0, 90],
+                "scale": [2, 1, 1],
+            },
+        },
+    ]
+
+    source = assembly.scene_command("Assets/Scenes/Main.unity", objects)
+
+    assert "new global::UnityEngine.Vector3(0.0f, 0.0f, 0.0f)" in source
+    assert "new global::UnityEngine.Vector3(3.0f, 4.5f, 0.0f)" in source
+    assert "new global::UnityEngine.Vector3(0.0f, 0.0f, 90.0f)" in source
+    assert "new global::UnityEngine.Vector3(2.0f, 1.0f, 1.0f)" in source
+    assert "go.transform.SetParent(created[parents[i]].transform, false);" in source
+
+
+@pytest.mark.parametrize(
+    "transform",
+    [
+        {"position": [0, float("nan"), 0]},
+        {"velocity": [0, 0, 0]},
+    ],
+)
+def test_scene_command_rejects_an_invalid_transform(transform):
+    objects = [{**_SCENE_OBJECTS[0], "transform": transform}]
+
+    with pytest.raises(AssemblyError, match="transform"):
+        assembly.scene_command("Assets/Scenes/Main.unity", objects)
+
+
 def test_prefab_command_wires_the_sprite_when_one_is_planned():
     with_sprite = assembly.prefab_command(
         "Enemy", "Assets/Prefabs/Enemy.prefab", ["EnemyBrain"], "Assets/Generated/e.png"

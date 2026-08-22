@@ -30,7 +30,7 @@ AssetKind = Literal["character", "monster", "tile", "prop", "ui_panel", "ui_butt
 # slime. "enemy" is deliberately in "monster", not "character" — a
 # non-humanoid antagonist is the common case this project draws.
 _KIND_KEYWORDS: tuple[tuple[AssetKind, tuple[str, ...]], ...] = (
-    ("ui_button", ("button", "버튼", "cta")),
+    ("ui_button", ("button", "버튼")),
     ("ui_panel", ("panel", "hud", "menu", "dialog", "inventory", "패널", "메뉴")),
     ("icon", ("icon", "cursor", "marker", "badge", "아이콘")),
     (
@@ -63,7 +63,6 @@ _KIND_KEYWORDS: tuple[tuple[AssetKind, tuple[str, ...]], ...] = (
             "괴물",
             "슬라임",
             "적군",
-            "적",
         ),
     ),
     (
@@ -111,32 +110,38 @@ _MATERIAL_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 def classify(prompt: str) -> AssetKind:
     """Infer what to draw from the feature description.
 
-    Keyword matching rather than an LLM: this runs on every asset, must be
-    deterministic for reproducibility, and the vocabulary is small and closed.
+    Keyword matching rather than an LLM: this must be deterministic for
+    reproducibility, and the vocabulary is small and closed.
+
+    **Sprite generation no longer calls this.** ``generate_2d_sprite`` requires
+    an explicit ``assetKind``, because a wrong guess here silently decides the
+    asset's canvas ratio, palette, shading, and framing all at once — and the
+    bill for that is paid in generation credits and human review time, not by
+    the caller who omitted one argument. What remains is
+    ``generate_ui_asset``, which narrows an already-UI request between button,
+    panel, and icon.
     """
 
     lowered = prompt.lower()
-    words = lowered.split()
     for kind, keywords in _KIND_KEYWORDS:
-        if any(_matches(keyword, lowered, words) for keyword in keywords):
+        if any(_matches(keyword, lowered) for keyword in keywords):
             return kind
     return "prop"
 
 
-def _matches(keyword: str, lowered: str, words: list[str]) -> bool:
-    """Match English keywords as words and preserve Korean phrase matching.
+def _matches(keyword: str, lowered: str) -> bool:
+    """Match English keywords as words and Korean phrases as substrings.
 
-    Short English keywords such as ``cta`` occur inside unrelated words such
-    as ``rectangular``. Treating them as substrings can send terrain prompts
-    down the UI branch. Korean phrases still use substring matching, except
-    the one-syllable ``적`` keyword, which must remain a standalone word so
-    ordinary words such as ``도적`` do not become monsters.
+    English keywords occur inside unrelated words — ``tile`` inside
+    ``volatile``, ``rock`` inside ``rocket`` — so they are matched on word
+    boundaries. Korean is not word-spaced the same way, so its phrases stay
+    substring matches; the one-syllable ``적`` that forced a third rule (so
+    that ``도적`` did not become a monster) has been dropped from the table
+    instead of being special-cased here.
     """
 
     if keyword.isascii():
         return re.search(rf"(?<!\w){re.escape(keyword)}(?!\w)", lowered) is not None
-    if len(keyword) == 1:
-        return keyword in words
     return keyword in lowered
 
 

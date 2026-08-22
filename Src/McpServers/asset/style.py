@@ -24,7 +24,7 @@ from __future__ import annotations
 import colorsys
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 RGB = tuple[int, int, int]
@@ -90,6 +90,11 @@ _MATERIALS: dict[str, tuple[float, float, float]] = {
     "metal": (210 / 360, 0.18, 1.12),
     "snow": (200 / 360, 0.14, 1.55),
     "lava": (12 / 360, 1.25, 0.95),
+    # Living-subject materials. Reachable only through ``character_palette``:
+    # ``render._MATERIAL_KEYWORDS`` names none of them, so a tile or prop can
+    # never be resolved to one.
+    "skin": (25 / 360, 0.55, 1.35),
+    "cloth": (330 / 360, 0.70, 0.95),
 }
 
 DEFAULT_MATERIAL = "grass"
@@ -114,6 +119,23 @@ class ArtStyle:
     # still loads (``ArtStyle(**stored)`` falls back to "side"), so this
     # doesn't invalidate a game's frozen style the way a required field would.
     camera_view: str = "side"
+    # PixelLab's structured detail/shading controls. They belong to the game,
+    # not to one call: a request-level knob would let two assets in the same
+    # game disagree about how many tones a surface has, which is the same
+    # failure ``camera_view`` is locked to avoid. Defaults reproduce what the
+    # server sent before these fields existed.
+    detail: str = "medium detail"
+    shading: str = "medium shading"
+    # Isometric is its own boolean in the schema, not a ``CameraView`` value.
+    # It used to be folded into ``camera_view`` as "high top-down", which is a
+    # different projection: top-down looks straight down a vertical axis,
+    # isometric looks along a diagonal one. A game asking for isometric got
+    # top-down and no field ever said otherwise.
+    isometric: bool = False
+    # Which way the subject faces, locked per game like the view. PixelLab has
+    # a field for this (``Direction``); before this existed the only way to ask
+    # was prose in the description, competing with the subject for attention.
+    direction: str = "east"
 
     def rgb(self, role: str) -> RGB:
         return _unhex(self.palette[role])
@@ -167,6 +189,49 @@ class ArtStyle:
         saturation, _, outline_l = self._profile()
         hue = self._material_hue(material)
         return _hls(hue, _clamp(outline_l, 0.04, 0.30), _clamp(saturation * 0.45, 0, 1))
+
+    # How many swatches a character palette holds. Tiles and props take five,
+    # which is what made the locked ramp read as "too green, no character" on a
+    # living subject: skin, cloth, and metal cannot share four steps of one
+    # hue. ``color_image`` is a PNG with one pixel per colour, so the count is
+    # a design decision, not a provider limit.
+    CHARACTER_SWATCHES = 12
+
+    def character_palette(self) -> list[RGB]:
+        """This game's colours, wide enough for a living subject.
+
+        The identity ramp still leads — the first four entries are the same
+        ``character_ramp`` a sprite was always drawn from — but skin, metal,
+        and leather follow so the model has somewhere to put a face, a blade,
+        and a strap without borrowing the cloth hue for all three.
+
+        Every entry is derived from ``seed`` and ``art_style``, both of which
+        are persisted, so this needs no new stored field and a style.json
+        written before it existed still resolves.
+        """
+
+        cloth = self.character_ramp()
+        skin = self.material_ramp("skin")
+        metal = self.material_ramp("metal")
+        leather = self.material_ramp("wood")
+        ordered = [
+            cloth["shadow"],
+            cloth["base"],
+            cloth["light"],
+            cloth["highlight"],
+            skin["shadow"],
+            skin["base"],
+            skin["light"],
+            metal["base"],
+            metal["highlight"],
+            leather["shadow"],
+            leather["base"],
+            self.rgb("outline"),
+        ]
+        # A monochrome game collapses several of these onto the same grey.
+        # Duplicated swatches say nothing, so they are dropped rather than
+        # padding the count for its own sake.
+        return list(dict.fromkeys(ordered))
 
     def character_ramp(self) -> dict[str, RGB]:
         """Character ramp built from the game's own identity colours.
@@ -260,13 +325,62 @@ def _grid_for(art_style: str) -> int:
 # confirmed v2/openapi.json). Locked per game alongside the palette — measured
 # 2026-08-02: a game mixing views per asset call reads as broken, the same way
 # mixing palettes per call did before ``color_image`` locked colour.
+#
+# "isometric" is deliberately *not* here. It is a separate boolean in the same
+# request and naming it a camera view sent a diagonal-axis projection request
+# as a straight-down one.
 _VIEW_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("high top-down", ("top-down", "top down", "topdown", "탑뷰", "쿼터뷰", "isometric")),
+    ("high top-down", ("top-down", "top down", "topdown", "탑뷰", "쿼터뷰")),
     (
         "side",
         ("side-scroll", "sidescroll", "side scroll", "platformer", "횡스크롤", "사이드스크롤"),
     ),
 )
+
+_ISOMETRIC_KEYWORDS = ("isometric", "아이소메트릭", "쿼터뷰", "quarter view")
+
+# Keyword → PixelLab Direction enum. "east" is the default because a
+# side-scroller's sprite faces the way it walks, and left-facing frames are
+# produced by mirroring rather than by a second generation.
+DIRECTIONS = (
+    "north",
+    "north-east",
+    "east",
+    "south-east",
+    "south",
+    "south-west",
+    "west",
+    "north-west",
+)
+
+_DIRECTION_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("south", ("facing camera", "front-facing", "front facing", "정면", "앞모습")),
+    ("north", ("facing away", "back-facing", "back facing", "뒷모습")),
+    ("west", ("facing left", "left-facing", "왼쪽", "좌향")),
+    ("east", ("facing right", "right-facing", "오른쪽", "우향")),
+)
+
+
+def _isometric_for(art_style: str) -> bool:
+    """Whether this game is drawn on a diagonal axis.
+
+    "쿼터뷰" appears in both tables on purpose: Korean usage covers the
+    isometric family, so such a game gets the boolean *and* the top-down view
+    it previously got alone.
+    """
+
+    lowered = art_style.lower()
+    return any(keyword in lowered for keyword in _ISOMETRIC_KEYWORDS)
+
+
+def _direction_for(art_style: str) -> str:
+    """The direction every asset in this game faces unless one asks otherwise."""
+
+    lowered = art_style.lower()
+    for direction, keywords in _DIRECTION_KEYWORDS:
+        if any(keyword in lowered for keyword in keywords):
+            return direction
+    return "east"
 
 
 def _view_for(art_style: str) -> str:
@@ -282,7 +396,11 @@ def _view_for(art_style: str) -> str:
     for view, keywords in _VIEW_KEYWORDS:
         if any(keyword in lowered for keyword in keywords):
             return view
-    return "side"
+    # An isometric game looks down a diagonal axis, so "side" would contradict
+    # the projection. This is the view such a game already got before
+    # ``isometric`` became its own field; the boolean is added to it, not
+    # instead of it.
+    return "high top-down" if _isometric_for(art_style) else "side"
 
 
 def derive(game_id: str, art_style: str) -> ArtStyle:
@@ -342,10 +460,19 @@ def derive(game_id: str, art_style: str) -> ArtStyle:
         pixel_grid=_grid_for(art_style),
         outline=True,
         camera_view=_view_for(art_style),
+        isometric=_isometric_for(art_style),
+        direction=_direction_for(art_style),
     )
 
 
-def load_or_create(root: Path, game_id: str, art_style: str) -> ArtStyle:
+def load_or_create(
+    root: Path,
+    game_id: str,
+    art_style: str,
+    *,
+    detail: str = "",
+    shading: str = "",
+) -> ArtStyle:
     """Return the game's frozen style, deriving and persisting it on first use.
 
     Once written, the stored palette wins: regenerating an asset months later
@@ -358,6 +485,12 @@ def load_or_create(root: Path, game_id: str, art_style: str) -> ArtStyle:
         return ArtStyle(**stored)
 
     style = derive(game_id, art_style)
+    if detail or shading:
+        # Only on first use: the branch above already returned for a game whose
+        # look is frozen, so this cannot re-skin work in progress.
+        style = replace(
+            style, detail=detail or style.detail, shading=shading or style.shading
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(asdict(style), indent=2, ensure_ascii=False), encoding="utf-8")
     return style

@@ -90,6 +90,20 @@ async def test_get_compile_errors_reports_the_mistyped_error(fake_console) -> No
 
 
 @pytest.mark.asyncio
+async def test_compile_errors_default_to_a_bounded_sample(fake_console) -> None:
+    fake_console([dict(_MISTYPED_COMPILE_ERROR, Line=index) for index in range(8)])
+
+    compact = await unity_server.get_compile_errors(gameId="g1")
+    detailed = await unity_server.get_compile_errors(gameId="g1", detail=True)
+
+    assert compact["errorCount"] == 8
+    assert len(compact["errors"]) == 5
+    assert compact["errorsTruncated"] is True
+    assert len(detailed["errors"]) == 8
+    assert detailed["errorsTruncated"] is False
+
+
+@pytest.mark.asyncio
 async def test_playmode_does_not_pass_when_console_holds_an_error(fake_console) -> None:
     """오류가 있는데 ``passed: true`` 가 나오면 QA 가 근거 없이 통과한다."""
 

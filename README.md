@@ -15,6 +15,8 @@ The host agent reasons and decides; MCP servers only validate data or access ext
 
 ```text
 docs/                    Authoritative architecture, contracts, operations, backlog
+phase_runner/            Deterministic approval gates and fresh Codex phase execution
+issue_runner/            Approval-gated fresh Codex execution for repository Issue work
 Src/McpServers/          Research, Unity, and Asset MCP servers
 AGENTS.md                Thin Codex adapter
 CLAUDE.md                Thin Claude Code adapter
@@ -52,8 +54,35 @@ Read only what the task needs:
 python scripts/bootstrap.py
 ```
 
-Fill only the required values in `.env`, then restart the host agent. See
-[docs/operations.md](docs/operations.md) for commands.
+This creates context-efficient `research`-only MCP configurations for Codex
+(`.codex/config.toml`) and compatible hosts (`.mcp.json`) by default. Switch to the role needed
+for the next task, then restart the host agent:
+
+```powershell
+python scripts/bootstrap.py --repair-mcp-config --mcp-profile unity
+```
+
+Available profiles are `research`, `unity`, `asset2d`, `asset3d`, and the explicit compatibility
+profile `all`. Fill only the required values in `.env`; see [docs/operations.md](docs/operations.md)
+for profile and verification commands.
+
+For an approval-gated end-to-end run, use the local Python Phase Runner. It starts a fresh
+`codex exec` thread per role and persists resumable state under ignored `var/runs/`:
+
+```powershell
+.venv\Scripts\python.exe -m phase_runner start --prompt-file request.md
+```
+
+See the [Phase Runner guide](phase_runner/README.md) for the complete CLI workflow, approval,
+rejection, resume, and failure recovery. The broader environment and manual MCP profile procedures
+remain in [docs/operations.md](docs/operations.md#automatic-phase-runner).
+
+For this repository's own Issue-backed maintenance, ask `Issue #N 작업 시작` in a new Desktop
+session. The repository-local Skill validates the complete open Issue and starts the separate
+[Issue Work Runner](issue_runner/README.md), which gates implementation on analysis approval and
+uses fresh Codex threads for analysis, implementation, verification, and review.
+If an Issue number is missing, the repository rules stop source changes and provide the exact Issue
+creation or `Issue #N 작업 시작` request instead of silently bypassing the Runner.
 
 ## Development
 

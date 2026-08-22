@@ -16,7 +16,7 @@ Server: `ResearchMcpServer`.
 | Tool | Responsibility |
 |---|---|
 | `research_idea` | Retrieve evidence, counterexamples, and architecture cards |
-| `get_unity_project_setup_guidance` | Return the Unity Hub project template and initial settings for an explicit `2D` or `3D` visual dimension |
+| `get_unity_project_setup_guidance` | Return the Unity Hub project template and initial settings for an explicit `2D` or `3D` visual dimension; it has no project-creation or GitHub Issue side effect |
 | `propose_concept` | Store an evidence-backed proposal for review |
 | `list_pending_concepts`, `get_concept` | Read concept review state |
 | `decide_concept` | Record approve, revise, or reject |
@@ -54,6 +54,10 @@ Server: `UnityMcpServer`.
   `define_assemblies`, `import_asset`.
 - `create_prefab.model` accepts an imported Unity `GameObject` asset such as FBX and saves a
   model-backed prefab; `compose_scene` then instantiates that prefab.
+- `design_architecture.scene.objects[].transform` and `compose_scene.objects[].transform` accept
+  optional `position`, Euler `rotation`, and `scale` vectors. Each vector contains exactly three
+  finite numbers. Omitted transforms keep Unity defaults, and child transforms are applied in local
+  space. The older flat `position`, `rotation`, and `scale` compose arguments remain compatible.
 - `create_prefab` also accepts `colliderSize`, `colliderOffset`, and `spritePivot`. The body
   size a script assumes and the collider on the prefab are one decision, so they are set in one
   call: a collider left at Unity's 1x1 default under a 2x4 sprite is a defect that nothing else
@@ -80,7 +84,8 @@ Server: `UnityMcpServer`.
   with no controller raises no error at runtime, so `inspect_project_layout` reports that case as
   layout rule `L8`.
 - `run_named_tests` runs the tests an acceptance criterion names, in EditMode or PlayMode, and
-  returns each test with its status, duration, and failure message. `run_playmode_test` only
+  always returns each requested test with its status, duration, and failure message because the
+  functional QA contract must match every requested name to an executed result. `run_playmode_test` only
   collects console errors, so a defect that throws nothing passes it; a named test is what turns
   a criterion such as `Test_Player_NoDoubleJump` into evidence. A filter that matches no test is
   reported as an error, never as a pass. Because a run crosses a domain reload, results are
@@ -100,6 +105,11 @@ Server: `UnityMcpServer`.
 - Evidence: `build_project`, `run_playmode_smoke`, `run_playmode_test`,
   `run_playmode_function_tests`, `run_named_tests`, `get_compile_errors`,
   `inspect_project_layout`, `unity_bridge_status`, `inspect_animator`.
+- Potentially large Unity evidence is compact by default. Build results omit the raw bridge payload,
+  while compile, smoke, and Unity Test Framework results return total counts plus at most five
+  representative failures. Use `detail=true` for the full payload or NUnit per-test records.
+  `run_named_tests` is deliberately exempt and retains all focal per-test evidence. NUnit artifact
+  paths remain available in compact results.
 - Return evidence; never declare final PASS.
 
 ## Asset MCP
@@ -110,21 +120,303 @@ Server: `AssetGenMcpServer`.
   requires the subject, intended use and readable scale, composition, must-have visual structure,
   and shared art style. Revision briefs additionally require what to preserve and a positively
   stated replacement for what should change.
-- Generation takes a game ID, feature ID, host-authored prompt, and an optional explicit
-  `assetKind`. Explicit kinds take precedence over keyword inference and should be used for
-  ambiguous prompts.
+- **`generate_2d_sprite` requires `assetKind`.** It is typed as the `AssetKind` literal, so the
+  accepted values are published in the tool schema and a missing or wrong one is refused by the
+  schema before any provider call. The kind is not guessed from prompt wording, because one wrong
+  guess sets the canvas ratio, the forced palette, the shading, and the framing together — and that
+  is paid for in generation credits and human review time, not by the caller who omitted an
+  argument. `prepare_asset_prompt` already requires the same value.
+- `generate_ui_asset` still infers when `assetKind` is omitted. Every outcome there is a UI kind, so
+  a wrong guess picks the wrong UI shape rather than turning a character into a tile.
+- Responses and provenance carry `kindSource` / `kind_source`: `"explicit"` when the caller named
+  the kind, `"inferred"` when it came from keyword matching.
+- `render.classify`'s keyword table no longer carries per-keyword exceptions. The one-syllable `적`
+  is gone (it matched inside ordinary words such as `도적`, and forced a third matching rule), as is
+  `cta`. English keywords are still matched on word boundaries, because they appear inside unrelated
+  words — `tile` in `volatile`, `rock` in `rocket`.
 - `generate_2d_sprite` and `generate_ui_asset` create the initial reviewable prototype through
   PixelLab's official remote MCP server.
-- `generate_2d_variations` accepts only approved MCP prototypes as style anchors and uses
-  PixelLab's `generate-with-style-v2` REST endpoint for same-direction batch variations. The
-  primary `prototypeAssetId` plus optional `styleAssetIds` form a deduplicated bank of one to four
-  references. The primary prototype fixes the output canvas size for every variation. This endpoint
-  accepts square primary prototypes only; non-square character batches must use a provider-specific
-  character workflow rather than silent padding or distortion.
+- Canvas size comes from the game's locked pixel grid times a per-kind ratio. `generate_2d_sprite`
+  additionally accepts `gridSize`, which replaces that grid for one asset only, so things of
+  different in-world size (a boy and the giant chasing him) generate at the same pixel density
+  without editing the game's stored style. The stored grid never changes, and omitting `gridSize`
+  keeps the previous size and the previous asset id.
+- Both derived sides must fall inside PixelLab's 16-400px per-side range, which is what
+  `CreateImagePixfluxRequest.image_size` declares. A request outside it fails validation before any
+  provider call, naming the derived size and the range. The floor previously sat at 32 on the
+  strength of one 16x32 request that failed through the MCP path with a `TaskGroup` exception
+  naming no cause; that failure was never explained and the schema contradicts it, so the contract
+  follows the schema. A character generated under 32 wide still crops the figure below the thigh,
+  which is a composition caution, not a validation rule.
+- `/map-objects` has its own floor: `CreateMapObjectRequest.image_size` starts at 32, not 16.
+- A prototype request claims its prompt digest under `var/assets/submissions/<assetId>.json` before
+  PixelLab is paid, and the claim always records how the request ended. A failure that never
+  reached PixelLab's meter is stored as `FAILED` with `billable: false`, and the next call with the
+  same prompt retakes the claim and generates. That retry must reuse the prompt verbatim: the seed
+  is derived from the prompt text, so rewording it to work around a block produces a different
+  asset.
+- A failure that PixelLab may already have billed (`billable: true`), or a claim left at
+  `SUBMITTING` because the process died mid-call, keeps blocking that prompt. The tool answers
+  `status: "duplicate_blocked"` with `claimPath`, the recorded `reason`, and a `recovery` sentence:
+  review the earlier request, delete the file at `claimPath`, then call again with the same prompt.
+- PixelLab MCP failures arrive inside a `TaskGroup`, whose own message names no cause. The client
+  flattens the group to its leaf exceptions, so the returned message carries the provider's real
+  error type and text.
+- `generate_2d_variations` takes any approved PixelLab asset of the same game as a style anchor.
+  The primary `prototypeAssetId` plus optional `styleAssetIds` form a deduplicated bank of one to
+  four references. Anchor eligibility used to require `provenance.method == "pixellab-mcp"`
+  exactly, which excluded every REST-generated asset and every approved variation; what matters is
+  that a human approved a PixelLab image of this game, not which endpoint drew it. A tileset or
+  other non-sprite kind is still refused, because its `asset_path` is a JSON index.
+- **There is no square requirement.** Every character is a 1:2 kind, so every character prototype
+  is non-square; the previous square gate made the server's only style-reference path unusable for
+  exactly the assets whose style matters most. Neither endpoint requires a square reference.
+- The batch picks its endpoint from the reference count and the native canvas:
+
+  | condition | endpoint | what it gives up |
+  | --- | --- | --- |
+  | 1 reference, **square**, ≤200px per side | `create-image-bitforge` | at most one reference |
+  | otherwise | `generate-with-style-v2` | `styleStrength`, `coveragePercentage`, `negativeDescription` |
+
+  The chosen endpoint is returned as `endpoint` and recorded in each asset's provenance.
+  `styleStrength`, `coveragePercentage`, and `negativeDescription` exist only on the bitforge path;
+  passing one when the batch would fall back is a validation error, not a silent no-op.
+- The provider is asked for the **native** canvas, not the stored one. Sprites are stored at four
+  times their generated size, so requesting the stored size would generate a different asset — and
+  a 128x256 request exceeds bitforge's 200px limit outright. The result is upscaled to the stored
+  size with nearest-neighbour, as the sprite paths do.
+- `style_strength` is 0-100 and its schema default is **0**, which means "ignore the style image".
+  A reference sent with no explicit strength therefore gets the schema's own documented midpoint,
+  50 (`BITFORGE_BALANCED_STYLE_STRENGTH`); leaving the provider default would silently discard the
+  reference.
+- `generate-with-style-v2` takes no output size. `GenerateWithStyleV2Request.image_size` is marked
+  `deprecated` with the description `REMOVED. Output size is deduced from the style images.`, so
+  no size is sent and the returned size is recorded rather than checked against a size that was
+  never requested. Reference images are capped at 512px per side, which is the model's own size.
+- `create-image-bitforge` stops at 200px per side, half of pixflux's 400. That is the trade for its
+  controls: a larger asset still has to go through `generate_2d_sprite`.
+- **The style reference must be exactly the requested canvas.** This is not in the schema and the
+  provider reports it as a 500, not a 422: a 128x256 reference against a 32x64 request answered
+  `style_image must be size (64, 32), not torch.Size([256, 128])` (measured 2026-08-22). The client
+  therefore resizes `style_image` and `init_image` to the requested canvas before sending. Stored
+  sprites are upscaled copies of their generated canvas, so this is normally an exact integer
+  downscale back to the pixels the reference was drawn at. A reference whose *aspect* differs from
+  the target — a 1:2 character anchoring a 1:1 prop — is squashed, so anchor a kind with its own
+  aspect ratio.
+- **Measured, and it is not what "style transfer" suggests** (2026-08-22, shared seed per prompt,
+  `var/assets/experiments/round-1-character/` and `round-1-prop/`). `style_image` carries the
+  reference's *subject*, not only its look, and it outranks the description:
+
+  | prompt | anchor | pixflux | bitforge s30 / s50 / s80 |
+  | --- | --- | --- | --- |
+  | a **blue**-cloaked girl with a lantern | **red**-cloaked boy with a lantern | blue cloak, as asked | red cloak at every strength; pose and proportions follow the anchor; at 80 the face is gone and a second lantern appears |
+  | a small iron **lantern** | a wooden **chest** | a clean lantern | a chest at every strength; at 80 it is the anchor with a glowing panel |
+
+  The prop row is the important one: the described subject never appeared. Treat `style_image` as
+  "another take on *this* asset", not "a different asset drawn in this asset's style".
+
+  | goal | path |
+  | --- | --- |
+  | a new subject exactly as described | pixflux (`generate_2d_sprite`) |
+  | variations of an asset that already exists | bitforge (`generate_2d_variations`) |
+  | a *different* subject sharing a game's look | neither — use the locked palette and structured style fields |
+
+  This is why `generate_2d_variations` is the right home for bitforge: its prompts vary an existing
+  prototype ("red treasure chest", "blue treasure chest"), which is exactly the case the endpoint
+  serves. A prompt there that names a different subject comes back as the anchor.
+- `styleStrength` above ~50 buys reference adherence by overriding the description, including
+  colours the prompt names. Below 30 was not measured. Treat it as a knob to turn down, not up.
+- `readyForVariations` means "this asset can anchor a batch" and is true for any approved PixelLab
+  asset, including an approved variation. `nextAction` still distinguishes a prototype from a
+  batch's output: an approved variation is told to `import_asset`, not to generate more variations.
+- `detail` and `shading` are fields of the game's frozen `ArtStyle`, set once through
+  `establish_art_style` and stored in `var/assets/styles/<gameId>.json`. They are not per-call
+  arguments: a game whose concept art holds two tones per material needs the same setting on every
+  asset. A style file written before these fields existed still loads and keeps the previous
+  defaults (`medium detail`; `medium shading` for characters and monsters). `shading` stays
+  flattened for inanimate kinds whatever the game asks for.
+- `establish_art_style` rejects a `detail` or `shading` outside the schema before freezing the
+  style. The value is written into the game's style file and read by every later asset, so an
+  invalid one would otherwise fail every generation in that game with no way back short of editing
+  the frozen file by hand.
+- **PixelLab's structured style fields are `(weakly guiding)`, in its own words.** Every one of
+  them says so in `CreateImagePixfluxRequest`:
+
+  ```
+  outline    "Outline style reference (weakly guiding)"
+  shading    "Shading style reference (weakly guiding)"
+  detail     "Detail style reference (weakly guiding)"
+  view       "Camera view angle (weakly guiding)"
+  direction  "Subject direction (weakly guiding)"
+  isometric  "Generate in isometric view (weakly guiding)"
+  ```
+
+  They bias a result; they do not override a description. Prompt composition therefore **keeps**
+  style wording rather than deleting it as a duplicate of a field — the previous policy removed the
+  strong signal and left only the weak one. Both are sent. `promptMetrics.structuredClauses` lists
+  which clauses a field also covers.
+- Framing is always appended. It used to be skipped whenever a prompt contained both `Composition:`
+  and `Required visual structure:` — exactly what `prepare_asset_prompt` writes — so following the
+  intake procedure was the one reliable way to lose it.
+- `direction` is which way the subject faces: `north`, `north-east`, `east`, `south-east`, `south`,
+  `south-west`, `west`, `north-west`. It is locked per game like the view, and `generate_2d_sprite`
+  and `generate_2d_variations` accept a per-asset override for the cases that genuinely differ (a
+  door on the west wall, an NPC turned toward the player). A value outside the enum is refused
+  before the request. `CreateTilesetRequest` and `CreateMapObjectRequest` do not declare the field
+  at all, so passing one there is a caller error rather than a wrong value.
+- `isometric` is a boolean, **not** a camera view. Top-down looks straight down a vertical axis;
+  isometric looks along a diagonal one. The keyword used to be listed in the `CameraView` table, so
+  a game asking for isometric was sent `high top-down` and no field ever carried the request. It is
+  now its own locked `ArtStyle` field; such a game still gets `high top-down` as its view, plus the
+  boolean.
+- A Wang tileset derives its boundary from its two terrain descriptions differing, so the tile
+  prototype path splits the prompt on `|` — `grass meadow | grey stone cliff`. It used to send the
+  same text as both, which left nothing to transition between. A prompt with no separator is
+  refused with that instruction rather than silently producing a flat set.
+- Measured (2026-08-22, `var/assets/experiments/round-2-compose/`, one character and one prop, same
+  seed per subject): `direction: west` visibly turned the walking character around, while the prop —
+  a symmetric lantern — was unchanged, which is the correct behaviour for something with no facing.
+  Keeping the style wording instead of deleting it was a **small** effect: the prop's shading came
+  out flatter and its glass more rectangular, closer to the requested `flat shading`; the character
+  was near-identical. The change rests on the schema quote above, not on a large visual difference.
+- Structured style values are checked against the endpoint's own declared enum before the request is
+  sent, so a wrong value costs no generation and the error names the accepted values. **The allowed
+  values differ per endpoint** and the differences are not guessable, so they live in one table,
+  `pixellab_client.STYLE_ENUMS`:
+
+  | field | `create-image-pixflux` | `tilesets` | `map-objects` |
+  | --- | --- | --- | --- |
+  | `outline` | `single color black outline`, `single color outline`, `selective outline`, `lineless` | same as pixflux | `single color outline`, `selective outline`, `lineless` |
+  | `shading` | `flat shading`, `basic shading`, `medium shading`, `detailed shading`, `highly detailed shading` | same as pixflux | `flat shading`, `basic shading`, `medium shading`, `detailed shading` |
+  | `detail` | `low detail`, `medium detail`, `highly detailed` | same as pixflux | `low detail`, `medium detail`, `high detail` |
+  | `view` | `side`, `low top-down`, `high top-down` | `low top-down`, `high top-down` | `low top-down`, `high top-down`, `side` |
+
+  The server therefore translates the locked `ArtStyle` onto `/map-objects`' vocabulary rather than
+  passing it through: `single color black outline` becomes `single color outline` and
+  `highly detailed` becomes `high detail`.
+- A map object that is sent no style takes the endpoint's defaults, and its `view` default is
+  `high top-down` — which drew a side-view game's decorations as if seen from above.
+  `generate_map_object` therefore always sends the game's locked `view`, outline, shading, and
+  detail, plus the material palette.
+- Palettes travel as `color_image`, a base64 PNG PixelLab samples colours from. Neither
+  `CreateImagePixfluxRequest`, `CreateTilesetRequest`, nor `CreateMapObjectRequest` has an
+  array-of-colours or string palette field.
+- **Characters and monsters are palette-locked too**, using `ArtStyle.character_palette()` — twelve
+  swatches: the game's identity ramp first, then skin, metal, and leather. They previously got no
+  palette at all, on the grounds that a five-swatch ramp cannot hold skin, cloth, and metal at once
+  (the locked ramp read as "too green, no character", 5/10, against 7/10 for dropping it — a tie).
+  A tie is thin ground for giving up consistency, and the alternative assumed to cover it does not
+  exist: `style_image` carries the reference's subject, not its look, so it cannot make two
+  different subjects share a game's colours. Widening the palette answers the range objection
+  without giving up the lock. `color_image` is a PNG with one pixel per colour, so the swatch count
+  is a design decision, not a provider limit.
+- Measured (2026-08-22, `var/assets/experiments/round-3-palette/`, one game, three subjects —
+  knight, mage, slime — same seed per subject in both arms). The question was not whether any one
+  sprite is good but whether the three read as one game:
+
+  | | unlocked | locked |
+  | --- | --- | --- |
+  | knight | dark blue-grey steel | dark purple-navy with warm tan accents |
+  | mage | near-black robe | the same purple-navy, warm tan staff |
+  | slime | bright saturated green — visibly from another game | green pulled toward the game's value range |
+
+  Locked won on that criterion. A second effect was not expected: the locked knight and mage have
+  **visible faces**, where unlocked gave a faceless helmet and a black void under the hood. The skin
+  swatches are what the earlier "not enough colour range" objection was asking for.
+- Caveats on that measurement: three subjects, one game, one `art_style`. The locked sprites are
+  also darker and lower-contrast overall, which is worth watching at small on-screen sizes.
+- **`create-image-bitforge` needs a square canvas, and the server grows the request to one.**
+  Measured 2026-08-22 (`var/assets/experiments/round-5-canvas/`, same prompt and seed): a slim
+  character asked for at 32x64 came back as a detached hat floating above a body, while the same
+  prompt at 64x64 came back as a complete figure. The provider only documents this as a keypoint
+  caveat — "Warning! Sizes that are not 16x16, 32x32 and 64x64 can cause the generations to be
+  lower quality" — but the control had no keypoints in it at all, so the canvas is the problem on
+  its own.
+- The rule is stated about canvases, not about characters, so it holds for any kind:
+  `_posable_canvas` grows a bitforge request to the **smallest square that still contains it**
+  (`SKELETON_FRIENDLY_SIZES`: 16, 32, 64). Growing rather than shrinking is what keeps the original
+  measurement intact — a character has 64 rows because 48 cropped the figure below the thigh, and
+  64x64 keeps every one of them; only the width changes. It is a no-op for `monster`, `prop`,
+  `icon`, and `tile`, which are already square. A canvas with no square to grow to comes back with
+  a warning instead.
+- **`_KIND_SIZE_RATIO` is unchanged.** The ordinary path (PixelLab's MCP prototype tool, and
+  pixflux) produces clean 32x64 characters and always has; only bitforge fails there. Changing the
+  ratio globally would have re-sized every character in every game to fix a problem that lives on
+  one endpoint.
+- A grown request reports `canvas` and `requestedCanvas` in its result, plus a `warnings` entry
+  saying what changed, so the size difference from the game's other characters is stated rather
+  than discovered.
+- `generate_2d_variations` cannot grow its canvas — its output has to stay the size of the asset it
+  varies — so a non-square batch takes `generate-with-style-v2` instead, and the bitforge-only
+  arguments are refused with that reason. A 1:2 character batch therefore works, without the
+  controls bitforge would have added.
+- `generate_2d_sprite` accepts `poseFromAssetId` and `initAssetId`, both naming an approved PixelLab
+  asset of the same game. The first reads that sprite's joints with `/estimate-skeleton` and sends
+  them as `skeleton_keypoints`; the second sends it as `init_image`. Both need
+  `create-image-bitforge`, so a request larger than 200px per side is refused rather than generated
+  without the pose it asked for. `skeletonGuidance` is 0-5 (provider default 1) and
+  `initImageStrength` is 1-999.
+- **Keypoints are normalised to 0-1, not pixels.** The schema types `x`/`y` as bare numbers and
+  says nothing about their range, so this had to be measured: a full-body 128x256 sprite came back
+  with every joint between 0.4 and 0.9. They therefore transfer to any canvas unchanged. Scaling
+  them by a size ratio — the obvious-looking thing to do with a 4x-upscaled stored sprite — puts
+  every joint in the top-left corner and the generation comes back as noise (measured 2026-08-22).
+- **A pose reference carries the pose and nothing else.** This is the opposite of `style_image`,
+  which drags the reference's subject along with it. Measured 2026-08-22
+  (`var/assets/experiments/round-4b-skeleton/`, `round-4c-skeleton-square/`): a walking blue-cloaked
+  girl was used to pose a prompt asking for an armoured knight, and the result was a knight in the
+  reference's stride — never the girl. Keypoints are coordinates, so there is no subject in them to
+  leak.
+- **The canvas decides whether any of it works, and the provider's warning understates it.** Same
+  reference, same seed, same prompt:
+
+  | canvas | no keypoints | `skeletonGuidance` 4.0 |
+  | --- | --- | --- |
+  | 32x64 (the character ratio) | messy, smeared figure | **noise, no figure at all** |
+  | 64x64 (keypoint-friendly) | clean knight | clean knight in the reference's stride |
+
+  Posing therefore requires a square canvas — and the server now grows the request to one rather
+  than refusing or warning, so a `character` is posable despite its 1:2 ratio. See the canvas rule
+  above.
+- High guidance costs quality even on a good canvas: the 64x64 posed knight is muddier and darker
+  than the unposed one. Turn `skeletonGuidance` down before turning it up.
+- `/estimate-skeleton` is billed separately from the generation — measured at 0.1 generations
+  against the quota — so a posed request reports both in `imagesGenerated`.
+- `paletteLock: false` turns the lock off for one asset — a boss with its own scheme, a colour-coded
+  pickup. It is on by default. The palette biases rather than forces: the slime stayed green in both
+  arms, because `color_image` is a sampling reference, not a clamp.
+- `text_guidance_scale` is how literally the description is followed, 1-20, provider default 8.
+  Both generation paths send the same value. The MCP path previously hard-coded 16 while the REST
+  path sent nothing at all, so two assets in one game were generated at different strengths.
+- `tileSize` is an enum, not a range: `TileSize` declares 16, 32, and 64, and 64 additionally
+  requires a `pro` mode this server never sends, so only 16 and 32 are accepted. Values such as 24
+  and 48 sit inside the old 16-64 range and are still rejected by the provider.
+- Negations never reach the provider's **description**, and on the bitforge path they are recovered
+  as `negative_description`. That field is live in `CreateImageBitforgeRequest`
+  (`Text description of what to avoid in the generated image`) and `(Deprecated)` in
+  `CreateImagePixfluxRequest`, so the same clause is usable on one path and inert on the other.
+  `promptMetrics.negativeDescription` reports what would be sent: `no city, without buildings`
+  becomes `city, buildings`, with the negation word taken off — the field wants the thing to avoid,
+  not the instruction to avoid it.
+- Negations never reach the provider description. PixelLab draws the noun and ignores the negation:
+  `no city, no buildings, no street` returned a city, while the same subject without those clauses
+  returned none, and the positive `empty background` worked. `prepare_asset_prompt` therefore
+  returns `avoid` answers as `exclusions` instead of writing them into the prompt, and prompt
+  composition removes clause-leading negations and reports them in `promptMetrics.removedNegations`.
+  Restate an exclusion positively in `mustHave`. An inline negation (`a knight with no helmet`) is
+  left alone, because dropping the clause would drop the subject with it.
+- A larger canvas biases the provider toward drawing a scene instead of a subject. 56x112 requests
+  returned an opaque city background five times out of five (opaque pixel ratio 0.46-0.76) where the
+  same prompt family at 32x64 returned a clean sprite. Prefer the smaller canvas for a subject, and
+  inspect opacity before accepting a large one.
+- `character` and `monster` prototypes are generated without a forced palette; only tile, prop, and
+  UI kinds lock the game ramp. A change to that game palette therefore does not affect character
+  generation.
 - Prompt composition may normalize and remove duplicated structured directives, but it must
   preserve the host-authored subject intent and report original/composed character counts. The
   provider prompt orders subject and required structure before exclusions, and keeps the shared
-  art style in PixelLab's structured controls instead of duplicating it in prose.
+  art style in PixelLab's structured controls **and** in prose: the controls are `(weakly guiding)`
+  and do not replace the description.
 - `generate_2d_animation` turns one approved prototype into an ordered frame sequence through
   PixelLab's `animate-with-text-v3`. The approved asset is submitted as the first frame, so the
   human gate that guards a static sprite also guards every frame derived from it. The endpoint
@@ -157,7 +449,9 @@ Server: `AssetGenMcpServer`.
   `readyForImport` marks any technically valid, human-approved asset. It also returns the next
   workflow action and escalates after three rejected attempts.
 - `list_assets` lets a new host-agent session recover prior pending, approved, or rejected records
-  by game and feature, including structured review feedback.
+  by game and feature. It defaults to compact pages of 20 records, accepts `limit` from 1 to 100,
+  and returns `nextCursor`. Compact records retain identity, state, path, and structured review
+  feedback. Use `detail=true` only for a page that needs full prompts and provenance.
 - The normal sequence is intake, one MCP prototype, human review, a revised intake when rejected,
   approval, and only then REST API variations.
 - Keep all output under `ASSET_ROOT`.
@@ -257,6 +551,13 @@ Server: `Asset3DGenMcpServer` (`asset3d.server`).
 Planning defines **what** a feature does; development defines **which files and types** implement
 it. Reject C# type names, file paths, and concrete MonoBehaviour names in specs. If code adds an
 unapproved game rule, ask whether the spec should change.
+
+S7 contamination findings remain fatal unless the host records an exact
+`contaminationAcceptance` entry with `cardId`, `guardId`, and a non-empty `reason`. The record means
+the named card text is only a cross-reference and the referenced system is absent from this game.
+It exempts only that card and guard pair; another card or another contamination guard still fails.
+The stored spec Markdown and exported feature prompt retain every acceptance record so development
+and QA can see the human judgment instead of silently dropping source guidance.
 
 ## Git
 
