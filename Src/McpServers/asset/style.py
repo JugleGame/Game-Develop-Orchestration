@@ -90,6 +90,11 @@ _MATERIALS: dict[str, tuple[float, float, float]] = {
     "metal": (210 / 360, 0.18, 1.12),
     "snow": (200 / 360, 0.14, 1.55),
     "lava": (12 / 360, 1.25, 0.95),
+    # Living-subject materials. Reachable only through ``character_palette``:
+    # ``render._MATERIAL_KEYWORDS`` names none of them, so a tile or prop can
+    # never be resolved to one.
+    "skin": (25 / 360, 0.55, 1.35),
+    "cloth": (330 / 360, 0.70, 0.95),
 }
 
 DEFAULT_MATERIAL = "grass"
@@ -184,6 +189,49 @@ class ArtStyle:
         saturation, _, outline_l = self._profile()
         hue = self._material_hue(material)
         return _hls(hue, _clamp(outline_l, 0.04, 0.30), _clamp(saturation * 0.45, 0, 1))
+
+    # How many swatches a character palette holds. Tiles and props take five,
+    # which is what made the locked ramp read as "too green, no character" on a
+    # living subject: skin, cloth, and metal cannot share four steps of one
+    # hue. ``color_image`` is a PNG with one pixel per colour, so the count is
+    # a design decision, not a provider limit.
+    CHARACTER_SWATCHES = 12
+
+    def character_palette(self) -> list[RGB]:
+        """This game's colours, wide enough for a living subject.
+
+        The identity ramp still leads — the first four entries are the same
+        ``character_ramp`` a sprite was always drawn from — but skin, metal,
+        and leather follow so the model has somewhere to put a face, a blade,
+        and a strap without borrowing the cloth hue for all three.
+
+        Every entry is derived from ``seed`` and ``art_style``, both of which
+        are persisted, so this needs no new stored field and a style.json
+        written before it existed still resolves.
+        """
+
+        cloth = self.character_ramp()
+        skin = self.material_ramp("skin")
+        metal = self.material_ramp("metal")
+        leather = self.material_ramp("wood")
+        ordered = [
+            cloth["shadow"],
+            cloth["base"],
+            cloth["light"],
+            cloth["highlight"],
+            skin["shadow"],
+            skin["base"],
+            skin["light"],
+            metal["base"],
+            metal["highlight"],
+            leather["shadow"],
+            leather["base"],
+            self.rgb("outline"),
+        ]
+        # A monochrome game collapses several of these onto the same grey.
+        # Duplicated swatches say nothing, so they are dropped rather than
+        # padding the count for its own sake.
+        return list(dict.fromkeys(ordered))
 
     def character_ramp(self) -> dict[str, RGB]:
         """Character ramp built from the game's own identity colours.

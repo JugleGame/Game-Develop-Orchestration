@@ -360,9 +360,12 @@ def _is_pixellab_asset(record: dict[str, Any]) -> bool:
 
 
 def _pixellab_palette(
-    style: Any, kind: render.AssetKind, prompt: str
+    style: Any,
+    kind: render.AssetKind,
+    prompt: str,
+    palette_lock: bool = True,
 ) -> list[tuple[int, int, int]] | None:
-    """The locked ``ArtStyle``'s ramp for this kind, as PixelLab's ``forced_palette``.
+    """The locked ``ArtStyle``'s ramp for this kind, as PixelLab's ``color_image``.
 
     PixelLab has no notion of "this game's look" between calls — each request
     is stateless. Reusing the game's own ramps (rather than inventing a
@@ -370,18 +373,27 @@ def _pixellab_palette(
     from the same game share a hue family instead of each call picking its
     own colours.
 
-    ``character``/``monster`` get no forced palette (``None``) — living
-    things need enough colour range to read distinct materials (skin, cloth,
-    fur) that a 5-7 swatch game ramp cannot cover. Measured (prompt-eval
-    2026-08-02, rounds 7-9): the locked ramp read as "too green, no
-    character" (5/10); dropping it entirely scored no worse (7/10, tied with
-    keeping it) while giving the subject actual colour variety. Tile/prop/UI
-    keep the lock — nothing there complained about the palette, and it's what
-    stops two props in the same game from reading as unrelated (12문서 §10-7).
+    ``character``/``monster`` used to get no palette at all. The recorded
+    reason was that a living thing needs more colour range than a five-swatch
+    ramp can hold — the locked ramp read as "too green, no character" (5/10)
+    while dropping it scored 7/10, tied with keeping it. A tie is thin ground
+    for giving up consistency, and the alternative that was assumed to cover
+    it does not exist: measured 2026-08-22 (see ``docs/contracts.md``),
+    ``style_image`` carries the reference's *subject*, not its look, so it
+    cannot make two different subjects share a game's palette. That left
+    characters and monsters — the assets whose style is most visible — with no
+    colour lock of any kind.
+
+    They now get ``ArtStyle.character_palette()``: the same identity ramp
+    first, then skin, metal, and leather, so the range objection is answered
+    without giving up the lock. ``palette_lock=False`` turns it off for one
+    asset.
     """
 
-    if kind in ("character", "monster"):
+    if not palette_lock:
         return None
+    if kind in ("character", "monster"):
+        return style.character_palette()
     if kind in ("tile", "prop"):
         material = render.material_for(prompt, kind)
         # Metal terms commonly name a visible colour (brass, copper, gold),
@@ -491,6 +503,7 @@ def _generate_prototype(
     grid_size: int | None = None,
     direction: str | None = None,
     kind_source: str = "inferred",
+    palette_lock: bool = True,
 ) -> dict[str, Any]:
     """Generate the reviewable style prototype through PixelLab's official MCP."""
 
@@ -549,7 +562,7 @@ def _generate_prototype(
                     "that changes the seed and the asset."
                 ),
             }
-    palette_rgb = _pixellab_palette(style, kind, prompt)
+    palette_rgb = _pixellab_palette(style, kind, prompt, palette_lock)
     palette = [f"#{red:02x}{green:02x}{blue:02x}" for red, green, blue in palette_rgb or []]
 
     try:
@@ -700,6 +713,7 @@ def generate_2d_sprite(
     artStyle: str | None = None,
     gridSize: int | None = None,
     direction: str | None = None,
+    paletteLock: bool = True,
 ) -> dict[str, Any]:
     """``assetKind`` is required — one of ``character``, ``monster``, ``tile``,
     ``prop``, ``icon``, ``ui_button``, ``ui_panel``.
@@ -709,6 +723,12 @@ def generate_2d_sprite(
     together, and the cost landed on generation credits and human review rather
     than on the omitted argument. ``prepare_asset_prompt`` already requires the
     same value.
+
+    ``paletteLock`` sends the game's own colours as PixelLab's ``color_image``.
+    It is on by default — that is what keeps two assets in one game from
+    picking unrelated colours. Turn it off for a single asset whose colours are
+    deliberately outside the palette (a boss with its own scheme, a
+    colour-coded pickup).
 
     ``gridSize`` overrides the game's pixel grid for this one asset.
 
@@ -732,6 +752,7 @@ def generate_2d_sprite(
         grid_size=gridSize,
         direction=direction,
         kind_source="explicit",
+        palette_lock=paletteLock,
     )
 
 
@@ -806,6 +827,7 @@ def generate_2d_variations(
     coveragePercentage: float | None = None,
     negativeDescription: str = "",
     direction: str | None = None,
+    paletteLock: bool = True,
 ) -> dict[str, Any]:
     """Expand an approved prototype using one to four approved style anchors.
 
@@ -939,7 +961,7 @@ def generate_2d_variations(
                     negative_description=negatives,
                     coverage_percentage=coveragePercentage,
                     seed=seed,
-                    forced_palette=_pixellab_palette(style, kind, prompt),
+                    forced_palette=_pixellab_palette(style, kind, prompt, paletteLock),
                     **_pixellab_style_params(style, kind, resolved_direction),
                 )
                 # No downsample: generated at the native canvas, so this is a
