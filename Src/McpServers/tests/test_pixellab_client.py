@@ -977,6 +977,88 @@ def test_bitforge_sends_the_style_reference_as_base64(monkeypatch):
     assert usage["generations"] == 1.0
 
 
+def test_a_matching_aspect_reference_is_only_scaled(monkeypatch):
+    """The ordinary case — a stored sprite is an upscaled copy of its own
+    canvas — must stay an exact integer downscale with no padding."""
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+    _bitforge_post(monkeypatch, captured)
+
+    source = Image.new("RGBA", (128, 256), (0, 0, 0, 0))
+    source.paste(Image.new("RGBA", (128, 256), (1, 2, 3, 255)), (0, 0))
+
+    pixellab_client.create_image_bitforge(
+        prompt="a knight",
+        width=32,
+        height=64,
+        init_image=source,
+        seed=9,
+    )
+
+    reference = Image.open(
+        io.BytesIO(base64.b64decode(captured["payload"]["init_image"]["base64"]))
+    )
+    assert reference.size == (32, 64)
+    # Every pixel still carries the subject: nothing was padded away.
+    assert reference.convert("RGBA").getchannel("A").getbbox() == (0, 0, 32, 64)
+
+
+def test_a_taller_reference_is_padded_rather_than_squashed(monkeypatch):
+    """Measured 2026-08-23: a 66x161 concept-art cutout stretched into 64x64
+    generated two and then three overlapping figures, at init_image_strength
+    900 and 600 alike. A squashed human reads as several humans."""
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+    _bitforge_post(monkeypatch, captured, size=(64, 64))
+
+    pixellab_client.create_image_bitforge(
+        prompt="a boy",
+        width=64,
+        height=64,
+        init_image=Image.new("RGBA", (66, 161), (1, 2, 3, 255)),
+        seed=9,
+    )
+
+    reference = Image.open(
+        io.BytesIO(base64.b64decode(captured["payload"]["init_image"]["base64"]))
+    )
+    assert reference.size == (64, 64)
+    left, top, right, bottom = reference.convert("RGBA").getchannel("A").getbbox()
+    # Scaled by one factor, so the subject keeps its 66:161 proportions.
+    assert (bottom - top) == 64
+    assert (right - left) == round(66 * 64 / 161)
+    # Bottom-centred: a side-view sprite stands on the bottom of its canvas.
+    assert bottom == 64
+    assert left == (64 - (right - left)) // 2
+
+
+def test_a_wider_reference_is_padded_too(monkeypatch):
+    """The rule is about disagreeing aspects, not about tall references."""
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+    _bitforge_post(monkeypatch, captured, size=(64, 64))
+
+    pixellab_client.create_image_bitforge(
+        prompt="a signboard",
+        width=64,
+        height=64,
+        style_image=Image.new("RGBA", (128, 32), (1, 2, 3, 255)),
+        seed=9,
+    )
+
+    reference = Image.open(
+        io.BytesIO(base64.b64decode(captured["payload"]["style_image"]["base64"]))
+    )
+    assert reference.size == (64, 64)
+    left, top, right, bottom = reference.convert("RGBA").getchannel("A").getbbox()
+    assert (right - left) == 64
+    assert (bottom - top) == 16
+    assert bottom == 64
+
+
 def test_bitforge_resizes_an_init_image_to_the_canvas_too(monkeypatch):
     monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
     captured = {}

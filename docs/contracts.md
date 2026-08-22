@@ -217,9 +217,19 @@ Server: `AssetGenMcpServer`.
   `style_image must be size (64, 32), not torch.Size([256, 128])` (measured 2026-08-22). The client
   therefore resizes `style_image` and `init_image` to the requested canvas before sending. Stored
   sprites are upscaled copies of their generated canvas, so this is normally an exact integer
-  downscale back to the pixels the reference was drawn at. A reference whose *aspect* differs from
-  the target — a 3:2 `ui_panel` anchoring a 1:1 prop — is squashed, so anchor a kind with its own
-  aspect ratio.
+  downscale back to the pixels the reference was drawn at.
+- **A reference whose aspect differs from the canvas is padded, not stretched.** `_fit_to_canvas`
+  scales it by one factor and leaves the rest transparent, placing the subject **bottom-centred** —
+  a side-view sprite stands on the bottom of its canvas, which is where the generator is being
+  asked to put it. Measured 2026-08-23: `var/concept-art/daeume/hero-sprite.png` is 66x161 with no
+  transparent margin, and stretching it into a 64x64 character request generated two and then three
+  overlapping figures at `initImageStrength` 900 and 600 alike — the strength was not the problem,
+  the squashed reference was. A squashed human reads as several humans. References that already
+  match the canvas aspect, which is every stored sprite of the same kind, take the plain resize and
+  are unchanged by this.
+- `generate-with-style-v2` needs no padding: it deduces the output size from the references instead
+  of demanding a canvas, so each one is scaled by a single factor to the 512px cap and never
+  squashed. Only bitforge has to match an exact canvas.
 - **Measured, and it is not what "style transfer" suggests** (2026-08-22, shared seed per prompt,
   `var/assets/experiments/round-1-character/` and `round-1-prop/`). `style_image` carries the
   reference's *subject*, not only its look, and it outranks the description:
