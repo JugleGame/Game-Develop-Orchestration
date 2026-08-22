@@ -120,9 +120,20 @@ Server: `AssetGenMcpServer`.
   requires the subject, intended use and readable scale, composition, must-have visual structure,
   and shared art style. Revision briefs additionally require what to preserve and a positively
   stated replacement for what should change.
-- Generation takes a game ID, feature ID, host-authored prompt, and an optional explicit
-  `assetKind`. Explicit kinds take precedence over keyword inference and should be used for
-  ambiguous prompts.
+- **`generate_2d_sprite` requires `assetKind`.** It is typed as the `AssetKind` literal, so the
+  accepted values are published in the tool schema and a missing or wrong one is refused by the
+  schema before any provider call. The kind is not guessed from prompt wording, because one wrong
+  guess sets the canvas ratio, the forced palette, the shading, and the framing together — and that
+  is paid for in generation credits and human review time, not by the caller who omitted an
+  argument. `prepare_asset_prompt` already requires the same value.
+- `generate_ui_asset` still infers when `assetKind` is omitted. Every outcome there is a UI kind, so
+  a wrong guess picks the wrong UI shape rather than turning a character into a tile.
+- Responses and provenance carry `kindSource` / `kind_source`: `"explicit"` when the caller named
+  the kind, `"inferred"` when it came from keyword matching.
+- `render.classify`'s keyword table no longer carries per-keyword exceptions. The one-syllable `적`
+  is gone (it matched inside ordinary words such as `도적`, and forced a third matching rule), as is
+  `cta`. English keywords are still matched on word boundaries, because they appear inside unrelated
+  words — `tile` in `volatile`, `rock` in `rocket`.
 - `generate_2d_sprite` and `generate_ui_asset` create the initial reviewable prototype through
   PixelLab's official remote MCP server.
 - Canvas size comes from the game's locked pixel grid times a per-kind ratio. `generate_2d_sprite`

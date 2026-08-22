@@ -304,7 +304,7 @@ async def test_generate_2d_sprite_reports_the_images_it_consumed(monkeypatch, tm
     async with Client(server.mcp) as client:
         result = await client.call_tool(
             "generate_2d_sprite",
-            {"featureId": "f-1", "prompt": "a rock", "gameId": "t-pixellab-images"},
+            {"featureId": "f-1", "prompt": "a rock", "gameId": "t-pixellab-images", "assetKind": "prop"},
         )
 
     assert result.is_error is False
@@ -322,7 +322,7 @@ async def test_generate_2d_sprite_without_key_is_a_tool_error(monkeypatch, tmp_p
     async with Client(server.mcp) as client:
         result = await client.call_tool(
             "generate_2d_sprite",
-            {"featureId": "f-1", "prompt": "a rock", "gameId": "t-pixellab-nokey"},
+            {"featureId": "f-1", "prompt": "a rock", "gameId": "t-pixellab-nokey", "assetKind": "prop"},
         )
 
     assert result.is_error is True
@@ -597,7 +597,7 @@ async def test_failure_before_billing_lets_the_same_prompt_retry(monkeypatch, tm
 
     from mcp import Client
 
-    arguments = {"featureId": "f-1", "prompt": "a rock", "gameId": "t-retry"}
+    arguments = {"featureId": "f-1", "prompt": "a rock", "gameId": "t-retry", "assetKind": "prop"}
     async with Client(server.mcp) as client:
         failed = await client.call_tool("generate_2d_sprite", arguments)
     assert failed.is_error is True
@@ -645,7 +645,7 @@ async def test_failure_after_a_job_started_keeps_the_claim_and_says_what_to_do(
 
     from mcp import Client
 
-    arguments = {"featureId": "f-1", "prompt": "a rock", "gameId": "t-billed"}
+    arguments = {"featureId": "f-1", "prompt": "a rock", "gameId": "t-billed", "assetKind": "prop"}
     async with Client(server.mcp) as client:
         failed = await client.call_tool("generate_2d_sprite", arguments)
         blocked = await client.call_tool("generate_2d_sprite", arguments)
@@ -680,7 +680,7 @@ async def test_a_completed_claim_still_returns_the_existing_asset(monkeypatch, t
 
     from mcp import Client
 
-    arguments = {"featureId": "f-1", "prompt": "a rock", "gameId": "t-completed"}
+    arguments = {"featureId": "f-1", "prompt": "a rock", "gameId": "t-completed", "assetKind": "prop"}
     async with Client(server.mcp) as client:
         first = await client.call_tool("generate_2d_sprite", arguments)
         second = await client.call_tool("generate_2d_sprite", arguments)
@@ -984,3 +984,47 @@ def test_an_exact_repeat_is_still_collapsed():
     plan = prompting.compose("a mossy rock, a mossy rock, flat shading", "prop")
 
     assert plan.prompt.count("a mossy rock") == 1
+
+
+# --------------------------------------------------------------------------
+# The keyword table no longer needs per-keyword exceptions (issue #71)
+# --------------------------------------------------------------------------
+
+
+def test_a_one_syllable_korean_keyword_no_longer_forces_a_special_rule():
+    """``적`` matched inside ordinary words such as ``도적``, so ``_matches``
+    carried a third branch just for it. The keyword is gone instead."""
+
+    from asset import render as render_module
+
+    assert render_module.classify("도적 캐릭터") == "character"
+    assert render_module.classify("적군 무리") == "monster"
+
+    monster_keywords = dict(render_module._KIND_KEYWORDS)["monster"]
+    assert "적" not in monster_keywords
+    assert "적군" in monster_keywords
+    assert not any(len(word) == 1 for word in monster_keywords)
+
+
+def test_english_keywords_still_match_on_word_boundaries():
+    """``cta`` was dropped, but the rule it motivated is kept: English
+    keywords appear inside unrelated words (``tile`` in ``volatile``)."""
+
+    from asset import render as render_module
+
+    assert render_module.classify("a volatile potion") == "prop"
+    assert render_module.classify("a mossy tile") == "tile"
+    assert "cta" not in dict(render_module._KIND_KEYWORDS)["ui_button"]
+
+
+def test_matches_takes_only_the_keyword_and_the_prompt():
+    """The word list argument existed solely for the one-syllable branch."""
+
+    import inspect
+
+    from asset import render as render_module
+
+    assert list(inspect.signature(render_module._matches).parameters) == [
+        "keyword",
+        "lowered",
+    ]

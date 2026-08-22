@@ -157,7 +157,12 @@ async def test_invalid_explicit_asset_kind_is_a_validation_error():
 
     assert result.is_error is True
     text = "".join(getattr(block, "text", "") for block in result.content)
-    assert '"errorCode": 1000' in text
+    # Refused by the tool schema rather than by a hand-written check: the
+    # argument is typed as the AssetKind literal, so the accepted values are
+    # published in the schema and the rejection names them.
+    assert "portrait" in text
+    for kind in ("character", "monster", "tile", "prop", "icon"):
+        assert kind in text
 
 
 @pytest.mark.parametrize(
@@ -175,6 +180,7 @@ async def test_generation_rejects_path_like_identifiers(field, value):
         "featureId": "f-safe",
         "gameId": "g-safe",
         "prompt": "a lantern prop",
+        "assetKind": "prop",
     }
     arguments[field] = value
 
@@ -197,7 +203,7 @@ async def test_generate_2d_sprite_returns_asset_path_in_structured_content():
     async with session() as client:
         result = await client.call_tool(
             "generate_2d_sprite",
-            {"featureId": "f-1", "prompt": "player character", "gameId": "t-structured"},
+            {"featureId": "f-1", "prompt": "player character", "gameId": "t-structured", "assetKind": "character"},
         )
 
     assert result.is_error is False
@@ -230,7 +236,7 @@ async def test_validation_failure_carries_error_code_1000():
 
     async with session() as client:
         result = await client.call_tool(
-            "generate_2d_sprite", {"featureId": "", "prompt": "x", "gameId": "t-err"}
+            "generate_2d_sprite", {"featureId": "", "prompt": "x", "gameId": "t-err", "assetKind": "prop"}
         )
 
     assert result.is_error is True
@@ -269,7 +275,7 @@ async def test_style_is_locked_after_first_use():
 async def test_same_inputs_regenerate_identical_bytes():
     """Reproducibility: a rejected asset can be regenerated exactly."""
 
-    args = {"featureId": "f-repro", "prompt": "a tree prop", "gameId": "t-repro"}
+    args = {"featureId": "f-repro", "prompt": "a tree prop", "gameId": "t-repro", "assetKind": "prop"}
     async with session() as client:
         first = await client.call_tool("generate_2d_sprite", args)
         first_bytes = Path(first.structured_content["assetPath"]).read_bytes()
@@ -326,6 +332,7 @@ async def test_variation_batch_requires_an_approved_mcp_prototype(monkeypatch):
             {
                 "featureId": "f-batch-source",
                 "prompt": "treasure chest prop",
+                "assetKind": "prop",
                 "gameId": "t-batch-approval",
             },
         )
@@ -372,6 +379,7 @@ async def test_variation_batch_uses_approved_style_references(monkeypatch):
             {
                 "featureId": "f-batch-source",
                 "prompt": "treasure chest prop",
+                "assetKind": "prop",
                 "gameId": "t-batch-style",
                 "artStyle": "dark fantasy pixel art",
             },
@@ -434,6 +442,7 @@ async def test_variation_batch_rejects_unapproved_style_reference(monkeypatch):
             {
                 "featureId": "f-approved",
                 "prompt": "chest prop",
+                "assetKind": "prop",
                 "gameId": "t-style-gate",
             },
         )
@@ -442,6 +451,7 @@ async def test_variation_batch_rejects_unapproved_style_reference(monkeypatch):
             {
                 "featureId": "f-pending",
                 "prompt": "key prop",
+                "assetKind": "prop",
                 "gameId": "t-style-gate",
             },
         )
@@ -761,7 +771,7 @@ async def test_generated_assets_start_pending_and_can_be_reviewed():
     async with session() as client:
         created = await client.call_tool(
             "generate_2d_sprite",
-            {"featureId": "f-rev", "prompt": "player character", "gameId": "t-review"},
+            {"featureId": "f-rev", "prompt": "player character", "gameId": "t-review", "assetKind": "character"},
         )
         asset_id = created.structured_content["assetId"]
         assert created.structured_content["status"] == "pending"
@@ -786,7 +796,7 @@ async def test_rejected_asset_is_kept_for_inspection():
     async with session() as client:
         created = await client.call_tool(
             "generate_2d_sprite",
-            {"featureId": "f-rej", "prompt": "a rock", "gameId": "t-reject"},
+            {"featureId": "f-rej", "prompt": "a rock", "gameId": "t-reject", "assetKind": "prop"},
         )
         rejected = await client.call_tool(
             "review_asset",
@@ -824,7 +834,7 @@ async def test_every_asset_records_pixellab_provenance():
     async with session() as client:
         created = await client.call_tool(
             "generate_2d_sprite",
-            {"featureId": "f-prov", "prompt": "a bush", "gameId": "t-prov"},
+            {"featureId": "f-prov", "prompt": "a bush", "gameId": "t-prov", "assetKind": "prop"},
         )
 
     root = Path(created.structured_content["assetPath"]).parents[2]
@@ -925,6 +935,7 @@ async def test_review_never_moves_the_file_unity_imported(approved):
             {
                 "featureId": "f-stable",
                 "prompt": "a rock",
+                "assetKind": "prop",
                 "gameId": f"t-stable-{approved}",
             },
         )
@@ -947,7 +958,7 @@ async def test_review_status_is_recorded_in_the_manifest_not_the_path():
     async with session() as client:
         created = await client.call_tool(
             "generate_2d_sprite",
-            {"featureId": "f-meta", "prompt": "a tree", "gameId": "t-meta"},
+            {"featureId": "f-meta", "prompt": "a tree", "gameId": "t-meta", "assetKind": "prop"},
         )
         asset_id = created.structured_content["assetId"]
         reviewed = await client.call_tool(
@@ -989,10 +1000,10 @@ async def test_omitting_game_id_collides_two_games_onto_one_project():
 
     async with session() as client:
         first = await client.call_tool(
-            "generate_2d_sprite", {"featureId": "f-collide", "prompt": "a knight"}
+            "generate_2d_sprite", {"featureId": "f-collide", "prompt": "a knight", "assetKind": "prop"}
         )
         second = await client.call_tool(
-            "generate_2d_sprite", {"featureId": "f-collide", "prompt": "a knight"}
+            "generate_2d_sprite", {"featureId": "f-collide", "prompt": "a knight", "assetKind": "prop"}
         )
 
     assert first.structured_content["gameId"] == second.structured_content["gameId"] == "default"
@@ -1044,6 +1055,7 @@ async def test_art_style_argument_reaches_the_palette():
             {
                 "featureId": "f-style",
                 "prompt": "a knight",
+                "assetKind": "prop",
                 "gameId": "t-artstyle",
                 "artStyle": "dark fantasy",
             },
@@ -1095,6 +1107,7 @@ async def _approved_prototype(client, game_id: str, feature_id: str) -> str:
         {
             "featureId": feature_id,
             "prompt": "treasure chest prop",
+            "assetKind": "prop",
             "gameId": game_id,
             "artStyle": "dark fantasy pixel art",
         },
@@ -1114,6 +1127,7 @@ async def test_animation_requires_an_approved_first_frame(monkeypatch):
             {
                 "featureId": "f-anim-source",
                 "prompt": "treasure chest prop",
+                "assetKind": "prop",
                 "gameId": "t-anim-gate",
             },
         )
@@ -1282,3 +1296,101 @@ async def test_animation_reports_sequence_metrics_and_anchors(monkeypatch):
     # Every frame carries the anchor Unity needs to cancel that drift.
     assert all(len(frame["footAnchor"]) == 2 for frame in body["frames"])
     assert body["frames"][0]["footAnchor"] != body["frames"][-1]["footAnchor"]
+
+
+# --------------------------------------------------------------------------
+# assetKind is stated, not guessed (issue #71)
+# --------------------------------------------------------------------------
+
+
+async def test_sprite_without_an_asset_kind_is_refused_before_any_call(monkeypatch):
+    """A wrong guess set the canvas ratio, palette, shading, and framing at
+    once, and that bill is paid in generation credits and review time."""
+
+    def _unexpected(**kwargs):
+        raise AssertionError("PixelLab must not be called without an assetKind")
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _unexpected)
+    async with session() as client:
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {"featureId": "f-nokind", "prompt": "player character", "gameId": "t-nokind"},
+        )
+
+    assert result.is_error is True
+    message = "".join(getattr(block, "text", "") for block in result.content)
+    assert "assetKind" in message
+
+    # The allowed values travel in the tool schema rather than in the error,
+    # so a caller reads them before spending a call rather than after.
+    async with session() as client:
+        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+    schema = tools["generate_2d_sprite"].input_schema
+    assert "assetKind" in schema["required"]
+    allowed = json.dumps(schema["properties"]["assetKind"])
+    for kind in ("character", "monster", "tile", "prop", "icon"):
+        assert kind in allowed
+
+
+async def test_an_explicit_kind_beats_the_prompt_wording():
+    """"a lone figure" reads as a prop to the keyword table. The caller says
+    otherwise and the caller wins — that is the whole point of the argument."""
+
+    async with session() as client:
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-explicit",
+                "prompt": "a lone figure",
+                "assetKind": "character",
+                "gameId": "t-explicit",
+            },
+        )
+
+    body = result.structured_content
+    assert result.is_error is False
+    assert body["kind"] == "character"
+    assert body["kindSource"] == "explicit"
+    assert classify("a lone figure") == "prop"
+
+
+async def test_the_kind_source_is_recorded_in_provenance():
+    from asset import server
+
+    async with session() as client:
+        created = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-source",
+                "prompt": "treasure chest prop",
+                "assetKind": "prop",
+                "gameId": "t-source",
+            },
+        )
+        inspected = await client.call_tool(
+            "inspect_asset", {"assetId": created.structured_content["assetId"]}
+        )
+
+    assert inspected.is_error is False
+    manifest = json.loads(
+        (server.ROOT / "manifests" / "t-source.json").read_text(encoding="utf-8")
+    )
+    record = manifest["assets"][created.structured_content["assetId"]]
+    assert record["provenance"]["kind_source"] == "explicit"
+
+
+async def test_ui_assets_still_infer_between_button_panel_and_icon():
+    """``generate_ui_asset`` only ever produces UI, so narrowing between three
+    UI kinds by wording cannot pick a wrong canvas ratio family."""
+
+    async with session() as client:
+        result = await client.call_tool(
+            "generate_ui_asset",
+            {"featureId": "f-ui", "prompt": "an inventory panel", "gameId": "t-ui-infer"},
+        )
+
+    body = result.structured_content
+    assert result.is_error is False
+    assert body["kind"] == "ui_panel"
+    assert body["kindSource"] == "inferred"
+

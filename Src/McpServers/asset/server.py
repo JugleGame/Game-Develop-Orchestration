@@ -327,15 +327,22 @@ def _direction(value: str | None, feature_id: str) -> str | None:
     return direction
 
 
+ASSET_KINDS: tuple[str, ...] = get_args(render.AssetKind)
+
+
 def _asset_kind(value: str | None) -> render.AssetKind | None:
     """Validate an optional explicit kind before prompt classification."""
 
     if value is None:
         return None
     normalized = _require(value, "assetKind")
-    if normalized not in get_args(render.AssetKind):
-        raise tool_error(VALIDATION_ERROR, f"unsupported assetKind: {normalized}")
+    if normalized not in ASSET_KINDS:
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"unsupported assetKind: {normalized}; use one of {ASSET_KINDS}",
+        )
     return normalized  # type: ignore[return-value]
+
 
 
 def _pixellab_provenance(
@@ -625,6 +632,7 @@ def _generate_prototype(
     art_style: str | None = None,
     grid_size: int | None = None,
     direction: str | None = None,
+    kind_source: str = "inferred",
 ) -> dict[str, Any]:
     """Generate the reviewable style prototype through PixelLab's official MCP."""
 
@@ -653,6 +661,7 @@ def _generate_prototype(
                 "assetPath": existing_claim.get("assetPath"),
                 "assetId": asset_id,
                 "kind": kind,
+                "kindSource": kind_source,
                 "gameId": resolved_game,
                 "status": PENDING,
                 "duplicateBlocked": True,
@@ -726,6 +735,7 @@ def _generate_prototype(
         "generator": "https://api.pixellab.ai/mcp",
         "tool": tool_name,
         "kind": kind,
+        "kind_source": kind_source,
         "derived_from": f"seed={seed} feature={feature_id}",
         "usage": usage,
         "prompt": prompt_plan.metadata(),
@@ -760,6 +770,7 @@ def _generate_prototype(
         "assetPath": str(out_path),
         "assetId": asset_id,
         "kind": kind,
+        "kindSource": kind_source,
         "gameId": resolved_game,
         "status": PENDING,
         "workflowStage": "prototype",
@@ -815,22 +826,33 @@ def prepare_asset_prompt(
 @mcp.tool(
     description=(
         "Generate the initial 2D style prototype through PixelLab's official MCP. "
-        "Approve it before requesting API variations. Pass gridSize to generate one "
-        "asset at a different in-world size without changing the game's locked grid, "
-        "and direction to turn one asset without changing which way the game faces."
+        "assetKind is required: it decides the canvas ratio, palette, shading, and "
+        "framing, so it is not guessed from prompt wording. Approve the result before "
+        "requesting API variations. Pass gridSize to generate one asset at a different "
+        "in-world size without changing the game's locked grid, and direction to turn "
+        "one asset without changing which way the game faces."
     )
 )
 @expects_dict_return
 def generate_2d_sprite(
     featureId: str,
     prompt: str,
+    assetKind: render.AssetKind,
     gameId: str | None = None,
     artStyle: str | None = None,
-    assetKind: str | None = None,
     gridSize: int | None = None,
     direction: str | None = None,
 ) -> dict[str, Any]:
-    """``gridSize`` overrides the game's pixel grid for this one asset.
+    """``assetKind`` is required — one of ``character``, ``monster``, ``tile``,
+    ``prop``, ``icon``, ``ui_button``, ``ui_panel``.
+
+    It used to be optional and inferred from prompt keywords. One wrong guess
+    set the canvas ratio, the forced palette, the shading, and the framing
+    together, and the cost landed on generation credits and human review rather
+    than on the omitted argument. ``prepare_asset_prompt`` already requires the
+    same value.
+
+    ``gridSize`` overrides the game's pixel grid for this one asset.
 
     Same density, different in-world size: a 32 grid character generates
     32x64, a 56 grid character 56x112, and both upscale by the same factor.
@@ -851,6 +873,7 @@ def generate_2d_sprite(
         art_style=artStyle,
         grid_size=gridSize,
         direction=direction,
+        kind_source="explicit",
     )
 
 
@@ -863,12 +886,23 @@ def generate_ui_asset(
     artStyle: str | None = None,
     assetKind: str | None = None,
 ) -> dict[str, Any]:
-    kind = _asset_kind(assetKind) or render.classify(prompt)
+    explicit = _asset_kind(assetKind)
+    kind = explicit or render.classify(prompt)
     if not kind.startswith("ui_") and kind != "icon":
         if assetKind is not None:
             raise tool_error(VALIDATION_ERROR, "generate_ui_asset requires a UI assetKind")
         kind = "ui_panel"  # this tool always produces UI, whatever the wording
-    return _generate_prototype(featureId, prompt, gameId, forced_kind=kind, art_style=artStyle)
+    # Inference is safe here in a way it was not for sprites: every outcome is
+    # a UI kind, so a wrong guess picks the wrong UI shape rather than turning
+    # a character into a tile.
+    return _generate_prototype(
+        featureId,
+        prompt,
+        gameId,
+        forced_kind=kind,
+        art_style=artStyle,
+        kind_source="explicit" if explicit else "inferred",
+    )
 
 
 #: Only these carry a style reference the provider can actually weigh, and
