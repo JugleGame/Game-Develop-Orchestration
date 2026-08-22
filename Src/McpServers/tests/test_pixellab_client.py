@@ -490,6 +490,30 @@ def test_create_animation_rejects_a_frame_count_the_provider_refuses(monkeypatch
 
 
 # --------------------------------------------------------------------------
+# TaskGroup failures must name the error, not the group (#58)
+# --------------------------------------------------------------------------
+
+
+def test_flatten_exception_spells_out_nested_group_leaves():
+    inner = ExceptionGroup("inner", [ValueError("image size must be >= 32")])
+    outer = ExceptionGroup("unhandled errors in a TaskGroup", [inner])
+
+    flattened = pixellab_client._flatten_exception(outer)
+
+    assert flattened == "ValueError: image size must be >= 32"
+    assert "TaskGroup" not in flattened
+
+
+def test_flatten_exception_keeps_a_plain_exception_readable():
+    assert pixellab_client._flatten_exception(RuntimeError("boom")) == "RuntimeError: boom"
+
+
+def test_pixellab_unavailable_defaults_to_not_billable():
+    assert pixellab_client.PixelLabUnavailable("nope").job_started is False
+    assert pixellab_client.PixelLabUnavailable("nope", job_started=True).job_started is True
+
+
+# --------------------------------------------------------------------------
 # Structured style values are checked against the tool's own enum (#59)
 # --------------------------------------------------------------------------
 

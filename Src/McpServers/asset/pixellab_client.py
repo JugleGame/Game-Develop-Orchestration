@@ -58,7 +58,36 @@ class PixelLabUnavailable(Exception):
     There is nothing to fall back to: PixelLab is the only generation path
     (``asset/server.py::_generate_image``), so callers turn this into an MCP
     code-3000 tool error rather than drawing something else.
+
+    ``job_started`` says whether PixelLab had already accepted a remote job
+    when this failed. The caller uses it to decide whether a retry may be
+    billed twice (``asset/server.py::_generate_prototype``).
     """
+
+    def __init__(self, message: str, *, job_started: bool = False) -> None:
+        super().__init__(message)
+        self.job_started = job_started
+
+
+def _flatten_exception(exc: BaseException) -> str:
+    """Spell out an ``ExceptionGroup``'s leaves instead of its own summary.
+
+    ``async with`` on a TaskGroup raises a group whose ``str`` is only
+    "unhandled errors in a TaskGroup (1 sub-exception)". The one thing the
+    caller needs — what actually went wrong — lives in ``.exceptions``, and
+    groups nest, so this walks all the way down to the leaves.
+    """
+
+    leaves: list[str] = []
+    pending: list[BaseException] = [exc]
+    while pending:
+        current = pending.pop(0)
+        nested = getattr(current, "exceptions", None)
+        if nested:
+            pending.extend(nested)
+            continue
+        leaves.append(f"{type(current).__name__}: {current}")
+    return "; ".join(leaves) or f"{type(exc).__name__}: {exc}"
 
 
 def is_configured() -> bool:
@@ -334,6 +363,9 @@ async def _generate_prototype_async(
         headers={"Authorization": f"Bearer {api_key}"},
         timeout=httpx2.Timeout(_TIMEOUT_SECONDS),
     )
+    # Once PixelLab hands back a job identifier the image may already be
+    # billed, so a failure past this point must not be retried blindly.
+    job_started = False
     try:
         async with client:
             async with streamable_http_client(MCP_URL, http_client=client) as (read, write):
@@ -395,6 +427,7 @@ async def _generate_prototype_async(
                             raise PixelLabUnavailable(
                                 f"PixelLab MCP tool {tool.name!r} returned no job identifier"
                             )
+                        job_started = True
 
                         for _ in range(60):
                             await anyio.sleep(5)
@@ -408,7 +441,8 @@ async def _generate_prototype_async(
                                     getattr(block, "text", "") for block in result.content
                                 )
                                 raise PixelLabUnavailable(
-                                    f"PixelLab MCP polling failed: {text[:400]}"
+                                    f"PixelLab MCP polling failed: {text[:400]}",
+                                    job_started=True,
                                 )
                             usage = _result_usage(result) or usage
                             encoded, image_url = _result_image(result)
@@ -416,12 +450,16 @@ async def _generate_prototype_async(
                                 break
                         else:
                             raise PixelLabUnavailable(
-                                f"PixelLab MCP job {identifier} did not finish within 300 seconds"
+                                f"PixelLab MCP job {identifier} did not finish within 300 seconds",
+                                job_started=True,
                             )
     except PixelLabUnavailable:
         raise
     except Exception as exc:
-        raise PixelLabUnavailable(f"PixelLab MCP request failed: {exc}") from exc
+        raise PixelLabUnavailable(
+            f"PixelLab MCP request failed: {_flatten_exception(exc)}",
+            job_started=job_started,
+        ) from exc
 
     if getattr(result, "is_error", False):
         text = " ".join(getattr(block, "text", "") for block in result.content)
