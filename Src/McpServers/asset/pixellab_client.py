@@ -127,7 +127,7 @@ class PixelLabUnavailable(Exception):
     """API key missing, request failed, or the response was malformed.
 
     There is nothing to fall back to: PixelLab is the only generation path
-    (``asset/server.py::_generate_image``), so callers turn this into an MCP
+    (``asset/server.py::_generate_prototype``), so callers turn this into an MCP
     code-3000 tool error rather than drawing something else.
 
     ``job_started`` says whether PixelLab had already accepted a remote job

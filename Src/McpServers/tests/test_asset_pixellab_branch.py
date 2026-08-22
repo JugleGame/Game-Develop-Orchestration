@@ -1,7 +1,9 @@
-"""Tests for the PixelLab routing wired into asset/server.py::_generate_image.
+"""Tests for the PixelLab routing wired into asset/server.py.
 
 There is no fallback tier: a missing key or a failing call is an MCP code-3000
-tool error, not a silent degrade to placeholder art.
+tool error, not a silent degrade to placeholder art. Those guarantees are
+exercised through the live tool, ``generate_2d_sprite``; the unreachable REST
+helper that used to carry them has been removed.
 """
 
 import json
@@ -12,7 +14,7 @@ import pytest
 from PIL import Image
 
 from asset import pixellab_client, prompting, server
-from asset.server import _generate_image, _pixellab_palette, _pixellab_style_params, _size_for
+from asset.server import _pixellab_palette, _pixellab_style_params, _size_for
 from asset.style import derive, load_or_create
 
 
@@ -104,54 +106,56 @@ def test_a_prepared_brief_still_gets_its_framing():
 
 
 # --------------------------------------------------------------------------
-# No key configured -> hard error, no generation
+# The live path carries the locked style, the palette, and the native size.
+#
+# These assertions used to be made against an unreachable REST helper. Moving
+# them onto ``generate_2d_sprite`` keeps the guarantee and tests the path that
+# actually runs.
 # --------------------------------------------------------------------------
 
 
-def test_no_api_key_raises_error(style, rng, monkeypatch):
-    monkeypatch.delenv("PIXELLAB_API_KEY", raising=False)
-
-    with pytest.raises(Exception) as excinfo:
-        _generate_image(style, "prop", rng, "a rock", "f-1")
-
-    assert '"errorCode": 3000' in str(excinfo.value)
-
-
-# --------------------------------------------------------------------------
-# Key configured, call succeeds -> PixelLab path
-# --------------------------------------------------------------------------
-
-
-def test_configured_and_successful_uses_pixellab(style, rng, monkeypatch):
+async def test_the_prototype_request_carries_the_locked_style_and_palette(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
     monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
-
     captured = {}
 
-    def _fake_generate(**kwargs):
+    def _fake_prototype(**kwargs):
         captured.update(kwargs)
-        return Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255)), {
-            "type": "usd",
-            "usd": 0.004,
-        }
+        image = Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255))
+        return image, {"type": "generations", "generations": 1.0}, "create_image"
 
-    monkeypatch.setattr(pixellab_client, "generate_image", _fake_generate)
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
 
-    image, provenance = _generate_image(style, "prop", rng, "a rock", "f-1")
+    from mcp import Client
 
-    # "prop" is a 1:1 kind, so native size == pixel_grid on both axes.
-    assert isinstance(image, Image.Image)
-    assert image.size == (style.pixel_grid * server._PIXELLAB_UPSCALE,) * 2
-    assert provenance["method"] == "pixellab"
-    assert provenance["usage"] == {"type": "usd", "usd": 0.004}
-    assert captured["prompt"] == "a rock"
-    assert captured["width"] == style.pixel_grid
-    assert captured["height"] == style.pixel_grid
+    async with Client(server.mcp) as client:
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-style",
+                "prompt": "a rock",
+                "assetKind": "prop",
+                "gameId": "t-style-reaches",
+            },
+        )
+
+    assert result.is_error is False
+    locked = load_or_create(tmp_path, "t-style-reaches", server.DEFAULT_ART_STYLE)
+    # "prop" is a 1:1 kind, so the native canvas is the grid on both axes.
+    assert captured["width"] == locked.pixel_grid
+    assert captured["height"] == locked.pixel_grid
     assert isinstance(captured["seed"], int)
-    assert captured["forced_palette"] == _pixellab_palette(style, "prop", "a rock")
-    assert captured["outline"] == "single color black outline"
-    assert captured["shading"] == "flat shading"
-    assert captured["detail"] == "medium detail"
-    assert captured["view"] == style.camera_view
+    assert captured["style_params"] == _pixellab_style_params(locked, "prop")
+    assert captured["style_params"]["shading"] == "flat shading"
+    assert captured["style_params"]["view"] == locked.camera_view
+    expected = _pixellab_palette(locked, "prop", "a rock") or []
+    assert captured["palette"] == [
+        f"#{red:02x}{green:02x}{blue:02x}" for red, green, blue in expected
+    ]
+    saved = Image.open(result.structured_content["assetPath"])
+    assert saved.size == (locked.pixel_grid * server._PIXELLAB_UPSCALE,) * 2
 
 
 # --------------------------------------------------------------------------
@@ -258,18 +262,35 @@ def test_no_kind_generates_above_pixellabs_400px_ceiling():
 # --------------------------------------------------------------------------
 
 
-def test_configured_but_failing_raises_error(style, rng, monkeypatch):
+async def test_a_failing_provider_call_is_a_code_3000_tool_error(monkeypatch, tmp_path):
+    """No fallback tier: a failed call fails loudly rather than degrading to
+    placeholder art, so a broken account never silently ships wrong assets."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
     monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
 
     def _boom(**kwargs):
         raise pixellab_client.PixelLabUnavailable("quota exceeded")
 
-    monkeypatch.setattr(pixellab_client, "generate_image", _boom)
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _boom)
 
-    with pytest.raises(Exception) as excinfo:
-        _generate_image(style, "prop", rng, "a rock", "f-1")
+    from mcp import Client
 
-    assert '"errorCode": 3000' in str(excinfo.value)
+    async with Client(server.mcp) as client:
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-boom",
+                "prompt": "a rock",
+                "assetKind": "prop",
+                "gameId": "t-boom",
+            },
+        )
+
+    assert result.is_error is True
+    text = "".join(getattr(block, "text", "") for block in result.content)
+    assert '"errorCode": 3000' in text
+    assert "quota exceeded" in text
 
 
 # --------------------------------------------------------------------------

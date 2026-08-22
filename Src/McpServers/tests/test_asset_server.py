@@ -29,10 +29,6 @@ def _pixellab_stub(monkeypatch):
 
     monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
 
-    def _fake_generate(*, prompt, width, height, seed, **kwargs):
-        colour = (seed & 0xFF, (seed >> 8) & 0xFF, (seed >> 16) & 0xFF, 255)
-        return Image.new("RGBA", (width, height), colour), {"type": "usd", "usd": 0.001}
-
     def _fake_prototype(*, prompt, width, height, seed, **kwargs):
         colour = (seed & 0xFF, (seed >> 8) & 0xFF, (seed >> 16) & 0xFF, 255)
         return (
@@ -41,7 +37,8 @@ def _pixellab_stub(monkeypatch):
             "create_image",
         )
 
-    monkeypatch.setattr(pixellab_client, "generate_image", _fake_generate)
+    # ``generate_image`` is no longer stubbed: no server path reaches it, so a
+    # stub for it would hide that rather than protect anything.
     monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
 
 
