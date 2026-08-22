@@ -473,25 +473,33 @@ async def test_variation_batch_rejects_unapproved_style_reference(monkeypatch):
     )
 
 
-async def test_variation_batch_accepts_a_character_through_bitforge(monkeypatch):
+async def test_variation_batch_accepts_a_character(monkeypatch):
     """Every character is a 1:2 kind, so every character prototype is
     non-square. The square gate made the server's only style-reference path
-    unusable for exactly the assets whose style matters most."""
+    unusable for exactly the assets whose style matters most.
+
+    It routes to ``generate-with-style-v2`` rather than bitforge: measured
+    2026-08-22, bitforge on a non-square canvas returns a broken figure, and a
+    batch cannot grow its canvas because the output has to stay the size of the
+    reference it varies.
+    """
 
     captured = []
 
-    def _fake_bitforge(**kwargs):
+    def _fake_variations(**kwargs):
         captured.append(kwargs)
+        width, height = kwargs["style_images"][0].size
         return (
-            Image.new("RGBA", (kwargs["width"], kwargs["height"]), (7, 8, 9, 255)),
+            [Image.new("RGBA", (width, height), (7, 8, 9, 255))],
             {"type": "generations", "generations": 1.0},
+            "job-char",
         )
 
-    def _unexpected_variations(**kwargs):
-        raise AssertionError("a single reference must not go through style-v2")
+    def _unexpected_bitforge(**kwargs):
+        raise AssertionError("a non-square canvas must not go through bitforge")
 
-    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _fake_bitforge)
-    monkeypatch.setattr(pixellab_client, "generate_with_style", _unexpected_variations)
+    monkeypatch.setattr(pixellab_client, "generate_with_style", _fake_variations)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _unexpected_bitforge)
     async with session() as client:
         prototype = await client.call_tool(
             "generate_2d_sprite",
@@ -513,30 +521,58 @@ async def test_variation_batch_accepts_a_character_through_bitforge(monkeypatch)
                 "prototypeAssetId": prototype.structured_content["assetId"],
                 "prompts": ["player character with a red cloak, no city"],
                 "gameId": "t-square-gate",
-                "styleStrength": 70,
-                "coveragePercentage": 85.0,
-                "negativeDescription": "text, watermark",
             },
         )
 
     body = result.structured_content
     assert result.is_error is False
-    assert body["endpoint"] == "create-image-bitforge"
+    assert body["endpoint"] == "generate-with-style-v2"
     assert len(captured) == 1
-    call = captured[0]
-    # Generated at the native canvas, not the 4x stored one.
-    assert (call["width"], call["height"]) == (32, 64)
-    assert call["style_strength"] == 70
-    assert call["coverage_percentage"] == 85.0
-    # Both sources land in the one field: the negation stripped out of the
-    # description, and whatever the caller passed explicitly (an `avoid`
-    # answer from prepare_asset_prompt is handed over this way).
-    assert "city" in call["negative_description"]
-    assert "watermark" in call["negative_description"]
-    assert call["style_image"].size == (128, 256)
-    # Stored at the same size as every other sprite in the game.
+    # The 1:2 prototype is accepted as a reference; nothing is squared or
+    # padded, so the batch stays the size of the asset it varies.
+    assert captured[0]["style_images"][0].size == (128, 256)
     with Image.open(body["assets"][0]["assetPath"]) as saved:
         assert saved.size == (128, 256)
+
+
+async def test_bitforge_only_arguments_are_refused_for_a_character_batch(monkeypatch):
+    """The controls exist only on the endpoint a non-square batch cannot use,
+    so they fail loudly instead of doing nothing."""
+
+    def _unexpected(**kwargs):
+        raise AssertionError("nothing should be spent on a rejected request")
+
+    monkeypatch.setattr(pixellab_client, "generate_with_style", _unexpected)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _unexpected)
+    async with session() as client:
+        prototype = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-char-knobs",
+                "prompt": "player character",
+                "assetKind": "character",
+                "gameId": "t-char-knobs",
+            },
+        )
+        await client.call_tool(
+            "review_asset",
+            {"assetId": prototype.structured_content["assetId"], "approved": True},
+        )
+        result = await client.call_tool(
+            "generate_2d_variations",
+            {
+                "featureId": "f-char-knobs-batch",
+                "prototypeAssetId": prototype.structured_content["assetId"],
+                "prompts": ["player character with a red cloak"],
+                "gameId": "t-char-knobs",
+                "styleStrength": 70,
+            },
+        )
+
+    assert result.is_error is True
+    message = "".join(getattr(block, "text", "") for block in result.content)
+    assert "styleStrength" in message
+    assert "square canvas" in message
 
 
 async def test_variation_batch_rejects_bitforge_only_arguments_on_the_other_path(

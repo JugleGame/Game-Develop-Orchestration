@@ -359,6 +359,30 @@ def _is_pixellab_asset(record: dict[str, Any]) -> bool:
     return method.startswith("pixellab")
 
 
+def _posable_canvas(width: int, height: int) -> tuple[int, int] | None:
+    """The canvas this request has to use for keypoints to work, or ``None``.
+
+    Stated as a rule about canvases rather than a rule about characters, so it
+    holds for any kind — including ones this repository has not defined yet.
+    PixelLab's keypoint-friendly sizes are all square
+    (``pixellab_client.SKELETON_FRIENDLY_SIZES``), so a posed request is grown
+    to the smallest square that still contains the canvas it asked for.
+
+    Growing rather than shrinking is what keeps the original measurement
+    intact: ``_KIND_SIZE_RATIO`` gives a character 64 rows because 48 cropped
+    the figure below the thigh, and 64x64 keeps every one of those rows. Only
+    the width changes. A canvas already square and friendly is returned
+    unchanged, so this is a no-op for ``monster``, ``prop``, ``icon``, and
+    ``tile`` at the usual grids.
+    """
+
+    needed = max(width, height)
+    for side in sorted(pixellab_client.SKELETON_FRIENDLY_SIZES):
+        if side >= needed:
+            return (side, side)
+    return None
+
+
 def _approved_reference(
     asset_id: str, game_id: str, field: str, feature_id: str
 ) -> Image.Image:
@@ -616,6 +640,7 @@ def _generate_prototype(
     skeleton_usage: dict[str, Any] = {}
     init_image = None
     warnings: list[str] = []
+    requested_size = (width, height)
     if posed:
         ceiling = pixellab_client.BITFORGE_SIDE_RANGE[1]
         if max(width, height) > ceiling:
@@ -626,6 +651,27 @@ def _generate_prototype(
                 f"poseFromAssetId and initAssetId need create-image-bitforge, which stops "
                 f"at {ceiling}px per side; this request is {width}x{height}",
                 featureId=feature_id,
+            )
+        # Grown for every bitforge request, not only the posed ones. Keypoints
+        # were the reason to look, but the control says the canvas is the
+        # problem by itself: measured 2026-08-22, a slim character asked for at
+        # 32x64 through bitforge with *no* keypoints came back as a detached hat
+        # floating above a body, while the same prompt at 64x64 came back as a
+        # complete figure. A non-square canvas is where this endpoint fails.
+        squared = _posable_canvas(width, height)
+        if squared is None:
+            warnings.append(
+                f"{width}x{height} has no square canvas to grow to within "
+                f"{pixellab_client.SKELETON_FRIENDLY_SIZES}; this endpoint is "
+                "unreliable on a non-square canvas"
+            )
+        elif squared != requested_size:
+            width, height = squared
+            warnings.append(
+                f"canvas grown from {requested_size[0]}x{requested_size[1]} to "
+                f"{width}x{height}: create-image-bitforge is unreliable on a "
+                "non-square canvas. Every row of the original is kept and only "
+                "the width changes"
             )
         if init_asset_id:
             init_image = _approved_reference(
@@ -758,6 +804,9 @@ def _generate_prototype(
     }
     if skeleton:
         result["skeletonKeypoints"] = len(skeleton)
+    if (width, height) != requested_size:
+        result["canvas"] = [width, height]
+        result["requestedCanvas"] = list(requested_size)
     if warnings:
         result["warnings"] = warnings
     images = _images_generated(usage)
@@ -936,10 +985,20 @@ def _variation_endpoint(reference_count: int, size: tuple[int, int]) -> str:
     at 200px per side, so a batch that needs several anchors or a bigger
     canvas falls back to ``generate-with-style-v2``, which takes one to four
     references and deduces the output size from them.
+
+    A **non-square** canvas falls back too. Measured 2026-08-22: a slim
+    character asked for at 32x64 through bitforge came back as a detached hat
+    floating above a body, while the same prompt at 64x64 came back whole. The
+    prototype path answers this by growing the canvas, which it can do because
+    it owns the size; a variation batch cannot, because its output has to stay
+    the size of the reference it varies. So it takes the endpoint that works at
+    that size instead, and gives up the controls bitforge would have added —
+    which the caller is told about rather than left to discover.
     """
 
     high = pixellab_client.BITFORGE_SIDE_RANGE[1]
-    if reference_count == 1 and max(size) <= high:
+    square = size[0] == size[1]
+    if reference_count == 1 and square and max(size) <= high:
         return _BITFORGE
     return _STYLE_V2
 
@@ -1058,9 +1117,10 @@ def generate_2d_variations(
             VALIDATION_ERROR,
             f"{', '.join(requested)} require the single-reference bitforge path, but this "
             f"batch uses {endpoint} ({len(style_images)} reference(s), "
-            f"{native_size[0]}x{native_size[1]} native). Pass one styleAssetIds-free reference "
-            f"no larger than {pixellab_client.BITFORGE_SIDE_RANGE[1]}px per side, or drop these "
-            "arguments.",
+            f"{native_size[0]}x{native_size[1]} native). That path needs exactly one "
+            f"reference on a square canvas no larger than "
+            f"{pixellab_client.BITFORGE_SIDE_RANGE[1]}px per side; drop these arguments or "
+            "vary a square-kind prototype instead.",
             featureId=feature_id,
         )
 
