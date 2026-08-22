@@ -184,9 +184,10 @@ Server: `AssetGenMcpServer`.
   exactly, which excluded every REST-generated asset and every approved variation; what matters is
   that a human approved a PixelLab image of this game, not which endpoint drew it. A tileset or
   other non-sprite kind is still refused, because its `asset_path` is a JSON index.
-- **There is no square requirement.** Every character is a 1:2 kind, so every character prototype
-  is non-square; the previous square gate made the server's only style-reference path unusable for
-  exactly the assets whose style matters most. Neither endpoint requires a square reference.
+- **There is no square requirement.** Neither endpoint requires a square reference. The gate that
+  used to demand one made the server's only style-reference path unusable for the assets whose
+  style matters most, back when `character` was a 1:2 kind. It is square now, so a single-reference
+  character batch reaches bitforge and keeps that endpoint's controls.
 - The batch picks its endpoint from the reference count and the native canvas:
 
   | condition | endpoint | what it gives up |
@@ -217,7 +218,7 @@ Server: `AssetGenMcpServer`.
   therefore resizes `style_image` and `init_image` to the requested canvas before sending. Stored
   sprites are upscaled copies of their generated canvas, so this is normally an exact integer
   downscale back to the pixels the reference was drawn at. A reference whose *aspect* differs from
-  the target — a 1:2 character anchoring a 1:1 prop — is squashed, so anchor a kind with its own
+  the target — a 3:2 `ui_panel` anchoring a 1:1 prop — is squashed, so anchor a kind with its own
   aspect ratio.
 - **Measured, and it is not what "style transfer" suggests** (2026-08-22, shared seed per prompt,
   `var/assets/experiments/round-1-character/` and `round-1-prop/`). `style_image` carries the
@@ -352,23 +353,37 @@ Server: `AssetGenMcpServer`.
   `_posable_canvas` grows a bitforge request to the **smallest square that still contains it**
   (`SKELETON_FRIENDLY_SIZES`: 16, 32, 64). Growing rather than shrinking is what keeps the original
   measurement intact — a character has 64 rows because 48 cropped the figure below the thigh, and
-  64x64 keeps every one of them; only the width changes. It is a no-op for `monster`, `prop`,
+  64x64 keeps every one of them; only the width changes. It is a no-op for `character`, `monster`, `prop`,
   `icon`, and `tile`, which are already square. A canvas with no square to grow to comes back with
   a warning instead.
-- **`_KIND_SIZE_RATIO` is unchanged.** The ordinary path (PixelLab's MCP prototype tool, and
-  pixflux) produces clean 32x64 characters and always has; only bitforge fails there. Changing the
-  ratio globally would have re-sized every character in every game to fix a problem that lives on
-  one endpoint.
+- **`character` is a square kind, and its rows come from `_KIND_MIN_GRID`.** `_KIND_SIZE_RATIO` is
+  `(1.0, 1.0)` and `_KIND_MIN_GRID["character"]` is 64, so the locked 32 grid a game picks for its
+  tiles still generates a character at 64x64. The ratio used to be 1:2, and the growth rule above
+  was the only way a character reached a square canvas — which capped out at 64, so `gridSize: 64`
+  generated an unusable 64x128 and an explicit non-square `canvas` was never grown at all (measured
+  2026-08-22, `daeume`: three character prototypes carrying a `concept:` reference, all rejected —
+  two clipped busts and one field of dithering noise). The original 1:2 measurement said 48 rows
+  crop a humanoid below the thigh, not that the canvas has to be tall; 64x64 keeps all 64 rows and
+  only widens. `gridSize` is not floored — that is the caller sizing one asset deliberately — and
+  `canvas` still leaves the ratio entirely.
+- The cost is that the ordinary pixflux path, which produced clean 32x64 characters and never had
+  bitforge's problem, now draws them at 64x64. That canvas measured clean through bitforge
+  (`alphaCoverage` 0.335, no background intrusion, no clipping warning); the same has not been
+  measured on pixflux, where the "larger canvas invites a scene" note below applies. Inspect
+  opacity on the first characters generated after this change.
+- `quality.inspect` needed no new thresholds: `subject_too_small` (3%) and `subject_may_be_clipped`
+  are ratios of the canvas, not pixel counts. Clipping warnings should get *rarer* — a 1:2 humanoid
+  nearly always touched the top and bottom edges.
 - A grown request reports `canvas` and `requestedCanvas` in its result, plus a `warnings` entry
   saying what changed, so the size difference from the game's other characters is stated rather
   than discovered.
 - `generate_2d_variations` cannot grow its canvas — its output has to stay the size of the asset it
   varies — so a non-square batch takes `generate-with-style-v2` instead, and the bitforge-only
-  arguments are refused with that reason. A 1:2 character batch therefore works, without the
-  controls bitforge would have added.
+  arguments are refused with that reason. That fallback now applies to `ui_button` and
+  `ui_panel` rather than to characters.
 - `generate_2d_sprite` accepts `canvas` as `[width, height]`, used exactly as given. It skips the
   kind's `_KIND_SIZE_RATIO` entirely, which `gridSize` cannot do — `gridSize` scales that ratio, so
-  a square `character` was unaskable before this. The per-side range check still applies, and the
+  a canvas off that ratio is unaskable without it. The per-side range check still applies, and the
   200px bitforge ceiling still applies to a request carrying a reference. `canvas` and `gridSize`
   set the same thing, so passing both is refused rather than ranked, and `canvas` joins the asset-id
   digest so the same prompt at another size is another asset rather than a blocked duplicate.
@@ -404,11 +419,12 @@ Server: `AssetGenMcpServer`.
 
   | canvas | no keypoints | `skeletonGuidance` 4.0 |
   | --- | --- | --- |
-  | 32x64 (the character ratio) | messy, smeared figure | **noise, no figure at all** |
+  | 32x64 (the character ratio at the time) | messy, smeared figure | **noise, no figure at all** |
   | 64x64 (keypoint-friendly) | clean knight | clean knight in the reference's stride |
 
   Posing therefore requires a square canvas — and the server now grows the request to one rather
-  than refusing or warning, so a `character` is posable despite its 1:2 ratio. See the canvas rule
+  than refusing or warning. `character` is square in its own right now, so it is posable directly
+  and the growth covers the kinds that are not (`ui_button`, `ui_panel`). See the canvas rule
   above.
 - High guidance costs quality even on a good canvas: the 64x64 posed knight is muddier and darker
   than the unposed one. Turn `skeletonGuidance` down before turning it up.

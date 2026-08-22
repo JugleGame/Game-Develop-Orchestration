@@ -279,15 +279,18 @@ def test_size_ratio_is_square_for_tile_so_it_still_tiles(style):
     assert _size_for(style, "tile") == (style.pixel_grid, style.pixel_grid)
 
 
-def test_size_ratio_is_taller_than_square_for_character(style):
-    """Measured 2026-08-02 (prompt-eval round 5): a 1:1 canvas crops a
-    humanoid at the knee. A character needs headroom a square grid doesn't
-    give it. Round 11 measured 1.5 as still too short — the figure cropped
-    below the thigh — and settled on 2.0 (8/10)."""
+def test_size_ratio_is_square_for_character_at_the_rows_that_fit_it(style):
+    """The old 1:2 ratio said 48 rows crop a humanoid below the thigh
+    (prompt-eval round 11), not that the canvas has to be tall. 64x64 keeps
+    all 64 of those rows and reaches the square canvas bitforge needs, so the
+    rows now come from ``_KIND_MIN_GRID`` and the ratio is 1:1."""
 
-    width, height = _size_for(style, "character")
-    assert width == style.pixel_grid
-    assert height == style.pixel_grid * 2
+    from asset.server import _KIND_MIN_GRID, _KIND_SIZE_RATIO
+
+    assert _KIND_SIZE_RATIO["character"] == (1.0, 1.0)
+    assert _KIND_MIN_GRID["character"] == 64
+    assert style.pixel_grid == 32
+    assert _size_for(style, "character") == (64, 64)
 
 
 def test_size_ratio_is_square_for_monster_unlike_character(style):
@@ -540,8 +543,8 @@ def test_grid_override_changes_the_canvas_without_touching_the_style(style):
 
     from asset.server import _size_for as size_for
 
-    assert size_for(style, "character") == (32, 64)
-    assert size_for(style, "character", 56) == (56, 112)
+    assert size_for(style, "character") == (64, 64)
+    assert size_for(style, "character", 56) == (56, 56)
     assert style.pixel_grid == 32
 
 
@@ -555,7 +558,7 @@ def test_the_floor_follows_the_schema_not_one_unexplained_failure(style):
 
     from asset.server import _resolve_size
 
-    assert _resolve_size(style, "character", 16, "f-1") == (16, 32)
+    assert _resolve_size(style, "character", 16, "f-1") == (16, 16)
 
 
 def test_size_below_pixellabs_floor_is_rejected_before_the_call(style):
@@ -566,7 +569,7 @@ def test_size_below_pixellabs_floor_is_rejected_before_the_call(style):
 
     message = str(excinfo.value)
     assert '"errorCode": 1000' in message
-    assert "8x16" in message
+    assert "8x8" in message
     assert "16-400" in message
 
 
@@ -574,9 +577,9 @@ def test_size_above_pixellabs_ceiling_is_rejected_before_the_call(style):
     from asset.server import _resolve_size
 
     with pytest.raises(Exception) as excinfo:
-        _resolve_size(style, "character", 240, "f-1")
+        _resolve_size(style, "character", 480, "f-1")
 
-    assert "240x480" in str(excinfo.value)
+    assert "480x480" in str(excinfo.value)
 
 
 def test_omitting_the_grid_keeps_the_existing_size(style):
@@ -614,7 +617,7 @@ async def test_grid_size_reaches_pixellab_and_leaves_the_style_grid_alone(
             result = await sprite_call(client, arguments)
             assert result.is_error is False
 
-    assert seen == [(32, 64), (56, 112)]
+    assert seen == [(64, 64), (56, 56)]
     from asset.style import load_or_create
 
     assert load_or_create(tmp_path, "t-grid-size", "pixel art").pixel_grid == 32
@@ -1254,13 +1257,15 @@ async def test_a_pose_reference_reaches_bitforge_as_coordinates(monkeypatch, tmp
     assert body["imagesGenerated"] == 2
 
 
-async def test_a_posed_character_is_grown_to_a_square_canvas(monkeypatch, tmp_path):
-    """Every keypoint-friendly canvas is square and a character is 1:2.
+async def test_a_posed_non_square_kind_is_grown_to_a_square_canvas(monkeypatch, tmp_path):
+    """Every keypoint-friendly canvas is square, and some kinds are not.
 
     Rather than run on a canvas the provider warns about — measured to return
-    noise — the request is grown to the smallest square that still contains it.
-    A character's 64 rows are why 48 was rejected in the first place, and
-    64x64 keeps every one of them; only the width changes.
+    noise — the request is grown to the smallest square that still contains it,
+    so every row and column the original canvas had survives. ``character`` is
+    square in its own right now, so the growth is shown on ``ui_button`` (2:1),
+    which is what keeps this rule stated about canvases rather than about
+    characters.
     """
 
     monkeypatch.setattr(server, "ROOT", tmp_path)
@@ -1293,15 +1298,15 @@ async def test_a_posed_character_is_grown_to_a_square_canvas(monkeypatch, tmp_pa
             client,
             game="t-pose-char",
             feature="f-anchor",
-            kind="character",
-            prompt="a knight",
+            kind="ui_button",
+            prompt="a start button",
         )
         result = await sprite_call(
             client,
             {
                 "featureId": "f-posed-char",
-                "prompt": "a mage",
-                "assetKind": "character",
+                "prompt": "a quit button",
+                "assetKind": "ui_button",
                 "gameId": "t-pose-char",
                 "poseFromAssetId": anchor,
             },
@@ -1309,7 +1314,7 @@ async def test_a_posed_character_is_grown_to_a_square_canvas(monkeypatch, tmp_pa
 
     body = result.structured_content
     assert result.is_error is False
-    assert body["requestedCanvas"] == [32, 64]
+    assert body["requestedCanvas"] == [64, 32]
     assert body["canvas"] == [64, 64]
     assert any("64x64" in warning for warning in body["warnings"])
     # The generated canvas is the square one, and the stored sprite follows it.
@@ -1438,7 +1443,7 @@ def test_the_posable_canvas_rule_is_about_canvases_not_kinds():
 
 
 def test_growing_the_canvas_never_drops_a_row():
-    """The 1:2 ratio exists because 48 rows cropped a humanoid below the thigh.
+    """A character has 64 rows because 48 cropped a humanoid below the thigh.
     A rule that shrank the canvas would bring that back."""
 
     from asset.server import _posable_canvas
@@ -1503,7 +1508,8 @@ async def test_an_init_only_request_is_grown_too(monkeypatch, tmp_path):
     """Keypoints were the reason to look at the canvas, but the control showed
     the canvas is the problem by itself: bitforge with no keypoints at all
     still came back broken at 32x64. So every bitforge request is grown, not
-    only the posed ones."""
+    only the posed ones. Shown on ``ui_button`` because ``character`` no longer
+    has a non-square canvas to grow from."""
 
     monkeypatch.setattr(server, "ROOT", tmp_path)
     monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
@@ -1534,15 +1540,15 @@ async def test_an_init_only_request_is_grown_too(monkeypatch, tmp_path):
             client,
             game="t-init-grow",
             feature="f-anchor",
-            kind="character",
-            prompt="a knight",
+            kind="ui_button",
+            prompt="a start button",
         )
         result = await sprite_call(
             client,
             {
                 "featureId": "f-init-grow",
-                "prompt": "a mage",
-                "assetKind": "character",
+                "prompt": "a quit button",
+                "assetKind": "ui_button",
                 "gameId": "t-init-grow",
                 "initAssetId": anchor,
             },
@@ -1551,7 +1557,7 @@ async def test_an_init_only_request_is_grown_too(monkeypatch, tmp_path):
     body = result.structured_content
     assert result.is_error is False
     assert (captured["width"], captured["height"]) == (64, 64)
-    assert body["requestedCanvas"] == [32, 64]
+    assert body["requestedCanvas"] == [64, 32]
     assert body["canvas"] == [64, 64]
     assert "skeletonKeypoints" not in body
 
@@ -1696,8 +1702,8 @@ async def test_an_asset_id_reference_still_needs_approval_and_pixellab(monkeypat
 
 
 async def test_an_explicit_canvas_skips_the_kinds_fixed_ratio(monkeypatch, tmp_path):
-    """``gridSize`` scales the kind's ratio and cannot leave it, so a square
-    character was unaskable until ``canvas`` existed."""
+    """``gridSize`` scales the kind's ratio and cannot leave it, so a canvas
+    off that ratio was unaskable until ``canvas`` existed."""
 
     monkeypatch.setattr(server, "ROOT", tmp_path)
     monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
@@ -1713,18 +1719,18 @@ async def test_an_explicit_canvas_skips_the_kinds_fixed_ratio(monkeypatch, tmp_p
     from mcp import Client
 
     async with Client(server.mcp) as client:
-        squared = await client.call_tool(
-            "generate_2d_sprite",
+        squared = await sprite_call(
+            client,
             {
                 "featureId": "f-canvas",
                 "prompt": "a knight",
                 "assetKind": "character",
                 "gameId": "t-canvas",
-                "canvas": [64, 64],
+                "canvas": [96, 48],
             },
         )
-        ratioed = await client.call_tool(
-            "generate_2d_sprite",
+        ratioed = await sprite_call(
+            client,
             {
                 "featureId": "f-canvas",
                 "prompt": "a knight",
@@ -1736,8 +1742,8 @@ async def test_an_explicit_canvas_skips_the_kinds_fixed_ratio(monkeypatch, tmp_p
     assert squared.is_error is False, squared.content
     assert ratioed.is_error is False, ratioed.content
     # The explicit canvas went through as asked; the same prompt without it
-    # still gets the character kind's 1:2 ratio at the game's locked grid.
-    assert sizes == [(64, 64), (32, 64)]
+    # still gets the character kind's square canvas at the kind's floored grid.
+    assert sizes == [(96, 48), (64, 64)]
     # Same prompt, different canvas: a different asset, not a duplicate.
     assert squared.structured_content["assetId"] != ratioed.structured_content["assetId"]
 
@@ -1758,8 +1764,8 @@ async def test_canvas_and_grid_size_cannot_both_set_the_size(monkeypatch, tmp_pa
     from mcp import Client
 
     async with Client(server.mcp) as client:
-        both = await client.call_tool(
-            "generate_2d_sprite",
+        both = await sprite_call(
+            client,
             {
                 "featureId": "f-both",
                 "prompt": "a knight",
@@ -1769,8 +1775,8 @@ async def test_canvas_and_grid_size_cannot_both_set_the_size(monkeypatch, tmp_pa
                 "gridSize": 32,
             },
         )
-        oversized = await client.call_tool(
-            "generate_2d_sprite",
+        oversized = await sprite_call(
+            client,
             {
                 "featureId": "f-oversized",
                 "prompt": "a knight",
@@ -1779,8 +1785,8 @@ async def test_canvas_and_grid_size_cannot_both_set_the_size(monkeypatch, tmp_pa
                 "canvas": [64, 4000],
             },
         )
-        malformed = await client.call_tool(
-            "generate_2d_sprite",
+        malformed = await sprite_call(
+            client,
             {
                 "featureId": "f-malformed",
                 "prompt": "a knight",
@@ -1832,8 +1838,8 @@ async def test_a_posed_request_keeps_the_canvas_it_was_given(monkeypatch, tmp_pa
             kind="character",
             prompt="a knight",
         )
-        result = await client.call_tool(
-            "generate_2d_sprite",
+        result = await sprite_call(
+            client,
             {
                 "featureId": "f-posed-canvas",
                 "prompt": "a mage",

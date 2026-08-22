@@ -479,33 +479,31 @@ async def test_variation_batch_rejects_unapproved_style_reference(monkeypatch):
     )
 
 
-async def test_variation_batch_accepts_a_character(monkeypatch):
-    """Every character is a 1:2 kind, so every character prototype is
-    non-square. The square gate made the server's only style-reference path
-    unusable for exactly the assets whose style matters most.
+async def test_variation_batch_takes_the_bitforge_path_for_a_character(monkeypatch):
+    """A character prototype is square, so a single-reference character batch
+    keeps the endpoint that carries ``styleStrength`` and its siblings.
 
-    It routes to ``generate-with-style-v2`` rather than bitforge: measured
-    2026-08-22, bitforge on a non-square canvas returns a broken figure, and a
-    batch cannot grow its canvas because the output has to stay the size of the
-    reference it varies.
+    It used to fall back to ``generate-with-style-v2`` and lose those controls,
+    because the kind's canvas was 1:2 and bitforge is unreliable on a
+    non-square canvas (measured 2026-08-22). A batch cannot grow its canvas —
+    its output has to stay the size of the reference it varies — so the only
+    way to reach bitforge was for the kind itself to be square.
     """
 
     captured = []
 
-    def _fake_variations(**kwargs):
+    def _fake_bitforge(**kwargs):
         captured.append(kwargs)
-        width, height = kwargs["style_images"][0].size
         return (
-            [Image.new("RGBA", (width, height), (7, 8, 9, 255))],
+            Image.new("RGBA", (kwargs["width"], kwargs["height"]), (7, 8, 9, 255)),
             {"type": "generations", "generations": 1.0},
-            "job-char",
         )
 
-    def _unexpected_bitforge(**kwargs):
-        raise AssertionError("a non-square canvas must not go through bitforge")
+    def _unexpected_style_v2(**kwargs):
+        raise AssertionError("a square single-reference batch must use bitforge")
 
-    monkeypatch.setattr(pixellab_client, "generate_with_style", _fake_variations)
-    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _unexpected_bitforge)
+    monkeypatch.setattr(pixellab_client, "generate_with_style", _unexpected_style_v2)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _fake_bitforge)
     async with session() as client:
         prototype = await sprite_call(
             client,
@@ -532,18 +530,20 @@ async def test_variation_batch_accepts_a_character(monkeypatch):
 
     body = result.structured_content
     assert result.is_error is False
-    assert body["endpoint"] == "generate-with-style-v2"
+    assert body["endpoint"] == "create-image-bitforge"
     assert len(captured) == 1
-    # The 1:2 prototype is accepted as a reference; nothing is squared or
-    # padded, so the batch stays the size of the asset it varies.
-    assert captured[0]["style_images"][0].size == (128, 256)
+    # The batch stays the size of the asset it varies: the stored 256x256
+    # sprite is generated native at 64x64 and upscaled back.
+    assert captured[0]["style_image"].size == (256, 256)
+    assert (captured[0]["width"], captured[0]["height"]) == (64, 64)
     with Image.open(body["assets"][0]["assetPath"]) as saved:
-        assert saved.size == (128, 256)
+        assert saved.size == (256, 256)
 
 
-async def test_bitforge_only_arguments_are_refused_for_a_character_batch(monkeypatch):
+async def test_bitforge_only_arguments_are_refused_for_a_non_square_batch(monkeypatch):
     """The controls exist only on the endpoint a non-square batch cannot use,
-    so they fail loudly instead of doing nothing."""
+    so they fail loudly instead of doing nothing. ``ui_button`` is 2:1 —
+    ``character`` is square now and keeps the controls."""
 
     def _unexpected(**kwargs):
         raise AssertionError("nothing should be spent on a rejected request")
@@ -555,8 +555,8 @@ async def test_bitforge_only_arguments_are_refused_for_a_character_batch(monkeyp
             client,
             {
                 "featureId": "f-char-knobs",
-                "prompt": "player character",
-                "assetKind": "character",
+                "prompt": "a start button",
+                "assetKind": "ui_button",
                 "gameId": "t-char-knobs",
             },
         )
@@ -569,7 +569,7 @@ async def test_bitforge_only_arguments_are_refused_for_a_character_batch(monkeyp
             {
                 "featureId": "f-char-knobs-batch",
                 "prototypeAssetId": prototype.structured_content["assetId"],
-                "prompts": ["player character with a red cloak"],
+                "prompts": ["a quit button"],
                 "gameId": "t-char-knobs",
                 "styleStrength": 70,
             },

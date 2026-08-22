@@ -86,11 +86,15 @@ _PIXELLAB_UPSCALE = 4
 # character cropped shoulder-to-knee at a 1:1 ratio). ``tile`` stays 1:1
 # deliberately — a non-square tile cannot lay edge to edge seamlessly.
 _KIND_SIZE_RATIO: dict[str, tuple[float, float]] = {
-    # 2.0, not 1.5: at 32x48 a full-body humanoid came out cropped below the
-    # thigh (measured, prompt-eval round 11, two of two samples). 32x64 fits
-    # head to feet and scored 8/10 against 7/10 for 32x56, which still lost a
-    # wrist (round 11b). Width stays at the grid — see _PIXELLAB_UPSCALE.
-    "character": (1.0, 2.0),
+    # Square, and the 64 rows that made it work live in _KIND_MIN_GRID instead.
+    # The ratio used to be 1:2 because at 32x48 a full-body humanoid came out
+    # cropped below the thigh (measured, prompt-eval round 11, two of two
+    # samples) and 32x64 fit head to feet. That measurement said 48 rows are
+    # too few, not that the canvas has to be tall: 64x64 keeps every one of
+    # those 64 rows and only widens. A 1:2 character could reach a square
+    # canvas solely by being grown for bitforge (_posable_canvas), which
+    # stopped at 64 and so left gridSize 64 generating an unusable 64x128.
+    "character": (1.0, 1.0),
     # Deliberately square, not the character ratio — a round creature (a
     # slime) distorted when stretched into the humanoid's tall canvas
     # (measured, prompt-eval round 6, scored 4/10 vs. 8/10 square).
@@ -101,6 +105,16 @@ _KIND_SIZE_RATIO: dict[str, tuple[float, float]] = {
     "ui_button": (2.0, 1.0),
     "ui_panel": (3.0, 2.0),
 }
+
+
+# Smallest grid a kind may be derived at from the game's locked grid. A
+# character needs 64 rows — 48 cropped the figure below the thigh (prompt-eval
+# round 11) — and now that the ratio is square those rows can only come from
+# the grid. Games lock a 32 grid for their tiles, so without this floor a
+# character would shrink to 32x32 and bring the crop back. An explicit
+# ``gridSize`` is not floored: it is the caller sizing one asset deliberately,
+# and ``canvas`` is there for sizes that leave the ratio entirely.
+_KIND_MIN_GRID: dict[str, int] = {"character": 64}
 
 
 # PixelLab (Pixflux) accepts 16-400px per side — ``CreateImagePixfluxRequest.
@@ -127,7 +141,10 @@ def _size_for(
     """
 
     width_ratio, height_ratio = _KIND_SIZE_RATIO.get(kind, (1.0, 1.0))
-    resolved = style.pixel_grid if grid is None else grid
+    if grid is None:
+        resolved = max(style.pixel_grid, _KIND_MIN_GRID.get(kind, 0))
+    else:
+        resolved = grid
     return int(resolved * width_ratio), int(resolved * height_ratio)
 
 
@@ -480,11 +497,13 @@ def _posable_canvas(width: int, height: int) -> tuple[int, int] | None:
     to the smallest square that still contains the canvas it asked for.
 
     Growing rather than shrinking is what keeps the original measurement
-    intact: ``_KIND_SIZE_RATIO`` gives a character 64 rows because 48 cropped
-    the figure below the thigh, and 64x64 keeps every one of those rows. Only
-    the width changes. A canvas already square and friendly is returned
-    unchanged, so this is a no-op for ``monster``, ``prop``, ``icon``, and
-    ``tile`` at the usual grids.
+    intact: a character has 64 rows because 48 cropped the figure below the
+    thigh, and a square that contains the request keeps every one of those
+    rows. Only the width changes. A canvas already square and friendly is
+    returned unchanged, so this is a no-op for ``character``, ``monster``,
+    ``prop``, ``icon``, and ``tile`` at the usual grids — it earns its keep on
+    ``ui_button`` and ``ui_panel``, and on any kind added later that is not
+    square.
     """
 
     needed = max(width, height)
