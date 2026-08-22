@@ -364,8 +364,12 @@ Server: `AssetGenMcpServer`.
   (`SKELETON_FRIENDLY_SIZES`: 16, 32, 64). Growing rather than shrinking is what keeps the original
   measurement intact — a character has 64 rows because 48 cropped the figure below the thigh, and
   64x64 keeps every one of them; only the width changes. It is a no-op for `character`, `monster`, `prop`,
-  `icon`, and `tile`, which are already square. A canvas with no square to grow to comes back with
-  a warning instead.
+  `icon`, and `tile`, which are already square — **any** square canvas is returned unchanged,
+  including one larger than the friendly list, because there is nothing there for the growth to
+  fix. Without that a 128x128 request fell past the list and was reported as unreliable "on a
+  non-square canvas", about a canvas that is square. The friendly list is about keypoints, and a
+  posed request on a square canvas outside it is reported by `skeleton_size_warning` instead. A
+  genuinely non-square canvas with no square to grow to still comes back with a warning.
 - **`character` is a square kind, and its rows come from `_KIND_MIN_GRID`.** `_KIND_SIZE_RATIO` is
   `(1.0, 1.0)` and `_KIND_MIN_GRID["character"]` is 64, so the locked 32 grid a game picks for its
   tiles still generates a character at 64x64. The ratio used to be 1:2, and the growth rule above
@@ -397,6 +401,11 @@ Server: `AssetGenMcpServer`.
   200px bitforge ceiling still applies to a request carrying a reference. `canvas` and `gridSize`
   set the same thing, so passing both is refused rather than ranked, and `canvas` joins the asset-id
   digest so the same prompt at another size is another asset rather than a blocked duplicate.
+- `paletteLock` joins that digest for the same reason. The same prompt with the game ramp forced on
+  is a different image from the same prompt without it, so asking for both has to produce two
+  assets to compare; before this the second call came back `duplicate_blocked` and the comparison
+  could only be made by rewording the prompt, which changes the seed. Only the non-default
+  (`false`) value is appended, so digests written before this still resolve to the same asset id.
 - A posed or init-image request with an explicit `canvas` is **not** grown to a square. The growth
   exists because bitforge is unreliable on a non-square canvas; naming the canvas is the caller
   weighing that themselves, so the request reports a `warnings` entry and generates as asked.

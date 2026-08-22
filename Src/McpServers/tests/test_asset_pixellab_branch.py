@@ -1440,6 +1440,11 @@ def test_the_posable_canvas_rule_is_about_canvases_not_kinds():
     # Past the largest friendly square there is nothing to grow to.
     assert _posable_canvas(96, 64) is None
     assert _posable_canvas(64, 128) is None
+    # A square canvas larger than the friendly list has nothing to fix either,
+    # so it is returned rather than reported as non-square. The friendly list is
+    # about keypoints; skeleton_size_warning covers that separately.
+    assert _posable_canvas(128, 128) == (128, 128)
+    assert _posable_canvas(200, 200) == (200, 200)
 
 
 def test_growing_the_canvas_never_drops_a_row():
