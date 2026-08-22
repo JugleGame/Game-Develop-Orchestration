@@ -1217,3 +1217,111 @@ def test_a_tile_prompt_without_two_terrains_is_refused():
             [],
             8.0,
         )
+
+
+# --------------------------------------------------------------------------
+# skeleton keypoints (issue #69)
+# --------------------------------------------------------------------------
+
+
+def _keypoints(*labels):
+    return [
+        {"x": float(i), "y": float(i * 2), "label": label, "z_index": 0.0}
+        for i, label in enumerate(labels)
+    ]
+
+
+def test_estimate_skeleton_reads_joints_out_of_a_sprite(monkeypatch):
+    """An approved sprite already stands the way the game wants, so its
+    skeleton can be handed to the next asset instead of describing the pose."""
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+
+    def _fake_post(url, json, headers, timeout):
+        captured["url"] = url
+        captured["payload"] = json
+        return _FakeResponse(
+            {
+                "keypoints": [
+                    {"x": 8.0, "y": 4.0, "label": "NOSE", "z_index": 1.7},
+                    {"x": 8.0, "y": 12.0, "label": "NECK", "z_index": 0.0},
+                ],
+                "usage": {"type": "generations", "generations": 1.0},
+            }
+        )
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+
+    keypoints, usage = pixellab_client.estimate_skeleton(
+        Image.new("RGBA", (32, 64), (1, 2, 3, 255))
+    )
+
+    assert captured["url"].endswith("/estimate-skeleton")
+    assert captured["payload"]["image"]["type"] == "base64"
+    # The response says z_index is a float; the request's Point wants an int.
+    assert keypoints[0] == {"x": 8.0, "y": 4.0, "label": "NOSE", "z_index": 1}
+    assert usage["generations"] == 1.0
+
+
+def test_bitforge_sends_keypoints_and_defaults_their_guidance(monkeypatch):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+    _bitforge_post(monkeypatch, captured, size=(32, 32))
+
+    pixellab_client.create_image_bitforge(
+        prompt="a knight",
+        width=32,
+        height=32,
+        skeleton_keypoints=_keypoints("NOSE", "NECK", "LEFT HIP"),
+    )
+    payload = captured["payload"]
+    assert [point["label"] for point in payload["skeleton_keypoints"]] == [
+        "NOSE",
+        "NECK",
+        "LEFT HIP",
+    ]
+    assert payload["skeleton_guidance_scale"] == pixellab_client.DEFAULT_SKELETON_GUIDANCE
+
+    pixellab_client.create_image_bitforge(
+        prompt="a knight",
+        width=32,
+        height=32,
+        skeleton_keypoints=_keypoints("NOSE"),
+        skeleton_guidance_scale=4.0,
+    )
+    assert captured["payload"]["skeleton_guidance_scale"] == 4.0
+
+
+def test_a_keypoint_label_outside_the_enum_is_refused_before_the_call(monkeypatch):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(pixellab_client.PixelLabUnavailable, match="SkeletonLabel"):
+        pixellab_client.create_image_bitforge(
+            prompt="a knight",
+            width=32,
+            height=32,
+            skeleton_keypoints=[{"x": 1, "y": 2, "label": "TAIL"}],
+        )
+
+
+@pytest.mark.parametrize("value", [-0.5, 5.5])
+def test_skeleton_guidance_outside_the_schema_range_is_refused(monkeypatch, value):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(pixellab_client.PixelLabUnavailable, match="skeleton_guidance_scale"):
+        pixellab_client.create_image_bitforge(
+            prompt="a knight", width=32, height=32, skeleton_guidance_scale=value
+        )
+
+
+def test_the_keypoint_canvas_warning_matches_the_providers_own_advice():
+    """PixelLab's words on ``skeleton_keypoints``: "Warning! Sizes that are not
+    16x16, 32x32 and 64x64 can cause the generations to be lower quality".
+    Every one is square, and a character is a 1:2 kind."""
+
+    assert pixellab_client.SKELETON_FRIENDLY_SIZES == (16, 32, 64)
+    for side in pixellab_client.SKELETON_FRIENDLY_SIZES:
+        assert pixellab_client.skeleton_size_warning(side, side) is None
+    assert pixellab_client.skeleton_size_warning(32, 64) is not None
+    assert pixellab_client.skeleton_size_warning(48, 48) is not None

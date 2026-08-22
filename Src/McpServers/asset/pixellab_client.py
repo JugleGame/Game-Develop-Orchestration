@@ -742,6 +742,129 @@ BITFORGE_SIDE_RANGE = (16, 200)
 BITFORGE_BALANCED_STYLE_STRENGTH = 50
 
 _BITFORGE_PATH = "/create-image-bitforge"
+_SKELETON_PATH = "/estimate-skeleton"
+
+#: ``SkeletonLabel`` — the joints a keypoint may name. Anything else is a 422.
+SKELETON_LABELS: tuple[str, ...] = (
+    "NOSE",
+    "NECK",
+    "RIGHT SHOULDER",
+    "RIGHT ELBOW",
+    "RIGHT ARM",
+    "LEFT SHOULDER",
+    "LEFT ELBOW",
+    "LEFT ARM",
+    "RIGHT HIP",
+    "RIGHT KNEE",
+    "RIGHT LEG",
+    "LEFT HIP",
+    "LEFT KNEE",
+    "LEFT LEG",
+    "RIGHT EYE",
+    "LEFT EYE",
+    "RIGHT EAR",
+    "LEFT EAR",
+)
+
+#: Canvases PixelLab says keypoints work well on. Its own words on
+#: ``skeleton_keypoints``: "Warning! Sizes that are not 16x16, 32x32 and 64x64
+#: can cause the generations to be lower quality". Every one of them is square,
+#: and a character is a 1:2 kind — so posing a character is a request the
+#: provider warns about rather than refuses. The caller is told, not blocked.
+#:
+#: "Lower quality" understates it (measured 2026-08-22, same reference and
+#: seed): at 32x64 with guidance 4.0 the result was noise with no figure in it,
+#: while the same request at 64x64 came back as a clean posed knight. The
+#: difference is the canvas, not the keypoints.
+SKELETON_FRIENDLY_SIZES: tuple[int, ...] = (16, 32, 64)
+
+#: ``skeleton_guidance_scale`` bounds and the provider's own default.
+SKELETON_GUIDANCE_RANGE = (0.0, 5.0)
+DEFAULT_SKELETON_GUIDANCE = 1.0
+
+
+def skeleton_size_warning(width: int, height: int) -> str | None:
+    """Whether keypoints on this canvas are outside PixelLab's advice."""
+
+    if width == height and width in SKELETON_FRIENDLY_SIZES:
+        return None
+    return (
+        f"{width}x{height} is not one of PixelLab's keypoint-friendly canvases "
+        f"({', '.join(f'{side}x{side}' for side in SKELETON_FRIENDLY_SIZES)}); "
+        "measured, an off-canvas request came back as noise at high guidance "
+        "while the same request on a friendly canvas came back clean"
+    )
+
+
+def _skeleton_points(keypoints: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate keypoints and reduce them to the request's ``Point`` shape.
+
+    ``/estimate-skeleton`` answers with a ``z_index`` that is a float while the
+    request's ``Point`` declares an integer, so the round trip needs a coercion
+    the caller should not have to know about.
+    """
+
+    points: list[dict[str, Any]] = []
+    for index, keypoint in enumerate(keypoints):
+        label = str(keypoint.get("label", ""))
+        if label not in SKELETON_LABELS:
+            raise PixelLabUnavailable(
+                f"skeleton_keypoints[{index}].label={label!r} is not a SkeletonLabel; "
+                f"use one of {SKELETON_LABELS}"
+            )
+        try:
+            point = {
+                "x": float(keypoint["x"]),
+                "y": float(keypoint["y"]),
+                "label": label,
+                "z_index": int(keypoint.get("z_index", 0)),
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PixelLabUnavailable(
+                f"skeleton_keypoints[{index}] is not a usable point: {exc}"
+            ) from exc
+        points.append(point)
+    return points
+
+
+def estimate_skeleton(image: Image.Image) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read joint keypoints out of an existing sprite — ``(keypoints, usage)``.
+
+    This is what makes a pose reusable: an approved sprite already stands the
+    way the game wants, so its skeleton can be handed to the next asset instead
+    of describing the pose in prose and hoping.
+
+    **The coordinates are normalised to 0-1, not pixels.** The schema types
+    ``x``/``y`` as bare numbers and says nothing about their range, so this is
+    the kind of thing that has to be measured: a full-body 128x256 sprite came
+    back with every joint between 0.4 and 0.9 (2026-08-22). They therefore
+    transfer to a canvas of any size unchanged — scaling them by a size ratio
+    collapses the pose into a corner and the generation comes back as noise.
+    """
+
+    api_key = os.getenv("PIXELLAB_API_KEY")
+    if not api_key:
+        raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+
+    payload = {
+        "image": {"type": "base64", "base64": _image_b64(image), "format": "png"}
+    }
+    try:
+        response = httpx.post(
+            f"{BASE_URL}{_SKELETON_PATH}",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except httpx.HTTPError as exc:
+        raise PixelLabUnavailable(f"PixelLab skeleton request failed: {exc}") from exc
+
+    keypoints = data.get("keypoints")
+    if not isinstance(keypoints, list) or not keypoints:
+        raise PixelLabUnavailable("malformed PixelLab skeleton response: no keypoints")
+    return _skeleton_points(keypoints), dict(data.get("usage") or {})
 
 
 def create_image_bitforge(
@@ -758,6 +881,8 @@ def create_image_bitforge(
     oblique_projection: bool = False,
     isometric: bool = False,
     direction: str | None = None,
+    skeleton_keypoints: list[dict[str, Any]] | None = None,
+    skeleton_guidance_scale: float | None = None,
     seed: int | None = None,
     no_background: bool = True,
     forced_palette: list[tuple[int, int, int]] | None = None,
@@ -785,6 +910,10 @@ def create_image_bitforge(
       which is the field that actually addresses "the figure came out cropped"
       rather than stretching the canvas ratio until it stops happening.
     * ``init_image`` + ``init_image_strength`` (1-999) — start from a drawing.
+    * ``skeleton_keypoints`` + ``skeleton_guidance_scale`` (0-5) — say where the
+      joints go. Unlike everything else here this is coordinates, not prose or
+      a picture, so it is the one control that states a pose outright. See
+      ``SKELETON_FRIENDLY_SIZES`` for the canvases the provider recommends.
     * ``oblique_projection`` / ``isometric`` — real booleans, not camera views.
 
     The cost is reach: ``image_size`` stops at 200 per side (``pixflux``
@@ -823,6 +952,13 @@ def create_image_bitforge(
         raise PixelLabUnavailable(
             f"init_image_strength must be 1-999, got {init_image_strength!r}"
         )
+    if skeleton_guidance_scale is not None:
+        low, high = SKELETON_GUIDANCE_RANGE
+        if not low <= skeleton_guidance_scale <= high:
+            raise PixelLabUnavailable(
+                f"skeleton_guidance_scale must be {low:g}-{high:g}, "
+                f"got {skeleton_guidance_scale!r}"
+            )
 
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
@@ -876,6 +1012,15 @@ def create_image_bitforge(
         payload["isometric"] = True
     if direction is not None:
         payload["direction"] = direction
+    if skeleton_keypoints:
+        payload["skeleton_keypoints"] = _skeleton_points(skeleton_keypoints)
+        payload["skeleton_guidance_scale"] = (
+            DEFAULT_SKELETON_GUIDANCE
+            if skeleton_guidance_scale is None
+            else skeleton_guidance_scale
+        )
+    elif skeleton_guidance_scale is not None:
+        payload["skeleton_guidance_scale"] = skeleton_guidance_scale
     if seed is not None:
         payload["seed"] = seed
     if forced_palette:

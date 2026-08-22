@@ -325,6 +325,40 @@ Server: `AssetGenMcpServer`.
   swatches are what the earlier "not enough colour range" objection was asking for.
 - Caveats on that measurement: three subjects, one game, one `art_style`. The locked sprites are
   also darker and lower-contrast overall, which is worth watching at small on-screen sizes.
+- `generate_2d_sprite` accepts `poseFromAssetId` and `initAssetId`, both naming an approved PixelLab
+  asset of the same game. The first reads that sprite's joints with `/estimate-skeleton` and sends
+  them as `skeleton_keypoints`; the second sends it as `init_image`. Both need
+  `create-image-bitforge`, so a request larger than 200px per side is refused rather than generated
+  without the pose it asked for. `skeletonGuidance` is 0-5 (provider default 1) and
+  `initImageStrength` is 1-999.
+- **Keypoints are normalised to 0-1, not pixels.** The schema types `x`/`y` as bare numbers and
+  says nothing about their range, so this had to be measured: a full-body 128x256 sprite came back
+  with every joint between 0.4 and 0.9. They therefore transfer to any canvas unchanged. Scaling
+  them by a size ratio — the obvious-looking thing to do with a 4x-upscaled stored sprite — puts
+  every joint in the top-left corner and the generation comes back as noise (measured 2026-08-22).
+- **A pose reference carries the pose and nothing else.** This is the opposite of `style_image`,
+  which drags the reference's subject along with it. Measured 2026-08-22
+  (`var/assets/experiments/round-4b-skeleton/`, `round-4c-skeleton-square/`): a walking blue-cloaked
+  girl was used to pose a prompt asking for an armoured knight, and the result was a knight in the
+  reference's stride — never the girl. Keypoints are coordinates, so there is no subject in them to
+  leak.
+- **The canvas decides whether any of it works, and the provider's warning understates it.** Same
+  reference, same seed, same prompt:
+
+  | canvas | no keypoints | `skeletonGuidance` 4.0 |
+  | --- | --- | --- |
+  | 32x64 (the character ratio) | messy, smeared figure | **noise, no figure at all** |
+  | 64x64 (keypoint-friendly) | clean knight | clean knight in the reference's stride |
+
+  So today posing works on the **square** kinds — `monster`, `prop`, `icon`, `tile` at grid 16, 32,
+  or 64 — and does not work on `character`, whose 1:2 ratio can never be square. A posed character
+  is answered with a `warnings` entry rather than blocked, because the request is legal and the
+  caller may still want to see it. Making characters posable needs the canvas ratio revisited,
+  which is a separate question from wiring the field.
+- High guidance costs quality even on a good canvas: the 64x64 posed knight is muddier and darker
+  than the unposed one. Turn `skeletonGuidance` down before turning it up.
+- `/estimate-skeleton` is billed separately from the generation — measured at 0.1 generations
+  against the quota — so a posed request reports both in `imagesGenerated`.
 - `paletteLock: false` turns the lock off for one asset — a boss with its own scheme, a colour-coded
   pickup. It is on by default. The palette biases rather than forces: the slime stayed green in both
   arms, because `color_image` is a sampling reference, not a clamp.
