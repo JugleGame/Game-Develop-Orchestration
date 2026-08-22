@@ -185,6 +185,74 @@ def _root_path(*parts: str) -> Path:
     return path
 
 
+def _brief_path(brief_id: str) -> Path:
+    return _root_path("briefs", f"{brief_id}.json")
+
+
+def _save_brief(brief: dict[str, Any]) -> str:
+    """Persist one intake brief and return its id.
+
+    Keyed by content, so re-asking the same question set returns the same id
+    and answering one more question produces a new one. That makes the id
+    evidence of *which* answers were on the table, which is the whole reason
+    ``generate_2d_sprite`` asks for it.
+    """
+
+    payload = json.dumps(brief, sort_keys=True, ensure_ascii=False)
+    brief_id = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    path = _brief_path(brief_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+    return brief_id
+
+
+def _answered_brief(brief_id: str, feature_id: str) -> dict[str, Any]:
+    """The brief this generation is allowed to run from, or a refusal.
+
+    Refusing here rather than defaulting is the point of the gate: every
+    default this tool used to carry was a value the user was never asked
+    about, and the bill for the guess arrived as a generated image.
+    """
+
+    path = _brief_path(brief_id)
+    if not path.is_file():
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"unknown briefId: {brief_id}; call prepare_asset_prompt first",
+            featureId=feature_id,
+        )
+    brief = json.loads(path.read_text(encoding="utf-8"))
+    unanswered = [
+        str(question["field"])
+        for question in brief.get("questions") or []
+        if question.get("required")
+    ]
+    if unanswered:
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"briefId {brief_id} still has unanswered questions: {', '.join(unanswered)}. "
+            "Ask the user, then call prepare_asset_prompt again with the answers.",
+            featureId=feature_id,
+        )
+    return brief
+
+
+def _brief_parameter(
+    brief: dict[str, Any], field: str, passed: Any, feature_id: str
+) -> Any:
+    """The answered value, refusing a call that contradicts it."""
+
+    answered = (brief.get("parameters") or {}).get(field)
+    if passed is not None and passed != answered:
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"{field}={passed!r} contradicts the brief, which answered {answered!r}. "
+            "Re-run prepare_asset_prompt to change an answer.",
+            featureId=feature_id,
+        )
+    return answered
+
+
 def _load_manifest(game_id: str) -> dict[str, Any]:
     path = _manifest_path(game_id)
     if not path.exists():
@@ -868,8 +936,10 @@ def _generate_prototype(
 
 @mcp.tool(
     description=(
-        "Collect a complete asset brief and return a deterministic, kind-aware prompt. "
-        "This preflight does not generate an image or call a model."
+        "Collect a complete asset brief and return a deterministic, kind-aware prompt "
+        "plus the briefId generate_2d_sprite requires. This preflight does not generate "
+        "an image or call a model. Questions it returns are for the user to answer, not "
+        "for the caller to fill in."
     )
 )
 @expects_dict_return
@@ -884,10 +954,31 @@ def prepare_asset_prompt(
     isRevision: bool = False,
     preserve: list[str] | None = None,
     change: list[str] | None = None,
+    gridSize: int | None = None,
+    paletteLock: bool | None = None,
+    initAssetId: str | None = None,
+    initImageStrength: int | None = None,
+    direction: str | None = None,
 ) -> dict[str, Any]:
+    """The intake step. It asks about the generation parameters too, not only
+    the picture.
+
+    ``gridSize``, ``paletteLock``, ``initAssetId``, ``initImageStrength``, and
+    ``direction`` used to be optional arguments on ``generate_2d_sprite`` with
+    defaults, so an agent that never asked the user still got a sprite and the
+    cost of the guess landed on generation credits and human review. Here they
+    are questions like any other: ``None`` means unanswered, ``"none"``/``0``
+    mean answered-as-nothing.
+
+    The returned ``briefId`` is what ``generate_2d_sprite`` requires. A brief
+    with unanswered required questions is stored all the same — a half-answered
+    brief is a real state of the conversation — but generating from it is
+    refused until the answers arrive.
+    """
+
     kind = _asset_kind(assetKind)
     assert kind is not None
-    return prompting.prepare(
+    brief = prompting.prepare(
         kind,
         subject=subject,
         purpose=purpose,
@@ -898,17 +989,24 @@ def prepare_asset_prompt(
         is_revision=isRevision,
         preserve=preserve,
         change=change,
+        grid_size=gridSize,
+        palette_lock=paletteLock,
+        init_asset_id=initAssetId,
+        init_image_strength=initImageStrength,
+        direction=direction,
     )
+    brief["briefId"] = _save_brief(brief)
+    return brief
 
 
 @mcp.tool(
     description=(
         "Generate the initial 2D style prototype through PixelLab's official MCP. "
-        "assetKind is required: it decides the canvas ratio, palette, shading, and "
-        "framing, so it is not guessed from prompt wording. Approve the result before "
-        "requesting API variations. Pass gridSize to generate one asset at a different "
-        "in-world size without changing the game's locked grid, and direction to turn "
-        "one asset without changing which way the game faces."
+        "Requires a briefId from prepare_asset_prompt whose questions the user has "
+        "answered: gridSize, paletteLock, initAssetId, initImageStrength, and direction "
+        "come from that brief, not from the caller's judgement. assetKind is required: "
+        "it decides the canvas ratio, palette, shading, and framing, so it is not guessed "
+        "from prompt wording. Approve the result before requesting API variations."
     )
 )
 @expects_dict_return
@@ -916,17 +1014,33 @@ def generate_2d_sprite(
     featureId: str,
     prompt: str,
     assetKind: render.AssetKind,
+    briefId: str,
     gameId: str | None = None,
     artStyle: str | None = None,
     gridSize: int | None = None,
     direction: str | None = None,
-    paletteLock: bool = True,
+    paletteLock: bool | None = None,
     poseFromAssetId: str | None = None,
     initAssetId: str | None = None,
     skeletonGuidance: float | None = None,
     initImageStrength: int | None = None,
 ) -> dict[str, Any]:
-    """``assetKind`` is required — one of ``character``, ``monster``, ``tile``,
+    """``briefId`` comes from ``prepare_asset_prompt`` and is required.
+
+    ``gridSize``, ``paletteLock``, ``initAssetId``, ``initImageStrength``, and
+    ``direction`` are read from that brief. They may still be passed here, but
+    only to restate what the brief already answered — a value that contradicts
+    it is refused rather than preferred, so the answer the user gave cannot be
+    overridden at the call site. A brief with unanswered required questions
+    refuses too, and nothing is billed either way.
+
+    They used to be optional arguments with defaults. Measured on ``daeume``
+    (2026-08-22): an agent that never asked the user still generated, and it
+    swept ``gridSize`` through 80, 64, 48, 40, and 32, ``paletteLock`` through
+    both values, and ``initImageStrength`` through 400 and 700 — ten-plus
+    billed generations to rediscover settings one question would have settled.
+
+    ``assetKind`` is required — one of ``character``, ``monster``, ``tile``,
     ``prop``, ``icon``, ``ui_button``, ``ui_panel``.
 
     It used to be optional and inferred from prompt keywords. One wrong guess
@@ -974,20 +1088,27 @@ def generate_2d_sprite(
     game's locked direction.
     """
 
+    # Kind first: it is a free check, and a caller who got the kind wrong should
+    # be told that rather than be sent back to the intake step.
+    kind = _asset_kind(assetKind)
+    brief = _answered_brief(briefId, featureId)
+    palette_lock = _brief_parameter(brief, "paletteLock", paletteLock, featureId)
     return _generate_prototype(
         featureId,
         prompt,
         gameId,
-        forced_kind=_asset_kind(assetKind),
+        forced_kind=kind,
         art_style=artStyle,
-        grid_size=gridSize,
-        direction=direction,
+        grid_size=_brief_parameter(brief, "gridSize", gridSize, featureId),
+        direction=_brief_parameter(brief, "direction", direction, featureId),
         kind_source="explicit",
-        palette_lock=paletteLock,
+        palette_lock=bool(palette_lock),
         pose_from_asset_id=poseFromAssetId,
-        init_asset_id=initAssetId,
+        init_asset_id=_brief_parameter(brief, "initAssetId", initAssetId, featureId),
         skeleton_guidance=skeletonGuidance,
-        init_image_strength=initImageStrength,
+        init_image_strength=_brief_parameter(
+            brief, "initImageStrength", initImageStrength, featureId
+        ),
     )
 
 
