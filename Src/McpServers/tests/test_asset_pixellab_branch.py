@@ -1548,3 +1548,142 @@ async def test_an_init_only_request_is_grown_too(monkeypatch, tmp_path):
     assert body["requestedCanvas"] == [32, 64]
     assert body["canvas"] == [64, 64]
     assert "skeletonKeypoints" not in body
+
+
+async def test_a_concept_art_reference_reaches_bitforge_as_init_image(monkeypatch, tmp_path):
+    """Concept art is the drawing the asset is meant to match, so it reaches the
+    generator as pixels instead of as prose."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path / "assets")
+    monkeypatch.setattr(server, "CONCEPT_ART_ROOT", tmp_path / "concept-art")
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured: dict[str, object] = {}
+
+    concept_dir = tmp_path / "concept-art" / "t-concept"
+    concept_dir.mkdir(parents=True)
+    Image.new("RGBA", (66, 161), (200, 100, 40, 255)).save(concept_dir / "hero.png")
+
+    def _unexpected_skeleton(image):
+        raise AssertionError("no pose was requested, so no skeleton call")
+
+    def _fake_bitforge(**kwargs):
+        captured.update(kwargs)
+        return (
+            Image.new("RGBA", (kwargs["width"], kwargs["height"]), (7, 7, 7, 255)),
+            {"type": "generations", "generations": 1.0},
+        )
+
+    monkeypatch.setattr(pixellab_client, "estimate_skeleton", _unexpected_skeleton)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _fake_bitforge)
+
+    from mcp import Client
+
+    async with Client(server.mcp) as client:
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-concept",
+                "prompt": "the protagonist of the concept art",
+                "assetKind": "character",
+                "gameId": "t-concept",
+                "initAssetId": "concept:hero.png",
+            },
+        )
+
+    assert result.is_error is False, result.content
+    assert captured["init_image"].size == (66, 161)
+    assert result.structured_content["status"] == "pending"
+
+
+async def test_a_concept_reference_outside_its_game_directory_is_refused(monkeypatch, tmp_path):
+    """The directory is the whole gate, so a name that escapes it is refused
+    rather than clamped — and nothing is billed."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path / "assets")
+    monkeypatch.setattr(server, "CONCEPT_ART_ROOT", tmp_path / "concept-art")
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    (tmp_path / "concept-art" / "t-escape").mkdir(parents=True)
+    other = tmp_path / "concept-art" / "other-game"
+    other.mkdir(parents=True)
+    Image.new("RGBA", (32, 32), (1, 2, 3, 255)).save(other / "secret.png")
+
+    def _unexpected(*args, **kwargs):
+        raise AssertionError("nothing should be spent on a refused reference")
+
+    monkeypatch.setattr(pixellab_client, "estimate_skeleton", _unexpected)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _unexpected)
+
+    from mcp import Client
+
+    async with Client(server.mcp) as client:
+        escaped = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-escape",
+                "prompt": "a mage",
+                "assetKind": "character",
+                "gameId": "t-escape",
+                "initAssetId": "concept:../other-game/secret.png",
+            },
+        )
+        missing = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-missing",
+                "prompt": "a mage",
+                "assetKind": "character",
+                "gameId": "t-escape",
+                "poseFromAssetId": "concept:absent.png",
+            },
+        )
+
+    for refused, expected in ((escaped, "must stay within"), (missing, "unknown")):
+        assert refused.is_error is True
+        assert expected in "".join(getattr(b, "text", "") for b in refused.content)
+
+
+async def test_an_asset_id_reference_still_needs_approval_and_pixellab(monkeypatch, tmp_path):
+    """The concept path is an addition, not a hole: an asset id is gated exactly
+    as before."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path / "assets")
+    monkeypatch.setattr(server, "CONCEPT_ART_ROOT", tmp_path / "concept-art")
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    def _fake_prototype(**kwargs):
+        image = Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255))
+        return image, {"type": "generations", "generations": 1.0}, "create_image"
+
+    def _unexpected(*args, **kwargs):
+        raise AssertionError("nothing should be spent on a rejected reference")
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
+    monkeypatch.setattr(pixellab_client, "estimate_skeleton", _unexpected)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _unexpected)
+
+    from mcp import Client
+
+    async with Client(server.mcp) as client:
+        pending = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-still-gated",
+                "prompt": "a rock",
+                "assetKind": "prop",
+                "gameId": "t-still-gated",
+            },
+        )
+        refused = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-uses-it",
+                "prompt": "a mossy rock",
+                "assetKind": "prop",
+                "gameId": "t-still-gated",
+                "initAssetId": pending.structured_content["assetId"],
+            },
+        )
+
+    assert refused.is_error is True
+    assert "approved" in "".join(getattr(b, "text", "") for b in refused.content)
