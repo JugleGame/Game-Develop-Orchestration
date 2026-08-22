@@ -4,7 +4,7 @@ Design decisions worth knowing before editing:
 
 * **PixelLab only, no fallback.** Generation requires ``PIXELLAB_API_KEY``.
   A missing key or a failed call is an MCP error (code 3000), not a
-  silent degrade to placeholder art (see ``_generate_image``). ``render.py``
+  silent degrade to placeholder art (see ``_generate_prototype``). ``render.py``
   keeps only the prompt classifier and the deterministic seed derivation
   PixelLab's call depends on — it no longer draws pixels itself.
 * **Generation enters review as pending.** ``generate_2d_sprite`` records its
@@ -344,31 +344,6 @@ def _asset_kind(value: str | None) -> render.AssetKind | None:
     return normalized  # type: ignore[return-value]
 
 
-
-def _pixellab_provenance(
-    *, kind: render.AssetKind, seed: int, feature_id: str, prompt: str, usage: dict[str, Any]
-) -> dict[str, Any]:
-    """Audit record for a PixelLab-generated asset.
-
-    ``usage`` is PixelLab's own report, stored verbatim: v2 bills in credits
-    (``{"type": "generations", "generations": 1.0}``, measured 2026-08-03) and
-    never returns a dollar figure, so recording a ``cost_usd`` here would be
-    inventing one. ``commercial_use`` is left to PixelLab's own terms of
-    service rather than claimed here — this repository has no way to verify it.
-    """
-
-    prompt_digest = hashlib.sha256(prompt.encode()).hexdigest()[:16]
-    return {
-        "method": "pixellab",
-        "generator": "AssetGenMcpServer/pixellab_client.py",
-        "kind": kind,
-        "endpoint": "generate-image-pixflux",
-        "derived_from": f"seed={seed} feature={feature_id} prompt_sha256={prompt_digest}",
-        "usage": usage,
-        "commercial_use": "see PixelLab terms of service",
-    }
-
-
 def _is_pixellab_asset(record: dict[str, Any]) -> bool:
     """Whether this asset was drawn by PixelLab, by any of its paths.
 
@@ -505,123 +480,6 @@ def _map_object_style_params(style: Any) -> dict[str, str]:
         "shading": "flat shading",
         "detail": _MAP_OBJECT_DETAIL.get(style.detail, style.detail),
     }
-
-
-def _generate_image(
-    style: Any,
-    kind: render.AssetKind,
-    rng: Any,
-    prompt: str,
-    feature_id: str,
-    direction: str | None = None,
-) -> tuple[Image.Image, dict[str, Any]]:
-    """PixelLab only. A missing key or a failed call is a tool error.
-
-    No placeholder-art fallback: generation either comes from PixelLab or it
-    fails loudly, so a broken key never silently ships mismatched art.
-    """
-
-    if not pixellab_client.is_configured():
-        raise tool_error(
-            MCP_ERROR,
-            "PIXELLAB_API_KEY is not set; asset generation requires PixelLab",
-            featureId=feature_id,
-        )
-
-    width, height = _size_for(style, kind)
-
-    try:
-        seed = rng.getrandbits(32)
-        image, usage = pixellab_client.generate_image(
-            prompt=prompt,
-            width=width,
-            height=height,
-            seed=seed,
-            forced_palette=_pixellab_palette(style, kind, prompt),
-            **_pixellab_style_params(style, kind, direction),
-        )
-    except pixellab_client.PixelLabUnavailable as exc:
-        raise tool_error(
-            MCP_ERROR, f"PixelLab generation failed: {exc}", featureId=feature_id
-        ) from exc
-
-    # No downsample: PixelLab already generated at the native target size, so
-    # this is a pure crisp upscale, not a smoothing round-trip.
-    image = image.resize(
-        (width * _PIXELLAB_UPSCALE, height * _PIXELLAB_UPSCALE),
-        Image.NEAREST,
-    )
-    return image, _pixellab_provenance(
-        kind=kind,
-        seed=seed,
-        feature_id=feature_id,
-        prompt=prompt,
-        usage=usage,
-    )
-
-
-def _generate(
-    feature_id: str,
-    prompt: str,
-    game_id: str | None,
-    forced_kind: render.AssetKind | None = None,
-    art_style: str | None = None,
-) -> dict[str, Any]:
-    feature_id = _require_identifier(feature_id, "featureId")
-    prompt = _require(prompt, "prompt")
-    resolved_game = _resolve_game_id(game_id)
-
-    style = load_or_create(
-        ROOT, resolved_game, art_style or os.getenv("ASSET_ART_STYLE", DEFAULT_ART_STYLE)
-    )
-    kind = forced_kind or render.classify(prompt)
-    prompt_plan = prompting.compose(prompt, kind)
-    rng = render.rng_for(style, feature_id, prompt)
-
-    image, provenance = _generate_image(style, kind, rng, prompt_plan.prompt, feature_id)
-    provenance["prompt"] = prompt_plan.metadata()
-
-    prompt_digest = hashlib.sha256(prompt.encode()).hexdigest()[:8]
-    asset_id = f"{resolved_game}__{feature_id}__{kind}__{prompt_digest}"
-    out_path = _asset_path(resolved_game, feature_id, kind, prompt_digest)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(out_path)
-
-    manifest = _load_manifest(resolved_game)
-    manifest["assets"][asset_id] = {
-        "asset_id": asset_id,
-        "feature_id": feature_id,
-        "kind": kind,
-        "prompt": prompt,
-        "provider_prompt": prompt_plan.prompt,
-        "status": PENDING,
-        "asset_path": str(out_path),
-        "created_at": _now(),
-        "reviewed_at": None,
-        "review_note": None,
-        "provenance": provenance,
-    }
-    _save_manifest(manifest)
-
-    result = {
-        "assetPath": str(out_path),
-        "assetId": asset_id,
-        "kind": kind,
-        "gameId": resolved_game,
-        "status": PENDING,
-        "styleSeed": style.seed,
-        "generatedBy": provenance["method"],
-        "promptMetrics": prompt_plan.metadata(),
-    }
-    # PixelLab charges per image against a monthly quota; token-usage
-    # accounting (common/usage.py) is Anthropic-specific and does not apply
-    # here (12문서 §7). Reporting the image count keeps that consumption
-    # visible instead of landing in neither ledger — see _images_generated for
-    # why the unit is images rather than dollars.
-    images = _images_generated(provenance.get("usage") or {})
-    if images:
-        result["imagesGenerated"] = images
-    return result
 
 
 def _generate_prototype(
