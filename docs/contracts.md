@@ -301,6 +301,33 @@ Server: `AssetGenMcpServer`.
 - Palettes travel as `color_image`, a base64 PNG PixelLab samples colours from. Neither
   `CreateImagePixfluxRequest`, `CreateTilesetRequest`, nor `CreateMapObjectRequest` has an
   array-of-colours or string palette field.
+- **Characters and monsters are palette-locked too**, using `ArtStyle.character_palette()` — twelve
+  swatches: the game's identity ramp first, then skin, metal, and leather. They previously got no
+  palette at all, on the grounds that a five-swatch ramp cannot hold skin, cloth, and metal at once
+  (the locked ramp read as "too green, no character", 5/10, against 7/10 for dropping it — a tie).
+  A tie is thin ground for giving up consistency, and the alternative assumed to cover it does not
+  exist: `style_image` carries the reference's subject, not its look, so it cannot make two
+  different subjects share a game's colours. Widening the palette answers the range objection
+  without giving up the lock. `color_image` is a PNG with one pixel per colour, so the swatch count
+  is a design decision, not a provider limit.
+- Measured (2026-08-22, `var/assets/experiments/round-3-palette/`, one game, three subjects —
+  knight, mage, slime — same seed per subject in both arms). The question was not whether any one
+  sprite is good but whether the three read as one game:
+
+  | | unlocked | locked |
+  | --- | --- | --- |
+  | knight | dark blue-grey steel | dark purple-navy with warm tan accents |
+  | mage | near-black robe | the same purple-navy, warm tan staff |
+  | slime | bright saturated green — visibly from another game | green pulled toward the game's value range |
+
+  Locked won on that criterion. A second effect was not expected: the locked knight and mage have
+  **visible faces**, where unlocked gave a faceless helmet and a black void under the hood. The skin
+  swatches are what the earlier "not enough colour range" objection was asking for.
+- Caveats on that measurement: three subjects, one game, one `art_style`. The locked sprites are
+  also darker and lower-contrast overall, which is worth watching at small on-screen sizes.
+- `paletteLock: false` turns the lock off for one asset — a boss with its own scheme, a colour-coded
+  pickup. It is on by default. The palette biases rather than forces: the slime stayed green in both
+  arms, because `color_image` is a sampling reference, not a clamp.
 - `text_guidance_scale` is how literally the description is followed, 1-20, provider default 8.
   Both generation paths send the same value. The MCP path previously hard-coded 16 while the REST
   path sent nothing at all, so two assets in one game were generated at different strengths.

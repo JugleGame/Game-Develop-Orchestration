@@ -180,15 +180,64 @@ def test_pixellab_palette_is_anchored_to_the_locked_style(style):
     )
 
 
-def test_pixellab_palette_is_unforced_for_living_things(style):
-    """Measured (prompt-eval 2026-08-02, rounds 7-9): the locked game ramp
-    read as "too green, no character" on a humanoid (5/10). Dropping the
-    forced palette scored no worse (7/10) while letting the subject show its
-    own colours — living things keep their tone from the ``medium shading``
-    style param instead."""
+def test_living_things_get_a_wider_palette_rather_than_none(style):
+    """They used to get no palette at all.
 
-    assert _pixellab_palette(style, "character", "a hero") is None
-    assert _pixellab_palette(style, "monster", "a wild slime") is None
+    The recorded reason was range: the five-swatch ramp read as "too green, no
+    character" (5/10) while dropping it scored 7/10 — a tie. The alternative
+    that was assumed to cover the gap does not exist: ``style_image`` carries
+    the reference's subject, not its look (measured 2026-08-22), so it cannot
+    make two different subjects share a game's colours. The range objection is
+    answered by widening the palette, not by removing it.
+    """
+
+    for kind in ("character", "monster"):
+        palette = _pixellab_palette(style, kind, "a hero")
+        assert palette == style.character_palette()
+        # Wider than the five a tile or prop gets, which is the whole point.
+        assert len(palette) > len(_pixellab_palette(style, "tile", "grass tile"))
+
+
+def test_the_palette_lock_can_be_turned_off_for_one_asset(style):
+    """A boss with its own scheme, or a colour-coded pickup."""
+
+    for kind in ("character", "monster", "tile", "icon"):
+        assert _pixellab_palette(style, kind, "grass tile") is not None
+        assert _pixellab_palette(style, kind, "grass tile", palette_lock=False) is None
+
+
+def test_the_character_palette_leads_with_the_games_identity(style):
+    """The first four swatches are the same ramp a sprite was always drawn
+    from; skin, metal, and leather follow so a face, a blade, and a strap do
+    not all have to borrow the cloth hue."""
+
+    palette = style.character_palette()
+    ramp = style.character_ramp()
+
+    assert palette[:4] == [ramp["shadow"], ramp["base"], ramp["light"], ramp["highlight"]]
+    assert style.rgb("outline") in palette
+    assert len(palette) == len(set(palette)), "duplicate swatches say nothing"
+
+
+def test_the_character_palette_is_deterministic_and_per_game():
+    """Derived from seed and art_style, both persisted — so it needs no new
+    stored field and a style.json written before it existed still resolves."""
+
+    first = derive("t-palette", "pixel art")
+    again = derive("t-palette", "pixel art")
+    other = derive("t-palette-other", "pixel art")
+
+    assert first.character_palette() == again.character_palette()
+    assert first.character_palette() != other.character_palette()
+
+
+def test_a_monochrome_game_gets_no_tinted_character_swatches():
+    """The palette must not put colour back into a game that asked for none."""
+
+    mono = derive("t-mono-character", "monochrome pixel art")
+
+    for red, green, blue in mono.character_palette():
+        assert red == green == blue, (red, green, blue)
 
 
 def test_pixellab_style_params_flattens_shading_for_inanimate_kinds(style):
@@ -1071,3 +1120,42 @@ def test_prompt_metrics_keys_say_what_they_hold():
     }
     assert plan.metadata()["structuredClauses"] == ["flat shading"]
     assert not hasattr(plan, "removed_structured_clauses")
+
+
+async def test_palette_lock_reaches_the_prototype_request(monkeypatch, tmp_path):
+    """On by default, and off for exactly the one asset that asks."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    seen: list[list[str]] = []
+
+    def _fake_prototype(**kwargs):
+        seen.append(kwargs["palette"])
+        image = Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255))
+        return image, {"type": "generations", "generations": 1.0}, "create_image"
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
+
+    from mcp import Client
+
+    async with Client(server.mcp) as client:
+        for feature, lock in (("f-locked", True), ("f-unlocked", False)):
+            result = await client.call_tool(
+                "generate_2d_sprite",
+                {
+                    "featureId": feature,
+                    "prompt": "a hero",
+                    "assetKind": "character",
+                    "gameId": "t-palette-lock",
+                    "paletteLock": lock,
+                },
+            )
+            assert result.is_error is False
+
+    locked_style = load_or_create(tmp_path, "t-palette-lock", server.DEFAULT_ART_STYLE)
+    expected = [
+        f"#{red:02x}{green:02x}{blue:02x}"
+        for red, green, blue in locked_style.character_palette()
+    ]
+    assert seen[0] == expected
+    assert seen[1] == []
