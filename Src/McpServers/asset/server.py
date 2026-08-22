@@ -132,10 +132,49 @@ def _size_for(
 
 
 def _resolve_size(
-    style: Any, kind: render.AssetKind, grid: int | None, feature_id: str
+    style: Any,
+    kind: render.AssetKind,
+    grid: int | None,
+    feature_id: str,
+    canvas: list[int] | None = None,
 ) -> tuple[int, int]:
-    """Size for this call, rejected here rather than by an opaque provider error."""
+    """Size for this call, rejected here rather than by an opaque provider error.
 
+    ``canvas`` is the caller stating the size outright. It skips
+    ``_KIND_SIZE_RATIO`` entirely, which is the point: the ratio is a good
+    default for a kind and a wrong answer for one asset, and until this existed
+    there was no way to say so. The per-side range check below still applies —
+    naming a size is allowed, naming one the provider cannot draw is not.
+    """
+
+    if canvas is not None:
+        if grid is not None:
+            raise tool_error(
+                VALIDATION_ERROR,
+                "canvas and gridSize both set the generated size; pass one",
+                featureId=feature_id,
+            )
+        if len(canvas) != 2 or any(
+            not isinstance(side, int) or isinstance(side, bool) or side <= 0
+            for side in canvas
+        ):
+            raise tool_error(
+                VALIDATION_ERROR,
+                "canvas must be [width, height], both positive integers",
+                featureId=feature_id,
+            )
+        width, height = canvas
+        if not (
+            _PIXELLAB_MIN_SIDE <= width <= _PIXELLAB_MAX_SIDE
+            and _PIXELLAB_MIN_SIDE <= height <= _PIXELLAB_MAX_SIDE
+        ):
+            raise tool_error(
+                VALIDATION_ERROR,
+                f"canvas {width}x{height} is outside PixelLab's "
+                f"{_PIXELLAB_MIN_SIDE}-{_PIXELLAB_MAX_SIDE}px per-side range",
+                featureId=feature_id,
+            )
+        return width, height
     if grid is not None and grid <= 0:
         raise tool_error(VALIDATION_ERROR, "gridSize must be a positive integer")
     width, height = _size_for(style, kind, grid)
@@ -614,6 +653,7 @@ def _generate_prototype(
     init_asset_id: str | None = None,
     skeleton_guidance: float | None = None,
     init_image_strength: int | None = None,
+    canvas: list[int] | None = None,
 ) -> dict[str, Any]:
     """Generate the reviewable style prototype.
 
@@ -631,11 +671,15 @@ def _generate_prototype(
     )
     kind = forced_kind or render.classify(prompt)
     prompt_plan = prompting.compose(prompt, kind)
-    width, height = _resolve_size(style, kind, grid_size, feature_id)
+    width, height = _resolve_size(style, kind, grid_size, feature_id, canvas)
     seed = render.rng_for(style, feature_id, prompt).getrandbits(32)
     # The grid joins the digest only when overridden, so digests written before
-    # this parameter existed still resolve to the same asset id and file.
+    # this parameter existed still resolve to the same asset id and file. The
+    # canvas joins it the same way and for the same reason as the grid: the
+    # same prompt at another size is another asset, not a duplicate of this one.
     digest_source = prompt if grid_size is None else f"{prompt}|grid{grid_size}"
+    if canvas is not None:
+        digest_source = f"{digest_source}|canvas{canvas[0]}x{canvas[1]}"
     prompt_digest = hashlib.sha256(digest_source.encode()).hexdigest()[:8]
     asset_id = f"{resolved_game}__{feature_id}__{kind}__{prompt_digest}"
     if not pixellab_client.is_configured():
@@ -703,8 +747,17 @@ def _generate_prototype(
         # 32x64 through bitforge with *no* keypoints came back as a detached hat
         # floating above a body, while the same prompt at 64x64 came back as a
         # complete figure. A non-square canvas is where this endpoint fails.
-        squared = _posable_canvas(width, height)
-        if squared is None:
+        # An explicit canvas is not grown. Growing it would answer a question
+        # the caller already answered, and the warning below says what the
+        # provider's weakness is — which is the caller's to weigh, not this
+        # server's to overrule.
+        squared = None if canvas is not None else _posable_canvas(width, height)
+        if canvas is not None and width != height:
+            warnings.append(
+                f"canvas {width}x{height} was used as given; create-image-bitforge is "
+                "unreliable on a non-square canvas"
+            )
+        elif squared is None:
             warnings.append(
                 f"{width}x{height} has no square canvas to grow to within "
                 f"{pixellab_client.SKELETON_FRIENDLY_SIZES}; this endpoint is "
@@ -907,8 +960,9 @@ def prepare_asset_prompt(
         "assetKind is required: it decides the canvas ratio, palette, shading, and "
         "framing, so it is not guessed from prompt wording. Approve the result before "
         "requesting API variations. Pass gridSize to generate one asset at a different "
-        "in-world size without changing the game's locked grid, and direction to turn "
-        "one asset without changing which way the game faces."
+        "in-world size without changing the game's locked grid, canvas to state the "
+        "generated [width, height] outright and skip the kind's fixed ratio, and "
+        "direction to turn one asset without changing which way the game faces."
     )
 )
 @expects_dict_return
@@ -925,6 +979,7 @@ def generate_2d_sprite(
     initAssetId: str | None = None,
     skeletonGuidance: float | None = None,
     initImageStrength: int | None = None,
+    canvas: list[int] | None = None,
 ) -> dict[str, Any]:
     """``assetKind`` is required — one of ``character``, ``monster``, ``tile``,
     ``prop``, ``icon``, ``ui_button``, ``ui_panel``.
@@ -967,6 +1022,14 @@ def generate_2d_sprite(
     32x64, a 56 grid character 56x112, and both upscale by the same factor.
     The game's stored style is untouched either way.
 
+    ``canvas`` is ``[width, height]`` used exactly as given. It is the way past
+    the kind's fixed ratio: ``gridSize`` scales that ratio, it cannot leave it,
+    so a square character was unaskable until this existed. A posed request
+    with an explicit canvas is not grown to a square either — the provider's
+    weakness on a non-square canvas is reported in ``warnings`` and left to the
+    caller. ``canvas`` and ``gridSize`` set the same thing; passing both is
+    refused.
+
     ``direction`` is which way the subject faces — one of ``north``,
     ``north-east``, ``east``, ``south-east``, ``south``, ``south-west``,
     ``west``, ``north-west``. It is PixelLab's own field; before it was wired
@@ -988,6 +1051,7 @@ def generate_2d_sprite(
         init_asset_id=initAssetId,
         skeleton_guidance=skeletonGuidance,
         init_image_strength=initImageStrength,
+        canvas=canvas,
     )
 
 

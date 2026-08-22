@@ -1687,3 +1687,157 @@ async def test_an_asset_id_reference_still_needs_approval_and_pixellab(monkeypat
 
     assert refused.is_error is True
     assert "approved" in "".join(getattr(b, "text", "") for b in refused.content)
+
+
+async def test_an_explicit_canvas_skips_the_kinds_fixed_ratio(monkeypatch, tmp_path):
+    """``gridSize`` scales the kind's ratio and cannot leave it, so a square
+    character was unaskable until ``canvas`` existed."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    sizes: list[tuple[int, int]] = []
+
+    def _fake_prototype(**kwargs):
+        sizes.append((kwargs["width"], kwargs["height"]))
+        image = Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255))
+        return image, {"type": "generations", "generations": 1.0}, "create_image"
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
+
+    from mcp import Client
+
+    async with Client(server.mcp) as client:
+        squared = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-canvas",
+                "prompt": "a knight",
+                "assetKind": "character",
+                "gameId": "t-canvas",
+                "canvas": [64, 64],
+            },
+        )
+        ratioed = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-canvas",
+                "prompt": "a knight",
+                "assetKind": "character",
+                "gameId": "t-canvas",
+            },
+        )
+
+    assert squared.is_error is False, squared.content
+    assert ratioed.is_error is False, ratioed.content
+    # The explicit canvas went through as asked; the same prompt without it
+    # still gets the character kind's 1:2 ratio at the game's locked grid.
+    assert sizes == [(64, 64), (32, 64)]
+    # Same prompt, different canvas: a different asset, not a duplicate.
+    assert squared.structured_content["assetId"] != ratioed.structured_content["assetId"]
+
+
+async def test_canvas_and_grid_size_cannot_both_set_the_size(monkeypatch, tmp_path):
+    """Two arguments answering the same question is a caller mistake worth
+    reporting, not one worth silently ranking."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    def _unexpected(*args, **kwargs):
+        raise AssertionError("nothing should be spent on a contradictory request")
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _unexpected)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _unexpected)
+
+    from mcp import Client
+
+    async with Client(server.mcp) as client:
+        both = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-both",
+                "prompt": "a knight",
+                "assetKind": "character",
+                "gameId": "t-both",
+                "canvas": [64, 64],
+                "gridSize": 32,
+            },
+        )
+        oversized = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-oversized",
+                "prompt": "a knight",
+                "assetKind": "character",
+                "gameId": "t-both",
+                "canvas": [64, 4000],
+            },
+        )
+        malformed = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-malformed",
+                "prompt": "a knight",
+                "assetKind": "character",
+                "gameId": "t-both",
+                "canvas": [64],
+            },
+        )
+
+    for refused, expected in (
+        (both, "pass one"),
+        (oversized, "per-side range"),
+        (malformed, "width, height"),
+    ):
+        assert refused.is_error is True
+        assert expected in "".join(getattr(b, "text", "") for b in refused.content)
+
+
+async def test_a_posed_request_keeps_the_canvas_it_was_given(monkeypatch, tmp_path):
+    """The growth exists because bitforge is unreliable on a non-square canvas.
+    An explicit canvas is the caller weighing that themselves, so it is reported
+    rather than overruled."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured: dict[str, Any] = {}
+
+    def _fake_prototype(**kwargs):
+        image = Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255))
+        return image, {"type": "generations", "generations": 1.0}, "create_image"
+
+    def _fake_bitforge(**kwargs):
+        captured.update(kwargs)
+        return (
+            Image.new("RGBA", (kwargs["width"], kwargs["height"]), (7, 7, 7, 255)),
+            {"type": "generations", "generations": 1.0},
+        )
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _fake_bitforge)
+
+    from mcp import Client
+
+    async with Client(server.mcp) as client:
+        anchor = await _approved_sprite(
+            client,
+            game="t-posed-canvas",
+            feature="f-anchor",
+            kind="character",
+            prompt="a knight",
+        )
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-posed-canvas",
+                "prompt": "a mage",
+                "assetKind": "character",
+                "gameId": "t-posed-canvas",
+                "initAssetId": anchor,
+                "canvas": [40, 80],
+            },
+        )
+
+    assert result.is_error is False, result.content
+    assert (captured["width"], captured["height"]) == (40, 80)
+    assert any("used as given" in warning for warning in result.structured_content["warnings"])

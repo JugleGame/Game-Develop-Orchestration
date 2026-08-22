@@ -350,6 +350,15 @@ Server: `AssetGenMcpServer`.
   varies — so a non-square batch takes `generate-with-style-v2` instead, and the bitforge-only
   arguments are refused with that reason. A 1:2 character batch therefore works, without the
   controls bitforge would have added.
+- `generate_2d_sprite` accepts `canvas` as `[width, height]`, used exactly as given. It skips the
+  kind's `_KIND_SIZE_RATIO` entirely, which `gridSize` cannot do — `gridSize` scales that ratio, so
+  a square `character` was unaskable before this. The per-side range check still applies, and the
+  200px bitforge ceiling still applies to a request carrying a reference. `canvas` and `gridSize`
+  set the same thing, so passing both is refused rather than ranked, and `canvas` joins the asset-id
+  digest so the same prompt at another size is another asset rather than a blocked duplicate.
+- A posed or init-image request with an explicit `canvas` is **not** grown to a square. The growth
+  exists because bitforge is unreliable on a non-square canvas; naming the canvas is the caller
+  weighing that themselves, so the request reports a `warnings` entry and generates as asked.
 - `generate_2d_sprite` accepts `poseFromAssetId` and `initAssetId`, both naming an approved PixelLab
   asset of the same game. The first reads that sprite's joints with `/estimate-skeleton` and sends
   them as `skeleton_keypoints`; the second sends it as `init_image`. Both need
