@@ -359,6 +359,43 @@ def _is_pixellab_asset(record: dict[str, Any]) -> bool:
     return method.startswith("pixellab")
 
 
+def _approved_reference(
+    asset_id: str, game_id: str, field: str, feature_id: str
+) -> Image.Image:
+    """Open an approved sprite of this game to reuse as a reference.
+
+    The same three gates as a style anchor: it belongs to this game, a human
+    approved it, and PixelLab drew it. A reference is a second asset's pose or
+    starting pixels, so an unreviewed one would launder an unapproved image
+    into approved work.
+    """
+
+    if asset_id.split("__", 1)[0] != game_id:
+        raise tool_error(
+            VALIDATION_ERROR, f"{field} must belong to gameId", featureId=feature_id
+        )
+    record = (_load_manifest(game_id)["assets"] or {}).get(asset_id)
+    if record is None:
+        raise tool_error(
+            VALIDATION_ERROR, f"unknown {field}: {asset_id}", featureId=feature_id
+        )
+    if record["status"] != APPROVED:
+        raise tool_error(
+            VALIDATION_ERROR, f"{field} must be approved", featureId=feature_id
+        )
+    if not _is_pixellab_asset(record):
+        raise tool_error(
+            VALIDATION_ERROR, f"{field} must come from PixelLab", featureId=feature_id
+        )
+    path = Path(record["asset_path"])
+    if not path.is_file():
+        raise tool_error(
+            VALIDATION_ERROR, f"{field} file is missing: {path}", featureId=feature_id
+        )
+    with Image.open(path) as opened:
+        return opened.convert("RGBA").copy()
+
+
 def _pixellab_palette(
     style: Any,
     kind: render.AssetKind,
@@ -504,8 +541,17 @@ def _generate_prototype(
     direction: str | None = None,
     kind_source: str = "inferred",
     palette_lock: bool = True,
+    pose_from_asset_id: str | None = None,
+    init_asset_id: str | None = None,
+    skeleton_guidance: float | None = None,
+    init_image_strength: int | None = None,
 ) -> dict[str, Any]:
-    """Generate the reviewable style prototype through PixelLab's official MCP."""
+    """Generate the reviewable style prototype.
+
+    Normally through PixelLab's official MCP. A request that carries a pose or
+    a starting image goes through ``create-image-bitforge`` instead, because
+    those fields exist only there.
+    """
 
     feature_id = _require_identifier(feature_id, "featureId")
     direction = _direction(direction, feature_id)
@@ -565,17 +611,74 @@ def _generate_prototype(
     palette_rgb = _pixellab_palette(style, kind, prompt, palette_lock)
     palette = [f"#{red:02x}{green:02x}{blue:02x}" for red, green, blue in palette_rgb or []]
 
+    posed = pose_from_asset_id or init_asset_id
+    skeleton: list[dict[str, Any]] = []
+    skeleton_usage: dict[str, Any] = {}
+    init_image = None
+    warnings: list[str] = []
+    if posed:
+        ceiling = pixellab_client.BITFORGE_SIDE_RANGE[1]
+        if max(width, height) > ceiling:
+            # Refused rather than dropped: silently generating without the pose
+            # that was asked for is the worst of the three outcomes.
+            raise tool_error(
+                VALIDATION_ERROR,
+                f"poseFromAssetId and initAssetId need create-image-bitforge, which stops "
+                f"at {ceiling}px per side; this request is {width}x{height}",
+                featureId=feature_id,
+            )
+        if init_asset_id:
+            init_image = _approved_reference(
+                init_asset_id, resolved_game, "initAssetId", feature_id
+            )
+        if pose_from_asset_id:
+            source = _approved_reference(
+                pose_from_asset_id, resolved_game, "poseFromAssetId", feature_id
+            )
+            try:
+                # Passed through unscaled. The keypoints are normalised to
+                # 0-1, not pixels, so the reference's own size is irrelevant
+                # and rescaling them by the size ratio is actively wrong —
+                # measured 2026-08-22: a 128x256 reference scaled onto a 32x64
+                # canvas put every joint in the top-left corner and the
+                # generation came back as noise.
+                skeleton, skeleton_usage = pixellab_client.estimate_skeleton(source)
+            except pixellab_client.PixelLabUnavailable as exc:
+                raise tool_error(
+                    MCP_ERROR,
+                    f"PixelLab skeleton estimation failed: {exc}",
+                    featureId=feature_id,
+                ) from exc
+            warning = pixellab_client.skeleton_size_warning(width, height)
+            if warning:
+                warnings.append(warning)
+
     try:
-        image, usage, tool_name = pixellab_client.generate_prototype(
-            prompt=prompt_plan.prompt,
-            width=width,
-            height=height,
-            kind=kind,
-            seed=seed,
-            style_description=style.art_style,
-            style_params=_pixellab_style_params(style, kind, direction),
-            palette=palette,
-        )
+        if posed:
+            image, usage = pixellab_client.create_image_bitforge(
+                prompt=prompt_plan.prompt,
+                width=width,
+                height=height,
+                seed=seed,
+                skeleton_keypoints=skeleton or None,
+                skeleton_guidance_scale=skeleton_guidance,
+                init_image=init_image,
+                init_image_strength=init_image_strength,
+                forced_palette=palette_rgb,
+                **_pixellab_style_params(style, kind, direction),
+            )
+            tool_name = "create-image-bitforge"
+        else:
+            image, usage, tool_name = pixellab_client.generate_prototype(
+                prompt=prompt_plan.prompt,
+                width=width,
+                height=height,
+                kind=kind,
+                seed=seed,
+                style_description=style.art_style,
+                style_params=_pixellab_style_params(style, kind, direction),
+                palette=palette,
+            )
     except pixellab_client.PixelLabUnavailable as exc:
         # No image came back, so record how the claim ended instead of leaving
         # it at SUBMITTING, which used to block this prompt forever.
@@ -602,9 +705,13 @@ def _generate_prototype(
     image.save(out_path)
 
     provenance = {
-        "method": "pixellab-mcp",
-        "generator": "https://api.pixellab.ai/mcp",
+        "method": "pixellab-api" if posed else "pixellab-mcp",
+        "generator": (
+            "https://api.pixellab.ai/v2" if posed else "https://api.pixellab.ai/mcp"
+        ),
         "tool": tool_name,
+        "pose_from": pose_from_asset_id,
+        "init_from": init_asset_id,
         "kind": kind,
         "kind_source": kind_source,
         "derived_from": f"seed={seed} feature={feature_id}",
@@ -649,8 +756,14 @@ def _generate_prototype(
         "generatedBy": provenance["method"],
         "promptMetrics": prompt_plan.metadata(),
     }
+    if skeleton:
+        result["skeletonKeypoints"] = len(skeleton)
+    if warnings:
+        result["warnings"] = warnings
     images = _images_generated(usage)
-    result["imagesGenerated"] = images or 1
+    # Skeleton estimation is its own billed call, so it is added rather than
+    # folded into the generation's own report.
+    result["imagesGenerated"] = (images or 1) + _images_generated(skeleton_usage)
     return result
 
 
@@ -714,6 +827,10 @@ def generate_2d_sprite(
     gridSize: int | None = None,
     direction: str | None = None,
     paletteLock: bool = True,
+    poseFromAssetId: str | None = None,
+    initAssetId: str | None = None,
+    skeletonGuidance: float | None = None,
+    initImageStrength: int | None = None,
 ) -> dict[str, Any]:
     """``assetKind`` is required — one of ``character``, ``monster``, ``tile``,
     ``prop``, ``icon``, ``ui_button``, ``ui_panel``.
@@ -723,6 +840,21 @@ def generate_2d_sprite(
     together, and the cost landed on generation credits and human review rather
     than on the omitted argument. ``prepare_asset_prompt`` already requires the
     same value.
+
+    ``poseFromAssetId`` names an approved sprite of this game whose joints are
+    read with ``/estimate-skeleton`` and handed to this generation as
+    coordinates. It is the one control that states a pose outright rather than
+    describing it, and it costs one extra billed call. ``skeletonGuidance``
+    (0-5) is how closely those joints are followed.
+
+    ``initAssetId`` names an approved sprite to start the generation from, with
+    ``initImageStrength`` (1-999) setting how much of it survives.
+
+    Both require ``create-image-bitforge``, which stops at 200px per side; a
+    larger request is refused rather than generated without the pose it asked
+    for. PixelLab also warns that keypoints work best on 16x16, 32x32, or
+    64x64 — a character is a 1:2 kind, so a posed character comes back with a
+    ``warnings`` entry saying so rather than being blocked.
 
     ``paletteLock`` sends the game's own colours as PixelLab's ``color_image``.
     It is on by default — that is what keeps two assets in one game from
@@ -753,6 +885,10 @@ def generate_2d_sprite(
         direction=direction,
         kind_source="explicit",
         palette_lock=paletteLock,
+        pose_from_asset_id=poseFromAssetId,
+        init_asset_id=initAssetId,
+        skeleton_guidance=skeletonGuidance,
+        init_image_strength=initImageStrength,
     )
 
 

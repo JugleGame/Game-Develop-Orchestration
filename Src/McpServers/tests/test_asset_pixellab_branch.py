@@ -1159,3 +1159,236 @@ async def test_palette_lock_reaches_the_prototype_request(monkeypatch, tmp_path)
     ]
     assert seen[0] == expected
     assert seen[1] == []
+
+
+# --------------------------------------------------------------------------
+# Pose and starting image at the server boundary (issue #69)
+# --------------------------------------------------------------------------
+
+
+async def _approved_sprite(client, *, game, feature, kind, prompt):
+    created = await client.call_tool(
+        "generate_2d_sprite",
+        {"featureId": feature, "prompt": prompt, "assetKind": kind, "gameId": game},
+    )
+    assert created.is_error is False, created.content
+    await client.call_tool(
+        "review_asset", {"assetId": created.structured_content["assetId"], "approved": True}
+    )
+    return created.structured_content["assetId"]
+
+
+async def test_a_pose_reference_reaches_bitforge_as_coordinates(monkeypatch, tmp_path):
+    """The one control that states a pose outright instead of describing it."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+
+    def _fake_prototype(**kwargs):
+        image = Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255))
+        return image, {"type": "generations", "generations": 1.0}, "create_image"
+
+    def _fake_skeleton(image):
+        captured["skeleton_source_size"] = image.size
+        return (
+            [{"x": 0.5, "y": 0.25, "label": "NOSE", "z_index": 0}],
+            {"type": "generations", "generations": 1.0},
+        )
+
+    def _fake_bitforge(**kwargs):
+        captured.update(kwargs)
+        return (
+            Image.new("RGBA", (kwargs["width"], kwargs["height"]), (7, 7, 7, 255)),
+            {"type": "generations", "generations": 1.0},
+        )
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
+    monkeypatch.setattr(pixellab_client, "estimate_skeleton", _fake_skeleton)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _fake_bitforge)
+
+    from mcp import Client
+
+    async with Client(server.mcp) as client:
+        anchor = await _approved_sprite(
+            client, game="t-pose", feature="f-anchor", kind="prop", prompt="a rock"
+        )
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-posed",
+                "prompt": "a mossy rock",
+                "assetKind": "prop",
+                "gameId": "t-pose",
+                "poseFromAssetId": anchor,
+                "skeletonGuidance": 3.0,
+            },
+        )
+
+    body = result.structured_content
+    assert result.is_error is False
+    # Estimated on the stored 128x128 sprite and sent unchanged for a 32x32
+    # canvas: the coordinates are normalised to 0-1, so the reference's own
+    # size is irrelevant. Scaling them by the size ratio put every joint in the
+    # top-left corner and the generation came back as noise (measured).
+    assert captured["skeleton_source_size"] == (128, 128)
+    assert captured["skeleton_keypoints"] == [
+        {"x": 0.5, "y": 0.25, "label": "NOSE", "z_index": 0}
+    ]
+    assert captured["skeleton_guidance_scale"] == 3.0
+    assert body["skeletonKeypoints"] == 1
+    # 32x32 prop: a friendly keypoint canvas, so nothing to warn about.
+    assert "warnings" not in body
+    # The skeleton call is billed separately from the generation.
+    assert body["imagesGenerated"] == 2
+
+
+async def test_a_posed_character_is_warned_about_its_canvas(monkeypatch, tmp_path):
+    """Every keypoint-friendly canvas is square and a character is 1:2, so the
+    provider's own warning applies to the常 case. Warned, not blocked."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    def _fake_prototype(**kwargs):
+        image = Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255))
+        return image, {"type": "generations", "generations": 1.0}, "create_image"
+
+    def _fake_skeleton(image):
+        return [{"x": 1.0, "y": 2.0, "label": "NECK", "z_index": 0}], {}
+
+    def _fake_bitforge(**kwargs):
+        return (
+            Image.new("RGBA", (kwargs["width"], kwargs["height"]), (7, 7, 7, 255)),
+            {"type": "generations", "generations": 1.0},
+        )
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
+    monkeypatch.setattr(pixellab_client, "estimate_skeleton", _fake_skeleton)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _fake_bitforge)
+
+    from mcp import Client
+
+    async with Client(server.mcp) as client:
+        anchor = await _approved_sprite(
+            client,
+            game="t-pose-char",
+            feature="f-anchor",
+            kind="character",
+            prompt="a knight",
+        )
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-posed-char",
+                "prompt": "a mage",
+                "assetKind": "character",
+                "gameId": "t-pose-char",
+                "poseFromAssetId": anchor,
+            },
+        )
+
+    body = result.structured_content
+    assert result.is_error is False
+    assert any("32x64" in warning for warning in body["warnings"])
+
+
+async def test_an_unapproved_reference_is_refused_before_any_call(monkeypatch, tmp_path):
+    """A reference becomes part of the next asset, so an unreviewed one would
+    launder an unapproved image into approved work."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    def _fake_prototype(**kwargs):
+        image = Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255))
+        return image, {"type": "generations", "generations": 1.0}, "create_image"
+
+    def _unexpected(*a, **k):
+        raise AssertionError("nothing should be spent on a rejected reference")
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
+    monkeypatch.setattr(pixellab_client, "estimate_skeleton", _unexpected)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _unexpected)
+
+    from mcp import Client
+
+    async with Client(server.mcp) as client:
+        pending = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-unapproved",
+                "prompt": "a rock",
+                "assetKind": "prop",
+                "gameId": "t-unapproved",
+            },
+        )
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-uses-it",
+                "prompt": "a mossy rock",
+                "assetKind": "prop",
+                "gameId": "t-unapproved",
+                "poseFromAssetId": pending.structured_content["assetId"],
+            },
+        )
+        foreign = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-foreign",
+                "prompt": "a mossy rock",
+                "assetKind": "prop",
+                "gameId": "t-unapproved",
+                "initAssetId": "other-game__f__prop__abcd1234",
+            },
+        )
+
+    for refused, expected in ((result, "approved"), (foreign, "belong to gameId")):
+        assert refused.is_error is True
+        assert expected in "".join(getattr(b, "text", "") for b in refused.content)
+
+
+async def test_a_canvas_too_large_for_bitforge_is_refused_not_silently_posed(
+    monkeypatch, tmp_path
+):
+    """Generating without the pose that was asked for is the worst outcome of
+    the three, so the request fails instead."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    def _fake_prototype(**kwargs):
+        image = Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255))
+        return image, {"type": "generations", "generations": 1.0}, "create_image"
+
+    def _unexpected(*a, **k):
+        raise AssertionError("nothing should be spent on an impossible request")
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _fake_prototype)
+    monkeypatch.setattr(pixellab_client, "estimate_skeleton", _unexpected)
+    monkeypatch.setattr(pixellab_client, "create_image_bitforge", _unexpected)
+
+    from mcp import Client
+
+    async with Client(server.mcp) as client:
+        anchor = await _approved_sprite(
+            client, game="t-too-big", feature="f-anchor", kind="prop", prompt="a rock"
+        )
+        result = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-huge",
+                "prompt": "a mossy rock",
+                "assetKind": "prop",
+                "gameId": "t-too-big",
+                "gridSize": 240,
+                "poseFromAssetId": anchor,
+            },
+        )
+
+    assert result.is_error is True
+    text = "".join(getattr(b, "text", "") for b in result.content)
+    assert "200px per side" in text
+    assert "240x240" in text
+
