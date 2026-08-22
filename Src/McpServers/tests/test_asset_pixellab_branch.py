@@ -804,3 +804,63 @@ def test_establish_art_style_accepts_the_schema_values(monkeypatch, tmp_path):
 
     assert result["detail"] == "low detail"
     assert result["shading"] == "basic shading"
+
+
+# --------------------------------------------------------------------------
+# Negations recovered as negative_description (issue #64)
+# --------------------------------------------------------------------------
+
+
+def test_removed_negations_become_a_negative_description():
+    """Dropping a negation from the description is right for pixflux, which
+    marks the field ``(Deprecated)`` and draws the noun anyway. Discarding the
+    information was not: bitforge's ``negative_description`` is live."""
+
+    plan = prompting.compose(
+        "a lone knight on a hill, no city, without buildings, avoid text", "character"
+    )
+
+    assert "city" not in plan.prompt
+    assert plan.negative_description == "city, buildings, text"
+    assert plan.metadata()["negativeDescription"] == "city, buildings, text"
+
+
+def test_a_prompt_without_negations_has_an_empty_negative_description():
+    plan = prompting.compose("a lone knight on a hill", "character")
+
+    assert plan.negative_description == ""
+
+
+def test_an_inline_negation_stays_in_the_subject():
+    """"a knight with no helmet" must not lose the knight, so the clause is
+    left alone and contributes nothing to the negative description."""
+
+    plan = prompting.compose("a knight with no helmet", "character")
+
+    assert "knight" in plan.prompt
+    assert plan.negative_description == ""
+
+
+def test_variation_endpoint_prefers_bitforge_only_where_it_fits():
+    """One reference and a small canvas gets the controls; anything else falls
+    back to the multi-reference endpoint, which has none of them."""
+
+    from asset.server import _BITFORGE, _STYLE_V2, _variation_endpoint
+
+    assert _variation_endpoint(1, (32, 64)) == _BITFORGE
+    assert _variation_endpoint(1, (200, 200)) == _BITFORGE
+    # 201 per side is past CreateImageBitforgeRequest.image_size's maximum.
+    assert _variation_endpoint(1, (201, 64)) == _STYLE_V2
+    # bitforge takes exactly one style_image.
+    assert _variation_endpoint(2, (32, 64)) == _STYLE_V2
+
+
+def test_pixellab_asset_check_accepts_every_generation_path():
+    """Anchor eligibility used to demand the exact string "pixellab-mcp"."""
+
+    from asset.server import _is_pixellab_asset
+
+    for method in ("pixellab", "pixellab-mcp", "pixellab-api"):
+        assert _is_pixellab_asset({"provenance": {"method": method}}) is True
+    assert _is_pixellab_asset({"provenance": {"method": "placeholder"}}) is False
+    assert _is_pixellab_asset({}) is False

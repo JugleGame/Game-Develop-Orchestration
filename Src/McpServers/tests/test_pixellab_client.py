@@ -921,3 +921,177 @@ def test_generate_image_rejects_a_style_value_outside_the_schema(monkeypatch):
         )
 
     assert "/create-image-pixflux" in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------
+# create_image_bitforge (issue #64)
+# --------------------------------------------------------------------------
+
+
+def _bitforge_post(monkeypatch, captured, size=(32, 64)):
+    def _fake_post(url, json, headers, timeout):
+        captured["url"] = url
+        captured["payload"] = json
+        return _FakeResponse(
+            {
+                "image": {"base64": base64.b64encode(_png_bytes(size=size)).decode()},
+                "usage": {"type": "generations", "generations": 1.0},
+            }
+        )
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+
+
+def test_bitforge_sends_the_style_reference_as_base64(monkeypatch):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+    _bitforge_post(monkeypatch, captured)
+
+    image, usage = pixellab_client.create_image_bitforge(
+        prompt="a red treasure chest",
+        width=32,
+        height=64,
+        style_image=Image.new("RGBA", (128, 256), (1, 2, 3, 255)),
+        seed=9,
+    )
+
+    payload = captured["payload"]
+    assert captured["url"].endswith("/create-image-bitforge")
+    assert payload["style_image"]["type"] == "base64"
+    # Resized to the requested canvas: the endpoint requires an exact match and
+    # answers a mismatch with a 500, not a 422 (measured 2026-08-22:
+    # "style_image must be size (64, 32), not torch.Size([256, 128])").
+    reference = Image.open(io.BytesIO(base64.b64decode(payload["style_image"]["base64"])))
+    assert reference.size == (32, 64)
+    assert image.size == (32, 64)
+    assert usage["generations"] == 1.0
+
+
+def test_bitforge_resizes_an_init_image_to_the_canvas_too(monkeypatch):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+    _bitforge_post(monkeypatch, captured)
+
+    pixellab_client.create_image_bitforge(
+        prompt="a rock",
+        width=32,
+        height=32,
+        init_image=Image.new("RGBA", (128, 128), (1, 2, 3, 255)),
+    )
+
+    sketch = Image.open(io.BytesIO(base64.b64decode(captured["payload"]["init_image"]["base64"])))
+    assert sketch.size == (32, 32)
+
+
+def test_bitforge_defaults_style_strength_to_the_documented_midpoint(monkeypatch):
+    """The schema default is 0, which means "ignore the style image".
+
+    Sending a reference and letting the provider default apply would silently
+    do nothing, so a reference with no explicit strength gets the schema's own
+    "50 = balanced" instead.
+    """
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+    _bitforge_post(monkeypatch, captured)
+
+    pixellab_client.create_image_bitforge(
+        prompt="a red treasure chest",
+        width=32,
+        height=64,
+        style_image=Image.new("RGBA", (32, 64), (1, 2, 3, 255)),
+    )
+    assert captured["payload"]["style_strength"] == 50
+    assert pixellab_client.BITFORGE_BALANCED_STYLE_STRENGTH == 50
+
+    pixellab_client.create_image_bitforge(
+        prompt="a red treasure chest",
+        width=32,
+        height=64,
+        style_image=Image.new("RGBA", (32, 64), (1, 2, 3, 255)),
+        style_strength=70,
+    )
+    assert captured["payload"]["style_strength"] == 70
+
+
+def test_bitforge_sends_negative_description_that_pixflux_drops(monkeypatch):
+    """``negative_description`` is live here and ``(Deprecated)`` on pixflux."""
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+    _bitforge_post(monkeypatch, captured)
+
+    pixellab_client.create_image_bitforge(
+        prompt="a lone knight on a hill",
+        width=32,
+        height=64,
+        negative_description="city, buildings",
+    )
+    assert captured["payload"]["negative_description"] == "city, buildings"
+
+    pixellab_client.generate_image(prompt="a lone knight on a hill", width=32, height=64)
+    assert "negative_description" not in captured["payload"]
+
+
+def test_bitforge_sends_coverage_and_projection(monkeypatch):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+    _bitforge_post(monkeypatch, captured)
+
+    pixellab_client.create_image_bitforge(
+        prompt="a wooden crate",
+        width=32,
+        height=32,
+        coverage_percentage=85.0,
+        oblique_projection=True,
+        init_image=Image.new("RGBA", (32, 32), (9, 9, 9, 255)),
+        init_image_strength=200,
+    )
+
+    payload = captured["payload"]
+    assert payload["coverage_percentage"] == 85.0
+    assert payload["oblique_projection"] is True
+    assert payload["init_image"]["type"] == "base64"
+    assert payload["init_image_strength"] == 200
+
+
+@pytest.mark.parametrize(
+    "kwargs,message",
+    [
+        ({"width": 201, "height": 32}, "16-200px per side"),
+        ({"width": 32, "height": 32, "style_strength": 101}, "style_strength"),
+        ({"width": 32, "height": 32, "coverage_percentage": 120}, "coverage_percentage"),
+        ({"width": 32, "height": 32, "init_image_strength": 1000}, "init_image_strength"),
+    ],
+)
+def test_bitforge_rejects_values_outside_the_schema(monkeypatch, kwargs, message):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(pixellab_client.PixelLabUnavailable, match=message):
+        pixellab_client.create_image_bitforge(prompt="a rock", **kwargs)
+
+
+def test_bitforge_side_range_is_half_of_pixflux(monkeypatch):
+    """The trade for the extra controls: a large asset cannot use this path.
+
+    The same 201px request is ordinary for pixflux, whose ceiling is 400.
+    """
+
+    assert pixellab_client.BITFORGE_SIDE_RANGE == (16, 200)
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    captured = {}
+
+    def _fake_post(url, json, headers, timeout):
+        captured["payload"] = json
+        return _FakeResponse(
+            {"image": {"base64": base64.b64encode(_png_bytes()).decode()}, "usage": {}}
+        )
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+
+    with pytest.raises(pixellab_client.PixelLabUnavailable, match="16-200px per side"):
+        pixellab_client.create_image_bitforge(prompt="a rock", width=201, height=201)
+
+    pixellab_client.generate_image(prompt="a rock", width=201, height=201)
+    assert captured["payload"]["image_size"] == {"width": 201, "height": 201}

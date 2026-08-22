@@ -343,6 +343,21 @@ def _pixellab_provenance(
     }
 
 
+def _is_pixellab_asset(record: dict[str, Any]) -> bool:
+    """Whether this asset was drawn by PixelLab, by any of its paths.
+
+    Style-anchor eligibility used to demand ``method == "pixellab-mcp"``
+    exactly. The REST path records ``"pixellab"`` and the variation path
+    records ``"pixellab-api"``, so an approved asset from either could never
+    become an anchor — including an approved variation, which is the obvious
+    thing to build the next batch on. What actually matters is that a human
+    approved a PixelLab image of this game, not which of its endpoints drew it.
+    """
+
+    method = (record.get("provenance") or {}).get("method") or ""
+    return method.startswith("pixellab")
+
+
 def _pixellab_palette(
     style: Any, kind: render.AssetKind, prompt: str
 ) -> list[tuple[int, int, int]] | None:
@@ -813,10 +828,36 @@ def generate_ui_asset(
     return _generate_prototype(featureId, prompt, gameId, forced_kind=kind, art_style=artStyle)
 
 
+#: Only these carry a style reference the provider can actually weigh, and
+#: only the single-reference one exposes the strength/coverage/negative
+#: controls. See ``_variation_endpoint``.
+_BITFORGE = "create-image-bitforge"
+_STYLE_V2 = "generate-with-style-v2"
+
+
+def _variation_endpoint(reference_count: int, size: tuple[int, int]) -> str:
+    """Which style-reference endpoint can serve this batch.
+
+    ``create-image-bitforge`` is preferred: it is the only one with
+    ``style_strength``, ``coverage_percentage``, and a live
+    ``negative_description``. It takes exactly one reference image and stops
+    at 200px per side, so a batch that needs several anchors or a bigger
+    canvas falls back to ``generate-with-style-v2``, which takes one to four
+    references and deduces the output size from them.
+    """
+
+    high = pixellab_client.BITFORGE_SIDE_RANGE[1]
+    if reference_count == 1 and max(size) <= high:
+        return _BITFORGE
+    return _STYLE_V2
+
+
 @mcp.tool(
     description=(
         "Generate many same-kind variations through PixelLab's REST API, using an approved "
-        "MCP prototype as the shared style reference."
+        "asset as the shared style reference. One reference uses create-image-bitforge and "
+        "accepts styleStrength, coveragePercentage, and negativeDescription; several "
+        "references fall back to generate-with-style-v2, which has none of those."
     )
 )
 @expects_dict_return
@@ -826,8 +867,23 @@ def generate_2d_variations(
     prompts: list[str],
     gameId: str | None = None,
     styleAssetIds: list[str] | None = None,
+    styleStrength: int | None = None,
+    coveragePercentage: float | None = None,
+    negativeDescription: str = "",
 ) -> dict[str, Any]:
-    """Expand an approved MCP prototype using up to four approved style anchors."""
+    """Expand an approved prototype using one to four approved style anchors.
+
+    A character is a 1:2 kind and every character prototype is therefore
+    non-square. This used to be rejected outright, which left the only
+    style-reference path in the server unusable for exactly the assets whose
+    style matters most. Neither endpoint requires a square reference:
+    ``generate-with-style-v2`` deduces the output size from the references and
+    ``create-image-bitforge`` takes the size it is given.
+
+    ``styleStrength`` (0-100, 50 = balanced), ``coveragePercentage`` (0-100),
+    and ``negativeDescription`` exist only on the bitforge path. Passing one
+    with several references is an error rather than a silent no-op.
+    """
 
     feature_id = _require_identifier(featureId, "featureId")
     prototype_id = _require(prototypeAssetId, "prototypeAssetId")
@@ -845,8 +901,8 @@ def generate_2d_variations(
         raise tool_error(VALIDATION_ERROR, f"unknown prototypeAssetId: {prototype_id}")
     if prototype["status"] != APPROVED:
         raise tool_error(VALIDATION_ERROR, "prototype asset must be approved before batching")
-    if (prototype.get("provenance") or {}).get("method") != "pixellab-mcp":
-        raise tool_error(VALIDATION_ERROR, "prototype asset must come from PixelLab's official MCP")
+    if not _is_pixellab_asset(prototype):
+        raise tool_error(VALIDATION_ERROR, "prototype asset must come from PixelLab")
 
     style_asset_ids = list(dict.fromkeys([prototype_id, *(styleAssetIds or [])]))
     if not 1 <= len(style_asset_ids) <= 4:
@@ -863,9 +919,15 @@ def generate_2d_variations(
             raise tool_error(VALIDATION_ERROR, f"unknown style asset: {style_asset_id}")
         if style_record["status"] != APPROVED:
             raise tool_error(VALIDATION_ERROR, "every style asset must be approved")
-        if (style_record.get("provenance") or {}).get("method") != "pixellab-mcp":
+        if not _is_pixellab_asset(style_record):
+            raise tool_error(VALIDATION_ERROR, "every style asset must come from PixelLab")
+        if style_record.get("kind") not in _KIND_SIZE_RATIO:
+            # A tileset's asset_path is a JSON index, not a sprite; opening it
+            # as an image fails with a message about the file, not the choice.
             raise tool_error(
-                VALIDATION_ERROR, "every style asset must come from PixelLab's official MCP"
+                VALIDATION_ERROR,
+                f"style asset {style_asset_id} is a {style_record.get('kind')!r}, "
+                "which is not a single-sprite kind",
             )
         style_records.append(style_record)
 
@@ -882,12 +944,29 @@ def generate_2d_variations(
             raise tool_error(VALIDATION_ERROR, f"style asset file is missing: {style_path}")
         with Image.open(style_path) as opened:
             style_images.append(opened.convert("RGBA").copy())
-    output_size = style_images[0].size
-    if output_size[0] != output_size[1]:
+    reference_size = style_images[0].size
+    # Stored sprites are ``_PIXELLAB_UPSCALE`` times their generated canvas, so
+    # asking the provider for the stored size would generate a 128x256 sprite
+    # where the prototype was a 32x64 one — a different asset, and one that
+    # bitforge (200px per side) could not draw at all. Generate native, then
+    # upscale to match, exactly as the sprite paths do.
+    native_size = tuple(max(1, side // _PIXELLAB_UPSCALE) for side in reference_size)
+    endpoint = _variation_endpoint(len(style_images), native_size)
+    bitforge_only = {
+        "styleStrength": styleStrength,
+        "coveragePercentage": coveragePercentage,
+        "negativeDescription": negativeDescription.strip() or None,
+    }
+    requested = [name for name, value in bitforge_only.items() if value is not None]
+    if endpoint != _BITFORGE and requested:
         raise tool_error(
             VALIDATION_ERROR,
-            "generate-with-style-v2 requires a square primary prototype; "
-            "use a provider-specific character workflow for non-square assets",
+            f"{', '.join(requested)} require the single-reference bitforge path, but this "
+            f"batch uses {endpoint} ({len(style_images)} reference(s), "
+            f"{native_size[0]}x{native_size[1]} native). Pass one styleAssetIds-free reference "
+            f"no larger than {pixellab_client.BITFORGE_SIDE_RANGE[1]}px per side, or drop these "
+            "arguments.",
+            featureId=feature_id,
         )
 
     style = load_or_create(ROOT, resolved_game, DEFAULT_ART_STYLE)
@@ -906,12 +985,37 @@ def generate_2d_variations(
         plan = prompting.compose(prompt, kind)
         seed = render.rng_for(style, f"{feature_id}:{prompt_index}", prompt).getrandbits(32)
         try:
-            images, usage, job_id = pixellab_client.generate_with_style(
-                prompt=plan.prompt,
-                style_images=style_images,
-                style_description=style_description,
-                seed=seed,
-            )
+            if endpoint == _BITFORGE:
+                # The negations this prompt already carried are recovered here
+                # rather than dropped: the field is live on this endpoint.
+                negatives = ", ".join(
+                    part
+                    for part in (plan.negative_description, negativeDescription.strip())
+                    if part
+                )
+                image, usage = pixellab_client.create_image_bitforge(
+                    prompt=plan.prompt,
+                    width=native_size[0],
+                    height=native_size[1],
+                    style_image=style_images[0],
+                    style_strength=styleStrength,
+                    negative_description=negatives,
+                    coverage_percentage=coveragePercentage,
+                    seed=seed,
+                    forced_palette=_pixellab_palette(style, kind, prompt),
+                    **_pixellab_style_params(style, kind),
+                )
+                # No downsample: generated at the native canvas, so this is a
+                # crisp nearest-neighbour scale to the size the rest of the
+                # game's sprites are stored at.
+                images, job_id = [image.resize(reference_size, Image.NEAREST)], None
+            else:
+                images, usage, job_id = pixellab_client.generate_with_style(
+                    prompt=plan.prompt,
+                    style_images=style_images,
+                    style_description=style_description,
+                    seed=seed,
+                )
         except pixellab_client.PixelLabUnavailable as exc:
             raise tool_error(
                 MCP_ERROR,
@@ -922,7 +1026,14 @@ def generate_2d_variations(
         prompt_digest = hashlib.sha256(prompt.encode()).hexdigest()[:8]
         metrics = {"promptIndex": prompt_index, **plan.metadata()}
         prompt_metrics.append(metrics)
-        jobs.append({"jobId": job_id, "usage": usage, "promptMetrics": metrics})
+        jobs.append(
+            {
+                "jobId": job_id,
+                "endpoint": endpoint,
+                "usage": usage,
+                "promptMetrics": metrics,
+            }
+        )
         for candidate_index, image in enumerate(images):
             asset_id = (
                 f"{resolved_game}__{feature_id}__{kind}__{prompt_digest}__"
@@ -945,7 +1056,7 @@ def generate_2d_variations(
                 "batch_id": batch_id,
                 "provenance": {
                     "method": "pixellab-api",
-                    "endpoint": "generate-with-style-v2",
+                    "endpoint": endpoint,
                     "job_id": job_id,
                     "candidate": candidate_index,
                     "seed": seed,
@@ -992,6 +1103,7 @@ def generate_2d_variations(
         "kind": kind,
         "status": PENDING,
         "workflowStage": "variations",
+        "endpoint": endpoint,
         "indexPath": str(index_path),
         "assets": records,
         "imagesGenerated": len(records),
@@ -1545,7 +1657,12 @@ def inspect_asset(assetId: str) -> dict[str, Any]:
     semantic_status = (
         "human_review_required" if human_review_status == PENDING else human_review_status
     )
-    is_prototype = provenance.get("method") == "pixellab-mcp"
+    # Two different questions, and conflating them sent an approved variation
+    # back to "make more variations" instead of "import it".
+    #   * can this asset anchor a batch?      -> any approved PixelLab image
+    #   * is this asset a batch's *source*?   -> a prototype, not its output
+    can_anchor = _is_pixellab_asset(record)
+    is_prototype = can_anchor and not record.get("batch_id")
     if technical_status == "fail":
         next_action = "regenerate_after_technical_fix"
     elif record["status"] == REJECTED:
@@ -1566,7 +1683,7 @@ def inspect_asset(assetId: str) -> dict[str, Any]:
         "semanticStatus": semantic_status,
         "humanReviewStatus": human_review_status,
         "readyForVariations": (
-            technical_status == "pass" and human_review_status == APPROVED and is_prototype
+            technical_status == "pass" and human_review_status == APPROVED and can_anchor
         ),
         "readyForImport": technical_status == "pass" and human_review_status == APPROVED,
         "prompt": record["prompt"],
