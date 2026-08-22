@@ -310,3 +310,123 @@ async def test_generate_2d_sprite_without_key_is_a_tool_error(monkeypatch, tmp_p
     assert result.is_error is True
     text = "".join(getattr(block, "text", "") for block in result.content)
     assert '"errorCode": 3000' in text
+
+
+# --------------------------------------------------------------------------
+# A failed generation must not hold the prompt hostage (#58)
+# --------------------------------------------------------------------------
+
+
+async def test_failure_before_billing_lets_the_same_prompt_retry(monkeypatch, tmp_path):
+    """The retry must reuse the prompt verbatim, not a reworded one.
+
+    ``render.rng_for`` seeds off the prompt text, so rewording to dodge the
+    claim would regenerate the asset with a different seed.
+    """
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    seeds = []
+
+    def _boom(**kwargs):
+        seeds.append(kwargs["seed"])
+        raise pixellab_client.PixelLabUnavailable(
+            "PixelLab MCP request failed: ValueError: image size too small"
+        )
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _boom)
+
+    from mcp import Client
+
+    arguments = {"featureId": "f-1", "prompt": "a rock", "gameId": "t-retry"}
+    async with Client(server.mcp) as client:
+        failed = await client.call_tool("generate_2d_sprite", arguments)
+    assert failed.is_error is True
+    assert "image size too small" in "".join(
+        getattr(block, "text", "") for block in failed.content
+    )
+
+    def _succeed(**kwargs):
+        seeds.append(kwargs["seed"])
+        return (
+            Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255)),
+            {"type": "generations", "generations": 1.0},
+            "create_image",
+        )
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _succeed)
+
+    async with Client(server.mcp) as client:
+        retried = await client.call_tool("generate_2d_sprite", arguments)
+
+    assert retried.is_error is False
+    assert retried.structured_content["status"] != "duplicate_blocked"
+    assert retried.structured_content["assetPath"]
+    assert seeds[0] == seeds[1]
+
+
+async def test_failure_after_a_job_started_keeps_the_claim_and_says_what_to_do(
+    monkeypatch, tmp_path
+):
+    """PixelLab may already have charged for it, so the block stays — but the
+    response has to name the file that lifts it."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    calls = []
+
+    def _boom(**kwargs):
+        calls.append(kwargs)
+        raise pixellab_client.PixelLabUnavailable(
+            "PixelLab MCP job abc did not finish within 300 seconds", job_started=True
+        )
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _boom)
+
+    from mcp import Client
+
+    arguments = {"featureId": "f-1", "prompt": "a rock", "gameId": "t-billed"}
+    async with Client(server.mcp) as client:
+        failed = await client.call_tool("generate_2d_sprite", arguments)
+        blocked = await client.call_tool("generate_2d_sprite", arguments)
+
+    assert failed.is_error is True
+    assert blocked.is_error is False
+    body = blocked.structured_content
+    assert body["status"] == "duplicate_blocked"
+    assert body["recoveryRequired"] is True
+    assert body["claimPath"].endswith(".json")
+    assert "did not finish" in body["reason"]
+    assert "claimPath" in body["recovery"]
+    # The block did its job: no second paid attempt was made.
+    assert len(calls) == 1
+
+
+async def test_a_completed_claim_still_returns_the_existing_asset(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    calls = []
+
+    def _succeed(**kwargs):
+        calls.append(kwargs)
+        return (
+            Image.new("RGBA", (kwargs["width"], kwargs["height"]), (5, 5, 5, 255)),
+            {"type": "generations", "generations": 1.0},
+            "create_image",
+        )
+
+    monkeypatch.setattr(pixellab_client, "generate_prototype", _succeed)
+
+    from mcp import Client
+
+    arguments = {"featureId": "f-1", "prompt": "a rock", "gameId": "t-completed"}
+    async with Client(server.mcp) as client:
+        first = await client.call_tool("generate_2d_sprite", arguments)
+        second = await client.call_tool("generate_2d_sprite", arguments)
+
+    assert second.structured_content["duplicateBlocked"] is True
+    assert second.structured_content["assetPath"] == first.structured_content["assetPath"]
+    assert len(calls) == 1

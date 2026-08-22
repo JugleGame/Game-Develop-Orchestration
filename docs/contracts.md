@@ -125,6 +125,19 @@ Server: `AssetGenMcpServer`.
   ambiguous prompts.
 - `generate_2d_sprite` and `generate_ui_asset` create the initial reviewable prototype through
   PixelLab's official remote MCP server.
+- A prototype request claims its prompt digest under `var/assets/submissions/<assetId>.json` before
+  PixelLab is paid, and the claim always records how the request ended. A failure that never
+  reached PixelLab's meter is stored as `FAILED` with `billable: false`, and the next call with the
+  same prompt retakes the claim and generates. That retry must reuse the prompt verbatim: the seed
+  is derived from the prompt text, so rewording it to work around a block produces a different
+  asset.
+- A failure that PixelLab may already have billed (`billable: true`), or a claim left at
+  `SUBMITTING` because the process died mid-call, keeps blocking that prompt. The tool answers
+  `status: "duplicate_blocked"` with `claimPath`, the recorded `reason`, and a `recovery` sentence:
+  review the earlier request, delete the file at `claimPath`, then call again with the same prompt.
+- PixelLab MCP failures arrive inside a `TaskGroup`, whose own message names no cause. The client
+  flattens the group to its leaf exceptions, so the returned message carries the provider's real
+  error type and text.
 - `generate_2d_variations` accepts only approved MCP prototypes as style anchors and uses
   PixelLab's `generate-with-style-v2` REST endpoint for same-direction batch variations. The
   primary `prototypeAssetId` plus optional `styleAssetIds` form a deduplicated bank of one to four
