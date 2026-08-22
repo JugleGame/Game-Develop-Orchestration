@@ -41,6 +41,17 @@ _STRUCTURED_CLAUSES = frozenset(
 
 _SIZE_CLAUSE = re.compile(r"\d{2,3}\s*[x×]\s*\d{2,3}(?:\s*(?:px|pixels?))?", re.IGNORECASE)
 
+# A clause that opens by naming what must not appear. PixelLab reads the noun,
+# not the negation: "no city, no buildings, no street" came back with a city in
+# it five times out of five, while the same subject without those clauses came
+# back clean, and the positive "empty background" worked (measured 2026-08-22).
+# Only clause-leading forms are matched — "a knight with no helmet" would lose
+# the knight along with the helmet, so it is left alone.
+_NEGATION_CLAUSE = re.compile(
+    r"^(?:no|not|never|without|avoid|avoiding|exclude|excluding)(?![A-Za-z])",
+    re.IGNORECASE,
+)
+
 _FRAMING: dict[AssetKind, str] = {
     "character": "full body centered, connected readable silhouette",
     "monster": "single centered creature, fully visible, connected readable silhouette",
@@ -70,6 +81,7 @@ class PromptPlan:
     original_characters: int
     composed_characters: int
     removed_structured_clauses: tuple[str, ...]
+    removed_negations: tuple[str, ...] = ()
 
     def metadata(self) -> dict[str, object]:
         return {
@@ -77,6 +89,7 @@ class PromptPlan:
             "composedCharacters": self.composed_characters,
             "characterDelta": self.composed_characters - self.original_characters,
             "removedStructuredClauses": list(self.removed_structured_clauses),
+            "removedNegations": list(self.removed_negations),
         }
 
 
@@ -107,8 +120,13 @@ def prepare(
     """Return deterministic intake questions and a host-ready prompt.
 
     The function does not invent visual content. It only orders answers so
-    required structures lead, feedback is explicit, and exclusions remain a
-    last-resort tail instead of dominating the subject.
+    required structures lead and feedback is explicit.
+
+    ``avoid`` answers are returned as ``exclusions`` and are deliberately kept
+    out of the provider prompt. PixelLab draws the noun and ignores the
+    negation, so an exclusion list makes the excluded thing more likely, not
+    less (measured 2026-08-22). Restating it positively is a judgement call and
+    belongs to the host: this server never calls a model.
     """
 
     subject = _SPACE.sub(" ", subject).strip(" .")
@@ -152,7 +170,11 @@ def prepare(
         questions.append(
             {
                 "field": "avoid",
-                "question": "Which misleading interpretations or production defects should be excluded?",
+                "question": (
+                    "Which misleading interpretations or production defects should be excluded? "
+                    "State the replacement positively in mustHave as well: exclusions are "
+                    "recorded but never sent to the generator."
+                ),
                 "required": False,
             }
         )
@@ -170,8 +192,6 @@ def prepare(
         if changes:
             sections.append(f"Revision target: {'; '.join(changes)}")
         sections.append(f"Readability target: {purpose}")
-        if exclusions:
-            sections.append(f"Exclude: {'; '.join(exclusions)}")
         prompt = ". ".join(sections) + "."
 
     return {
@@ -180,6 +200,7 @@ def prepare(
         "questions": questions,
         "prompt": prompt,
         "artStyle": art_style or None,
+        "exclusions": list(exclusions),
         "feedbackApplied": bool(preserved or changes),
         "promptCharacters": len(prompt) if prompt else 0,
     }
@@ -191,6 +212,7 @@ def compose(prompt: str, kind: AssetKind) -> PromptPlan:
     normalized = _SPACE.sub(" ", prompt).strip()
     kept: list[str] = []
     removed: list[str] = []
+    negated: list[str] = []
     for clause in _SEPARATOR.split(normalized):
         clause = clause.strip(" .")
         if not clause:
@@ -198,6 +220,8 @@ def compose(prompt: str, kind: AssetKind) -> PromptPlan:
         lowered = clause.casefold()
         if lowered in _STRUCTURED_CLAUSES or _SIZE_CLAUSE.fullmatch(lowered):
             removed.append(clause)
+        elif _NEGATION_CLAUSE.match(clause):
+            negated.append(clause)
         elif lowered not in {item.casefold() for item in kept}:
             kept.append(clause)
 
@@ -215,6 +239,7 @@ def compose(prompt: str, kind: AssetKind) -> PromptPlan:
         original_characters=len(normalized),
         composed_characters=len(subject),
         removed_structured_clauses=tuple(removed),
+        removed_negations=tuple(negated),
     )
 
 

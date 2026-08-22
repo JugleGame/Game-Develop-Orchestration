@@ -511,3 +511,64 @@ def test_flatten_exception_keeps_a_plain_exception_readable():
 def test_pixellab_unavailable_defaults_to_not_billable():
     assert pixellab_client.PixelLabUnavailable("nope").job_started is False
     assert pixellab_client.PixelLabUnavailable("nope", job_started=True).job_started is True
+
+
+# --------------------------------------------------------------------------
+# Structured style values are checked against the tool's own enum (#59)
+# --------------------------------------------------------------------------
+
+
+def _styled_tool(enum_values):
+    return SimpleNamespace(
+        name="create_image_pixflux",
+        input_schema={
+            "properties": {"description": {}, "detail": {"enum": list(enum_values)}},
+            "required": ["description"],
+        },
+    )
+
+
+def test_prototype_arguments_reject_a_detail_the_tool_does_not_offer():
+    with pytest.raises(pixellab_client.PixelLabUnavailable) as excinfo:
+        pixellab_client._prototype_arguments(
+            _styled_tool(["low detail", "medium detail", "highly detailed"]),
+            "a mossy rock",
+            32,
+            32,
+            7,
+            "pixel art",
+            {"detail": "minimal detail"},
+            [],
+        )
+
+    message = str(excinfo.value)
+    assert "'minimal detail'" in message
+    assert "medium detail" in message
+
+
+def test_prototype_arguments_pass_a_detail_the_tool_offers():
+    arguments = pixellab_client._prototype_arguments(
+        _styled_tool(["low detail", "medium detail"]),
+        "a mossy rock",
+        32,
+        32,
+        7,
+        "pixel art",
+        {"detail": "low detail"},
+        [],
+    )
+
+    assert arguments["detail"] == "low detail"
+
+
+def test_prototype_arguments_still_pass_style_fields_without_a_declared_enum():
+    tool = SimpleNamespace(
+        name="create_image_pixflux",
+        input_schema={"properties": {"description": {}, "detail": {}}},
+    )
+
+    arguments = pixellab_client._prototype_arguments(
+        tool, "a mossy rock", 32, 32, 7, "pixel art", {"detail": "low detail"}, []
+    )
+
+    assert arguments["detail"] == "low detail"

@@ -153,6 +153,29 @@ Server: `AssetGenMcpServer`.
   references. The primary prototype fixes the output canvas size for every variation. This endpoint
   accepts square primary prototypes only; non-square character batches must use a provider-specific
   character workflow rather than silent padding or distortion.
+- `detail` and `shading` are fields of the game's frozen `ArtStyle`, set once through
+  `establish_art_style` and stored in `var/assets/styles/<gameId>.json`. They are not per-call
+  arguments: a game whose concept art holds two tones per material needs the same setting on every
+  asset, and prompt prose cannot substitute for them because PixelLab's structured fields outrank
+  the description. A style file written before these fields existed still loads and keeps the
+  previous defaults (`medium detail`; `medium shading` for characters and monsters). `shading`
+  stays flattened for inanimate kinds whatever the game asks for.
+- Structured style values are checked against the selected PixelLab tool's declared enum before the
+  request is sent, so a wrong value costs no generation and the error names the accepted values.
+- Negations never reach the provider. PixelLab draws the noun and ignores the negation:
+  `no city, no buildings, no street` returned a city, while the same subject without those clauses
+  returned none, and the positive `empty background` worked. `prepare_asset_prompt` therefore
+  returns `avoid` answers as `exclusions` instead of writing them into the prompt, and prompt
+  composition removes clause-leading negations and reports them in `promptMetrics.removedNegations`.
+  Restate an exclusion positively in `mustHave`. An inline negation (`a knight with no helmet`) is
+  left alone, because dropping the clause would drop the subject with it.
+- A larger canvas biases the provider toward drawing a scene instead of a subject. 56x112 requests
+  returned an opaque city background five times out of five (opaque pixel ratio 0.46-0.76) where the
+  same prompt family at 32x64 returned a clean sprite. Prefer the smaller canvas for a subject, and
+  inspect opacity before accepting a large one.
+- `character` and `monster` prototypes are generated without a forced palette; only tile, prop, and
+  UI kinds lock the game ramp. A change to that game palette therefore does not affect character
+  generation.
 - Prompt composition may normalize and remove duplicated structured directives, but it must
   preserve the host-authored subject intent and report original/composed character counts. The
   provider prompt orders subject and required structure before exclusions, and keeps the shared

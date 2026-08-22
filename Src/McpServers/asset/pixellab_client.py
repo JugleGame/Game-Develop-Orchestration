@@ -194,8 +194,17 @@ def _prototype_arguments(
     if "style_description" in properties:
         arguments["style_description"] = style_description
     for field, value in style_params.items():
-        if field in properties:
-            arguments[field] = value
+        if field not in properties:
+            continue
+        allowed = (properties[field] or {}).get("enum")
+        if allowed and value not in allowed:
+            # The style is game-wide, so a wrong enum would otherwise burn one
+            # request per asset before the 422 explains itself.
+            raise PixelLabUnavailable(
+                f"{field}={value!r} is not accepted by PixelLab tool {tool.name!r}; "
+                f"use one of {tuple(allowed)}"
+            )
+        arguments[field] = value
     if "color_palette" in properties:
         arguments["color_palette"] = ", ".join(palette)
     if "forced_palette" in properties:
