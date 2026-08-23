@@ -1223,6 +1223,18 @@ def generate_with_style(
 _HANGUL = re.compile(r"[\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\ud7b0-\ud7ff]")
 
 
+def contains_hangul(value: str | None) -> bool:
+    """Whether this text carries Korean.
+
+    Split out from the refusal because the two callers want opposite things
+    from the same answer. The generation gates want to stop; the intake wants
+    to ask a question, because a Korean answer at intake is a host that has not
+    written the English yet, not a caller doing something forbidden.
+    """
+
+    return bool(value and _HANGUL.search(value))
+
+
 def _reject_hangul(**fields: str | None) -> None:
     """Fail before the request when a text field carries Korean.
 
@@ -1234,7 +1246,7 @@ def _reject_hangul(**fields: str | None) -> None:
     """
 
     for field, value in fields.items():
-        if value and _HANGUL.search(value):
+        if contains_hangul(value):
             raise PixelLabUnavailable(
                 f"{field} contains Korean text: {value!r}. PixelLab prompt fields are "
                 "English only — write the English description at the call site. This "
@@ -1867,6 +1879,7 @@ def _decode(encoded: str) -> Image.Image:
 
 __all__ = [
     "PixelLabUnavailable",
+    "contains_hangul",
     "create_map_object",
     "generate_rotations",
     "inpaint",

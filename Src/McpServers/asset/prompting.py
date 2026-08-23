@@ -195,6 +195,38 @@ _COMPOSITION_QUESTIONS: dict[AssetKind, str] = {
 }
 
 
+def _translation_questions(answers: dict[str, str]) -> list[dict[str, object]]:
+    """One required question per answer that arrived in Korean.
+
+    A refusal was the first shape of this, and it was the wrong one for the
+    intake. The generation gates still refuse — they are what protects the bill
+    — but here a Korean answer means the host has not written the English yet,
+    which is a question, and this tool's whole job is asking questions.
+
+    The server cannot answer it: it never calls a model, so it has nothing to
+    translate with. The host does have one, so the question names both ways
+    through — translate it, or settle the wording with the user first. Until one
+    of them happens the brief stays unready and nothing generates.
+    """
+
+    return [
+        {
+            "field": field,
+            "question": (
+                f"{field} is written in Korean: {value!r}. PixelLab prompt fields are "
+                "English only, and this server does not translate — it never calls a "
+                "model. Supply the English wording: translate it yourself when the "
+                "meaning is unambiguous, or confirm the intended English with the user "
+                "when a choice of wording would change the picture."
+            ),
+            "required": True,
+            "koreanText": value,
+        }
+        for field, value in answers.items()
+        if pixellab_client.contains_hangul(value)
+    ]
+
+
 @dataclass(frozen=True)
 class PromptPlan:
     """A composed prompt plus observable character-count metadata."""
@@ -298,20 +330,6 @@ def prepare(
     host: this server never calls a model.
     """
 
-    # Refused at intake, not at generation. The client refuses it too — that is
-    # the gate that actually protects the bill — but finding out here costs a
-    # question instead of a round trip, and the answer is still in front of the
-    # person who wrote it.
-    pixellab_client._reject_hangul(
-        subject=subject,
-        composition=composition,
-        artStyle=art_style,
-        **{f"mustHave[{index}]": item for index, item in enumerate(must_have or [])},
-        **{f"avoid[{index}]": item for index, item in enumerate(avoid or [])},
-        **{f"preserve[{index}]": item for index, item in enumerate(preserve or [])},
-        **{f"change[{index}]": item for index, item in enumerate(change or [])},
-    )
-
     subject = _SPACE.sub(" ", subject).strip(" .")
     purpose = _SPACE.sub(" ", purpose).strip(" .")
     composition = _SPACE.sub(" ", composition).strip(" .")
@@ -407,6 +425,23 @@ def prepare(
     for field, value, question in parameter_questions:
         if value is None:
             questions.append({"field": field, "question": question, "required": True})
+
+    # Korean answers become questions rather than refusals: the host is the one
+    # with a model, so it can translate or ask the user. Required, so the brief
+    # stays unready and nothing generates until English arrives.
+    questions.extend(
+        _translation_questions(
+            {
+                "subject": subject,
+                "composition": composition,
+                "artStyle": art_style,
+                **{f"mustHave[{index}]": item for index, item in enumerate(required)},
+                **{f"avoid[{index}]": item for index, item in enumerate(exclusions)},
+                **{f"preserve[{index}]": item for index, item in enumerate(preserved)},
+                **{f"change[{index}]": item for index, item in enumerate(changes)},
+            }
+        )
+    )
 
     ready = not any(question["required"] for question in questions)
     prompt: str | None = None

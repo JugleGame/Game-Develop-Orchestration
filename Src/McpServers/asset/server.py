@@ -1354,7 +1354,11 @@ def inpaint_asset(
         "Collect a complete asset brief and return a deterministic, kind-aware prompt "
         "plus the briefId generate_2d_sprite requires. This preflight does not generate "
         "an image or call a model. Questions it returns are for the user to answer, not "
-        "for the caller to fill in."
+        "for the caller to fill in. One exception: an answer written in Korean comes "
+        "back as a question carrying koreanText, because PixelLab prompt fields are "
+        "English only and this server cannot translate. You can — translate it when the "
+        "meaning is unambiguous, or settle the wording with the user when a choice of "
+        "words would change the picture, then call this tool again with the English."
     )
 )
 @expects_dict_return

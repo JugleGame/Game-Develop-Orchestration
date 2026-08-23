@@ -2359,45 +2359,52 @@ def test_non_korean_text_is_not_refused(text):
     server.pixellab_client._reject_hangul(prompt=text)
 
 
-def test_the_intake_refuses_korean_before_a_brief_exists():
-    """Refused at question time, where the answer is still in front of whoever
-    wrote it, rather than one round trip later."""
-
-    with pytest.raises(server.pixellab_client.PixelLabUnavailable) as excinfo:
-        prompting.prepare(
-            "character",
-            subject="붉은 망토를 두른 기사",
-            purpose="a 32 px sprite",
-            composition="standing idle",
-            must_have=["a red cape"],
-            art_style="pixel art",
-            grid_size=32,
-            palette_lock=True,
-            init_asset_id="none",
-            init_image_strength=0,
-            direction="south",
-        )
-
-    assert "subject" in str(excinfo.value)
+def _korean_brief(**overrides):
+    answers = {
+        "subject": "a young knight",
+        "purpose": "a 32 px sprite",
+        "composition": "standing idle",
+        "must_have": ["a red cape"],
+        "art_style": "pixel art",
+        "grid_size": 32,
+        "palette_lock": True,
+        "init_asset_id": "none",
+        "init_image_strength": 0,
+        "direction": "south",
+    }
+    return prompting.prepare("character", **{**answers, **overrides})
 
 
-def test_the_intake_checks_every_free_text_answer_not_only_the_subject():
-    with pytest.raises(server.pixellab_client.PixelLabUnavailable) as excinfo:
-        prompting.prepare(
-            "character",
-            subject="a young knight",
-            purpose="a 32 px sprite",
-            composition="standing idle",
-            must_have=["a red cape", "붉은 망토"],
-            art_style="pixel art",
-            grid_size=32,
-            palette_lock=True,
-            init_asset_id="none",
-            init_image_strength=0,
-            direction="south",
-        )
+def test_the_intake_asks_for_english_rather_than_refusing():
+    """A refusal was the first shape of this and it was wrong for the intake.
+    A Korean answer means the host has not written the English yet, which is a
+    question — and asking questions is this tool's whole job."""
 
-    assert "mustHave[1]" in str(excinfo.value)
+    brief = _korean_brief(subject="붉은 망토를 두른 기사")
+
+    asked = {q["field"]: q for q in brief["questions"] if "koreanText" in q}
+    assert asked["subject"]["koreanText"] == "붉은 망토를 두른 기사"
+    assert asked["subject"]["required"] is True
+    # Both ways through are named, because the server can take neither itself.
+    assert "translate it yourself" in asked["subject"]["question"]
+    assert "confirm the intended English with the user" in asked["subject"]["question"]
+    # Nothing can generate from it until the English arrives.
+    assert brief["readyForPrototype"] is False
+    assert brief["prompt"] is None
+
+
+def test_the_intake_asks_about_every_free_text_answer_not_only_the_subject():
+    brief = _korean_brief(must_have=["a red cape", "금색 검"])
+
+    asked = {q["field"] for q in brief["questions"] if "koreanText" in q}
+    assert asked == {"mustHave[1]"}
+
+
+def test_an_english_answer_raises_no_translation_question():
+    brief = _korean_brief()
+
+    assert not [q for q in brief["questions"] if "koreanText" in q]
+    assert brief["readyForPrototype"] is True
 
 
 def test_korean_never_reaches_the_provider_through_the_prototype_path(

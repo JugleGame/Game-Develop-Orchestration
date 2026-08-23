@@ -591,17 +591,27 @@ Server: `AssetGenMcpServer`.
   `pixellab_client` used to state that the Korean `assetsNeeded` strings were "passed through
   unchanged" and that a translation layer was undecided work — but passing them through is a
   decision too, and it is the one that bills a generation for a description the model cannot read.
-  `_reject_hangul` refuses any prompt field carrying Hangul (syllables, conjoining jamo,
-  compatibility jamo, and both extended blocks) and names the offending field. It is checked in
-  three places for three different reasons: `prepare_asset_prompt` refuses at intake, where the
-  answer is still in front of whoever wrote it; `_generate_prototype` refuses before
-  `_claim_paid_prototype` reserves the prompt, so a request that was never going to be sent leaves
-  no claim behind; and every text-taking client function refuses last, because tilesets, map
-  objects, animations, and inpaint never pass through `prepare` or `compose` at all. Refusal, not
-  stripping: dropping the words would spend a generation on a description missing whatever they
-  said. This server never calls a model, so it cannot translate and does not pretend to — the host
-  writes the English. Only Hangul is matched, not every non-ASCII character, because `_SIZE_CLAUSE`
-  itself matches the `×` in `64×64`.
+  Hangul is detected by `contains_hangul` — syllables, conjoining jamo, compatibility jamo, and
+  both extended blocks — and the two layers that see it want opposite things from the answer.
+
+  **The intake asks.** `prepare_asset_prompt` turns a Korean answer into a required question
+  carrying `koreanText`, exactly as it does for an answer that is missing. A Korean answer means
+  the host has not written the English yet, which is a question, and asking questions is that
+  tool's whole job. The question names both ways through, because the server can take neither
+  itself: translate it when the meaning is unambiguous, or settle the wording with the user when a
+  choice of words would change the picture. The brief stays unready meanwhile, so nothing
+  generates. A refusal was the first shape of this and it was the wrong one — it ended the
+  conversation at the step whose purpose is to continue it.
+
+  **The generation gates refuse.** `_generate_prototype` refuses before `_claim_paid_prototype`
+  reserves the prompt, so a request that was never going to be sent leaves no claim behind; and
+  every text-taking client function refuses last, because tilesets, map objects, animations, and
+  inpaint never pass through `prepare` or `compose` at all. Refusal, not stripping: dropping the
+  words would spend a generation on a description missing whatever they said.
+
+  The server never calls a model, so it cannot translate and does not pretend to — the host has
+  one and does the work. Only Hangul is matched, not every non-ASCII character, because
+  `_SIZE_CLAUSE` itself matches the `×` in `64×64`.
 - **A deterministic budget caps the description at `PROMPT_BUDGET` (400 characters)**, dropping
   lowest-priority clauses from the tail and reporting them in `promptMetrics.droppedClauses`. It is
   a guard rail against a call site pasting paragraphs, not a tuned value: a well-formed brief lands
