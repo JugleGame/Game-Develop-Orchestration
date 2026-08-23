@@ -48,6 +48,45 @@ async def sprite_call(client, arguments):
     # An intake that itself refused (an invalid assetKind, say) has no brief to
     # hand over. Passing a placeholder keeps the refusal the test is after
     # instead of replacing it with one about the brief.
-    brief_id = (prepared.structured_content or {}).get("briefId", "no-brief")
+    body = prepared.structured_content or {}
+    brief_id = body.get("briefId", "no-brief")
     passed = {key: value for key, value in arguments.items() if key not in _BRIEF_FIELDS}
+    # The brief owns the prompt as well as the parameters now, so the call has
+    # to carry what the intake composed rather than the caller's own wording.
+    # A refused intake composed nothing; leave the argument alone there so the
+    # test still gets the refusal it is after.
+    if body.get("prompt"):
+        passed["prompt"] = body["prompt"]
     return await client.call_tool("generate_2d_sprite", {**passed, "briefId": brief_id})
+
+
+async def ui_call(client, arguments):
+    """Call ``generate_ui_asset`` through the brief it now requires.
+
+    It shares ``_generate_prototype`` with ``generate_2d_sprite``, so it takes
+    the same brief gate; without one it was the way around the canonical
+    prompt.
+    """
+
+    answers = {
+        "assetKind": arguments.get("assetKind") or "ui_panel",
+        "subject": arguments.get("prompt") or "a test panel",
+        "purpose": "an automated test",
+        "composition": "a clean border",
+        "mustHave": ["a readable border"],
+        "avoid": ["blur"],
+        "artStyle": arguments.get("artStyle") or "pixel art",
+        "gridSize": 0,
+        "paletteLock": True,
+        "initAssetId": "none",
+        "initImageStrength": 0,
+        "direction": "none",
+    }
+    prepared = await client.call_tool("prepare_asset_prompt", answers)
+    body = prepared.structured_content or {}
+    passed = dict(arguments)
+    if body.get("prompt"):
+        passed["prompt"] = body["prompt"]
+    return await client.call_tool(
+        "generate_ui_asset", {**passed, "briefId": body.get("briefId", "no-brief")}
+    )

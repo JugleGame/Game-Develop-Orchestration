@@ -309,6 +309,29 @@ def _brief_parameter(
     return answered
 
 
+def _brief_prompt(brief: dict[str, Any], passed: str, feature_id: str) -> str:
+    """The brief's own prompt, refusing a call that rewrote it.
+
+    The ``briefId`` gate pinned every generation *parameter* to an answer the
+    user gave and left the one field the picture is actually made of free. A
+    caller could answer five questions, take the id, then generate from an
+    unrelated paragraph — so the preflight proved nothing about the prompt it
+    was gating. The brief is the prompt now; restating it is allowed, changing
+    it is not.
+    """
+
+    canonical = str(brief.get("prompt") or "").strip()
+    if passed.strip() and passed.strip() != canonical:
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"prompt does not match the brief, which composed {canonical!r}. "
+            "Re-run prepare_asset_prompt with new answers to change the picture "
+            "rather than rewording the prompt here.",
+            featureId=feature_id,
+        )
+    return canonical
+
+
 def _load_manifest(game_id: str) -> dict[str, Any]:
     path = _manifest_path(game_id)
     if not path.exists():
@@ -749,6 +772,7 @@ def _generate_prototype(
     skeleton_guidance: float | None = None,
     init_image_strength: int | None = None,
     canvas: list[int] | None = None,
+    exclusions: list[str] | None = None,
 ) -> dict[str, Any]:
     """Generate the reviewable style prototype.
 
@@ -765,8 +789,27 @@ def _generate_prototype(
         ROOT, resolved_game, art_style or os.getenv("ASSET_ART_STYLE", DEFAULT_ART_STYLE)
     )
     kind = forced_kind or render.classify(prompt)
-    prompt_plan = prompting.compose(prompt, kind)
+    # The structured payload is built here rather than at the request so the
+    # composer can see it: wording that contradicts a field it is sent
+    # alongside is reported instead of quietly competing with it.
+    style_params = _pixellab_style_params(style, kind, direction)
+    # A starting image at a strength where it leads states the composition in
+    # pixels, so the kind framing would be prose arguing with an image that has
+    # already won. A pose reference is not the same thing: keypoints carry the
+    # pose and nothing else, so framing still has something to say there.
+    # An unanswered strength means the provider's own default applies and we do
+    # not know which band it lands in, so the framing stays.
+    reference_leads = bool(init_asset_id) and (init_image_strength or 0) >= (
+        prompting.REFERENCE_LEAD_STRENGTH
+    )
+    prompt_plan = prompting.compose(
+        prompt, kind, style_params, reference_leads=reference_leads
+    )
     width, height = _resolve_size(style, kind, grid_size, feature_id, canvas)
+    # The *caller's* prompt seeds the generation and names the asset, not the
+    # composed one. Composition is a presentation step that this change just
+    # rewrote; feeding its output to the digest would rename every asset ever
+    # generated and unblock every duplicate claim guarding a paid prompt.
     seed = render.rng_for(style, feature_id, prompt).getrandbits(32)
     # The grid joins the digest only when overridden, so digests written before
     # this parameter existed still resolve to the same asset id and file. The
@@ -900,10 +943,23 @@ def _generate_prototype(
             if warning:
                 warnings.append(warning)
 
+    # ``avoid`` answers were collected by the intake and then dropped on the
+    # floor: nothing here ever read them, so the one question that asks what
+    # must not appear had no effect on a prototype. They are live on bitforge
+    # and ``(Deprecated)`` on pixflux, so they travel on one path only — and
+    # the result says which, rather than leaving the caller to infer it.
+    negatives = ", ".join(
+        dict.fromkeys(
+            part
+            for part in (prompt_plan.negative_description, *(exclusions or []))
+            if part and part.strip()
+        )
+    )
     try:
         if posed:
             image, usage = pixellab_client.create_image_bitforge(
                 prompt=prompt_plan.prompt,
+                negative_description=negatives,
                 width=width,
                 height=height,
                 seed=seed,
@@ -912,7 +968,7 @@ def _generate_prototype(
                 init_image=init_image,
                 init_image_strength=init_image_strength,
                 forced_palette=palette_rgb,
-                **_pixellab_style_params(style, kind, direction),
+                **style_params,
             )
             tool_name = "create-image-bitforge"
         else:
@@ -923,7 +979,7 @@ def _generate_prototype(
                 kind=kind,
                 seed=seed,
                 style_description=style.art_style,
-                style_params=_pixellab_style_params(style, kind, direction),
+                style_params=style_params,
                 palette=palette,
             )
     except pixellab_client.PixelLabUnavailable as exc:
@@ -1002,7 +1058,15 @@ def _generate_prototype(
         "styleSeed": style.seed,
         "generatedBy": provenance["method"],
         "promptMetrics": prompt_plan.metadata(),
+        "exclusionsSent": bool(posed and negatives),
+        "exclusions": negatives or None,
     }
+    if negatives and not posed:
+        warnings.append(
+            "exclusions were not sent: negative_description is (Deprecated) on the "
+            "pixflux path. State the replacement positively in mustHave, or generate "
+            "with a reference so the request goes through create-image-bitforge"
+        )
     if skeleton:
         result["skeletonKeypoints"] = len(skeleton)
     if (width, height) != requested_size:
@@ -1198,7 +1262,7 @@ def generate_2d_sprite(
     palette_lock = _brief_parameter(brief, "paletteLock", paletteLock, featureId)
     return _generate_prototype(
         featureId,
-        prompt,
+        _brief_prompt(brief, prompt, featureId),
         gameId,
         forced_kind=kind,
         art_style=artStyle,
@@ -1211,18 +1275,33 @@ def generate_2d_sprite(
         skeleton_guidance=skeletonGuidance,
         init_image_strength=initImageStrength,
         canvas=canvas,
+        exclusions=brief.get("exclusions") or [],
     )
 
 
-@mcp.tool(description="Generate an initial UI prototype through PixelLab's official MCP.")
+@mcp.tool(
+    description=(
+        "Generate an initial UI prototype through PixelLab's official MCP. Requires a "
+        "briefId from prepare_asset_prompt, the same as generate_2d_sprite: it shares "
+        "the same generation path, so without one the brief's prompt could be bypassed "
+        "by calling this tool instead."
+    )
+)
 @expects_dict_return
 def generate_ui_asset(
     featureId: str,
     prompt: str,
+    briefId: str,
     gameId: str | None = None,
     artStyle: str | None = None,
     assetKind: str | None = None,
 ) -> dict[str, Any]:
+    """``briefId`` is required here for the reason it is required on
+    ``generate_2d_sprite``: both tools share ``_generate_prototype``, so a gate
+    on one of them is a gate on neither. This tool took no brief at all, which
+    made it the way around the canonical prompt rather than a second path to
+    the same check."""
+
     explicit = _asset_kind(assetKind)
     kind = explicit or render.classify(prompt)
     if not kind.startswith("ui_") and kind != "icon":
@@ -1232,13 +1311,15 @@ def generate_ui_asset(
     # Inference is safe here in a way it was not for sprites: every outcome is
     # a UI kind, so a wrong guess picks the wrong UI shape rather than turning
     # a character into a tile.
+    brief = _answered_brief(briefId, featureId)
     return _generate_prototype(
         featureId,
-        prompt,
+        _brief_prompt(brief, prompt, featureId),
         gameId,
         forced_kind=kind,
         art_style=artStyle,
         kind_source="explicit" if explicit else "inferred",
+        exclusions=brief.get("exclusions") or [],
     )
 
 

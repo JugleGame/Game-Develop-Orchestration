@@ -1131,6 +1131,10 @@ def test_prompt_metrics_keys_say_what_they_hold():
         "structuredClauses",
         "removedNegations",
         "negativeDescription",
+        "promptBudget",
+        "droppedClauses",
+        "framingSuppressed",
+        "controlConflicts",
     }
     assert plan.metadata()["structuredClauses"] == ["flat shading"]
     assert not hasattr(plan, "removed_structured_clauses")
@@ -1858,3 +1862,252 @@ async def test_a_posed_request_keeps_the_canvas_it_was_given(monkeypatch, tmp_pa
     assert result.is_error is False, result.content
     assert (captured["width"], captured["height"]) == (40, 80)
     assert any("used as given" in warning for warning in result.structured_content["warnings"])
+
+
+# --------------------------------------------------------------------------
+# Concise provider description (issue #92, Phase 1)
+# --------------------------------------------------------------------------
+
+
+def _knight_brief(**overrides):
+    answers = {
+        "subject": "a young female knight",
+        "purpose": "top-down field exploration at 32px readable scale",
+        "composition": "standing idle, sword in right hand",
+        "must_have": ["red cape", "centered", "single figure"],
+        "art_style": "16-bit pixel art",
+        "grid_size": 0,
+        "palette_lock": True,
+        "init_asset_id": "none",
+        "init_image_strength": 0,
+        "direction": "south",
+    }
+    return prompting.prepare("character", **{**answers, **overrides})
+
+
+def test_intake_labels_and_purpose_never_reach_the_provider():
+    """They describe the form, not the picture, and they used to be sent."""
+
+    brief = _knight_brief()
+    plan = prompting.compose(brief["prompt"], "character")
+
+    for label in ("Composition:", "Required visual structure:", "Readability target:"):
+        assert label not in plan.prompt
+    assert brief["purpose"] not in plan.prompt
+    # Kept as an answer rather than thrown away with the label.
+    assert brief["purpose"] == "top-down field exploration at 32px readable scale"
+
+
+def test_framing_a_brief_already_asked_for_is_not_repeated():
+    """"centered" and "full body centered" are one requirement, not two."""
+
+    plan = prompting.compose(_knight_brief()["prompt"], "character")
+
+    assert "full body centered" not in plan.prompt
+    assert plan.prompt.count("centered") == 1
+    # The half the brief did *not* ask for still arrives.
+    assert "connected silhouette" in plan.prompt
+
+
+def test_a_prepared_brief_composes_shorter_than_it_used_to():
+    """The labelled form composed to 283 characters for this brief."""
+
+    plan = prompting.compose(_knight_brief()["prompt"], "character")
+
+    assert plan.composed_characters < 200
+
+
+def test_a_clause_separated_by_a_sentence_period_is_deduplicated():
+    """The separator ignored ".", so every clause ``prepare`` wrote straddled
+    a sentence boundary and the duplicate check never saw a whole one."""
+
+    plan = prompting.compose("a mossy rock. a mossy rock, flat shading", "prop")
+
+    assert plan.prompt.count("a mossy rock") == 1
+
+
+def test_a_decimal_point_is_not_a_clause_separator():
+    plan = prompting.compose("a 1.5 metre tall statue", "prop")
+
+    assert "1.5" in plan.prompt
+
+
+def test_wording_that_contradicts_a_structured_field_is_reported():
+    """Both are still sent — the description is strong and the field is
+    "(weakly guiding)", so deleting either would pick a winner nobody asked
+    for. The contradiction is named instead."""
+
+    plan = prompting.compose(
+        "a mossy rock, side view", "prop", {"view": "high top-down", "shading": "flat shading"}
+    )
+
+    assert "side view" in plan.prompt
+    assert plan.metadata()["controlConflicts"] == [
+        {"clause": "side view", "field": "view", "sent": "high top-down"}
+    ]
+
+
+def test_wording_that_merely_agrees_with_a_field_is_not_a_conflict():
+    plan = prompting.compose("a mossy rock, flat shading", "prop", {"shading": "flat shading"})
+
+    assert plan.metadata()["controlConflicts"] == []
+    assert "flat shading" in plan.prompt
+
+
+def test_a_runaway_prompt_is_cut_to_the_budget_and_says_what_it_dropped():
+    clauses = ["a brass lantern"] + [f"filler detail {index}" for index in range(40)]
+    plan = prompting.compose(", ".join(clauses), "prop")
+
+    assert plan.metadata()["promptBudget"] == prompting.PROMPT_BUDGET
+    assert plan.dropped_clauses
+    # The subject survives; the tail is what goes.
+    assert plan.prompt.startswith("a brass lantern")
+    assert "filler detail 39" in plan.dropped_clauses
+    assert "connected silhouette" in plan.prompt
+
+
+def test_composition_is_deterministic():
+    brief = _knight_brief()
+    controls = {"view": "high top-down", "shading": "medium shading"}
+    first = prompting.compose(brief["prompt"], "character", controls)
+    second = prompting.compose(brief["prompt"], "character", controls)
+
+    assert first == second
+
+
+def test_exclusions_travel_on_the_path_whose_field_is_live(monkeypatch, tmp_path):
+    """``avoid`` answers were collected by the intake and then dropped: nothing
+    on the prototype path read them, so the one question about what must not
+    appear had no effect (issue #92)."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    seen: dict[str, object] = {}
+
+    def _bitforge(**kwargs):
+        seen.update(kwargs)
+        return Image.new("RGBA", (kwargs["width"], kwargs["height"]), (1, 2, 3, 255)), {}
+
+    monkeypatch.setattr(server.pixellab_client, "create_image_bitforge", _bitforge)
+    monkeypatch.setattr(
+        server,
+        "_approved_reference",
+        lambda *args, **kwargs: Image.new("RGBA", (32, 32), (9, 9, 9, 255)),
+    )
+
+    result = server._generate_prototype(
+        "f-neg-bitforge",
+        "a brass lantern",
+        "t-neg",
+        forced_kind="prop",
+        init_asset_id="some-approved-asset",
+        exclusions=["floating parts", "text"],
+    )
+
+    assert seen["negative_description"] == "floating parts, text"
+    assert result["exclusionsSent"] is True
+
+
+def test_exclusions_are_reported_rather_than_sent_where_the_field_is_deprecated(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        server.pixellab_client,
+        "generate_prototype",
+        lambda **kwargs: (
+            Image.new("RGBA", (kwargs["width"], kwargs["height"]), (1, 2, 3, 255)),
+            {},
+            "create-image-pixflux",
+        ),
+    )
+
+    result = server._generate_prototype(
+        "f-neg-pixflux",
+        "a brass lantern",
+        "t-neg",
+        forced_kind="prop",
+        exclusions=["floating parts"],
+    )
+
+    assert result["exclusionsSent"] is False
+    assert any("not sent" in warning for warning in result.get("warnings", []))
+
+
+def test_framing_is_left_off_when_a_starting_image_leads():
+    """The framing says how the subject sits on the canvas. A reference at a
+    strength where it outranks the description already says that in pixels."""
+
+    prompt = "a brass lantern, a warm glass panel"
+    led = prompting.compose(prompt, "prop", reference_leads=True)
+    unled = prompting.compose(prompt, "prop", reference_leads=False)
+
+    assert "single centered isolated object" not in led.prompt
+    assert "single centered isolated object" in unled.prompt
+    assert led.metadata()["framingSuppressed"] is True
+    assert unled.metadata()["framingSuppressed"] is False
+
+
+def test_a_weak_starting_image_keeps_the_framing(monkeypatch, tmp_path):
+    """Below the variation band the reference is colour guidance, not
+    composition, so the description is still the one saying where things go."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        server, "_approved_reference", lambda *a, **k: Image.new("RGBA", (32, 32))
+    )
+    seen: list[str] = []
+
+    def _bitforge(**kwargs):
+        seen.append(kwargs["prompt"])
+        return Image.new("RGBA", (kwargs["width"], kwargs["height"]), (1, 2, 3, 255)), {}
+
+    monkeypatch.setattr(server.pixellab_client, "create_image_bitforge", _bitforge)
+
+    for strength, expected in ((300, True), (600, False)):
+        server._generate_prototype(
+            f"f-lead-{strength}",
+            "a brass lantern",
+            "t-lead",
+            forced_kind="prop",
+            init_asset_id="approved",
+            init_image_strength=strength,
+        )
+
+    assert ("single centered isolated object" in seen[0]) is True
+    assert ("single centered isolated object" in seen[1]) is False
+
+
+def test_a_pose_reference_does_not_suppress_the_framing(monkeypatch, tmp_path):
+    """Keypoints are coordinates: they carry the pose and no composition."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        server, "_approved_reference", lambda *a, **k: Image.new("RGBA", (64, 64))
+    )
+    monkeypatch.setattr(
+        server.pixellab_client,
+        "estimate_skeleton",
+        lambda image: ([{"label": "head", "x": 0.5, "y": 0.2}], {}),
+    )
+    seen: list[str] = []
+
+    def _bitforge(**kwargs):
+        seen.append(kwargs["prompt"])
+        return Image.new("RGBA", (kwargs["width"], kwargs["height"]), (1, 2, 3, 255)), {}
+
+    monkeypatch.setattr(server.pixellab_client, "create_image_bitforge", _bitforge)
+
+    server._generate_prototype(
+        "f-posed",
+        "an armoured knight",
+        "t-posed",
+        forced_kind="character",
+        pose_from_asset_id="approved",
+        init_image_strength=900,
+    )
+
+    assert "connected silhouette" in seen[0]
