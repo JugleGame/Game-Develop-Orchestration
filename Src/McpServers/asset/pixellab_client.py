@@ -1510,6 +1510,202 @@ def create_animation(
 #: ``CreateMapObjectRequest.image_size`` starts at 32, not at pixflux's 16.
 MAP_OBJECT_SIDE_RANGE = (32, 400)
 
+#: The order ``/generate-8-rotations-v2`` returns its images in. Fixed by the
+#: endpoint, not chosen by the request, so a caller names each frame by its
+#: position rather than guessing the facing from the picture.
+ROTATION_ORDER = (
+    "south",
+    "south-west",
+    "west",
+    "north-west",
+    "north",
+    "north-east",
+    "east",
+    "south-east",
+)
+
+#: Canvases the rotation endpoints accept. Square only — a second, independent
+#: reason ``character`` is a square kind: a 32x64 sprite cannot be turned by
+#: this endpoint at all.
+ROTATION_SIZES = (16, 32, 64, 128)
+
+#: ``InpaintV3Request`` image bounds.
+INPAINT_SIDE_RANGE = (32, 512)
+
+
+def generate_rotations(
+    *,
+    reference: Image.Image,
+    view: str,
+    poll_seconds: float = 5.0,
+    max_polls: int = 60,
+) -> tuple[list[Image.Image], dict[str, Any], str]:
+    """Turn one approved sprite into eight facings — ``(images, usage, job_id)``.
+
+    Asking for eight facings as eight separate generations produces eight
+    different characters, because each one is an independent sample. This
+    endpoint derives all eight from a single reference, so the consistency is
+    structural rather than something the prompt has to beg for.
+
+    The canvas must be square and one of :data:`ROTATION_SIZES` — the provider
+    documents that outright rather than as a quality caveat. Images come back in
+    :data:`ROTATION_ORDER`, the endpoint's own fixed order.
+    """
+
+    api_key = os.getenv("PIXELLAB_API_KEY")
+    if not api_key:
+        raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    width, height = reference.size
+    if width != height or width not in ROTATION_SIZES:
+        raise PixelLabUnavailable(
+            f"rotation needs a square canvas of {ROTATION_SIZES}; got {width}x{height}"
+        )
+    _reject_style_enums("create-image-pixflux", view=view)
+
+    payload: dict[str, Any] = {
+        "method": "rotate_character",
+        "reference_image": {
+            "image": {"type": "base64", "base64": _image_b64(reference)},
+            "width": width,
+            "height": height,
+        },
+        "image_size": {"width": width, "height": height},
+        "view": view,
+    }
+    images, usage, job_id = _run_background_job(
+        "/generate-8-rotations-v2", payload, api_key, "rotation", poll_seconds, max_polls
+    )
+    if len(images) != len(ROTATION_ORDER):
+        raise PixelLabUnavailable(
+            f"expected {len(ROTATION_ORDER)} rotations, got {len(images)}"
+        )
+    return images, usage, job_id
+
+
+def inpaint(
+    *,
+    image: Image.Image,
+    description: str,
+    mask: Image.Image | None = None,
+    poll_seconds: float = 5.0,
+    max_polls: int = 60,
+) -> tuple[Image.Image, dict[str, Any], str]:
+    """Redraw part of an approved sprite — ``(image, usage, job_id)``.
+
+    ``mask`` is white where the endpoint should generate and black where it must
+    preserve. Omitting it lets the endpoint choose the region, which is rarely
+    what a targeted fix wants.
+
+    This is the step PixelLab's own tutorial loop is built around: repair the
+    one region that is wrong instead of regenerating the whole sprite and losing
+    the parts that were already right.
+    """
+
+    api_key = os.getenv("PIXELLAB_API_KEY")
+    if not api_key:
+        raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    if not description.strip():
+        raise PixelLabUnavailable("description must not be empty")
+    floor, ceiling = INPAINT_SIDE_RANGE
+    width, height = image.size
+    if not (floor <= width <= ceiling and floor <= height <= ceiling):
+        raise PixelLabUnavailable(
+            f"inpaint accepts {floor}-{ceiling} pixels per side; got {width}x{height}"
+        )
+    if mask is not None and mask.size != image.size:
+        raise PixelLabUnavailable(
+            f"mask {mask.size[0]}x{mask.size[1]} must match the image {width}x{height}"
+        )
+
+    payload: dict[str, Any] = {
+        "description": description.strip(),
+        "image_size": {"width": width, "height": height},
+        "inpainting_image": {"type": "base64", "base64": _image_b64(image)},
+        # The static paths all ask for the cut-out; a repaired sprite needs the
+        # same alpha as the sprite it replaces.
+        "remove_background": True,
+    }
+    if mask is not None:
+        payload["mask_image"] = {"type": "base64", "base64": _image_b64(mask)}
+
+    images, usage, job_id = _run_background_job(
+        "/inpaint-v3", payload, api_key, "inpaint", poll_seconds, max_polls
+    )
+    return images[0], usage, job_id
+
+
+def _run_background_job(
+    path: str,
+    payload: dict[str, Any],
+    api_key: str,
+    label: str,
+    poll_seconds: float,
+    max_polls: int,
+) -> tuple[list[Image.Image], dict[str, Any], str]:
+    """POST, poll ``/background-jobs/<id>``, and decode the images it returns.
+
+    ``generate_with_style`` and ``create_animation`` each grew their own copy of
+    this loop before there was a third caller. This is that loop, once.
+    """
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        with httpx.Client(timeout=_TIMEOUT_SECONDS) as client:
+            created = client.post(f"{BASE_URL}{path}", json=payload, headers=headers)
+            if created.status_code >= 400:
+                raise PixelLabUnavailable(
+                    f"PixelLab rejected the {label} request ({created.status_code}): "
+                    f"{created.text[:400]}"
+                )
+            created_data = created.json()
+            job_id = created_data.get("background_job_id")
+            if not job_id:
+                raise PixelLabUnavailable("PixelLab returned no background_job_id")
+
+            data: dict[str, Any] | None = None
+            for _ in range(max_polls):
+                candidate = _poll_json(
+                    client,
+                    f"{BASE_URL}/background-jobs/{job_id}",
+                    headers,
+                    poll_seconds=poll_seconds,
+                    max_polls=1,
+                )
+                status = candidate.get("status")
+                if status == "failed":
+                    raise PixelLabUnavailable(
+                        f"PixelLab {label} job failed: {candidate.get('last_response')!r}"
+                    )
+                if status == "completed":
+                    data = candidate
+                    break
+                time.sleep(poll_seconds)
+            if data is None:
+                raise PixelLabUnavailable(
+                    f"{label} job {job_id} not ready after {max_polls * poll_seconds:.0f}s"
+                )
+    except httpx.HTTPError as exc:
+        raise PixelLabUnavailable(f"PixelLab {label} request failed: {exc}") from exc
+
+    response = data.get("last_response") or {}
+    response_dict = response if isinstance(response, dict) else {}
+    encoded: list[str] = []
+    raw_images = response_dict.get("images")
+    if isinstance(raw_images, list):
+        for item in raw_images:
+            found = _encoded_image(item)
+            if found:
+                encoded.append(found)
+    else:
+        found = _encoded_image(response)
+        if found:
+            encoded.append(found)
+    if not encoded:
+        raise PixelLabUnavailable(f"malformed PixelLab {label} response: no images")
+
+    usage = data.get("usage") or created_data.get("usage") or response_dict.get("usage") or {}
+    return [_decode(item) for item in encoded], dict(usage), str(job_id)
+
 
 def create_map_object(
     *,
@@ -1630,6 +1826,8 @@ def _decode(encoded: str) -> Image.Image:
 __all__ = [
     "PixelLabUnavailable",
     "create_map_object",
+    "generate_rotations",
+    "inpaint",
     "create_tileset",
     "generate_image",
     "generate_prototype",

@@ -519,6 +519,87 @@ Server: `AssetGenMcpServer`.
   by game and feature. It defaults to compact pages of 20 records, accepts `limit` from 1 to 100,
   and returns `nextCursor`. Compact records retain identity, state, path, and structured review
   feedback. Use `detail=true` only for a page that needs full prompts and provenance.
+- **The provider description carries the subject; it is not the asset spec.** `prepare_asset_prompt`
+  used to serialise its answers as labelled sentences, so `Composition:`, `Required visual
+  structure:`, and `Readability target:` reached PixelLab verbatim along with `purpose` — none of
+  which name anything that can be drawn. The composed description is now ordered clauses with no
+  labels: subject, then the structures that must be unmistakable, then feedback, then the
+  arrangement. `purpose` is returned as a brief field instead. The same brief that composed to 283
+  characters composes to 114.
+- **This is the provider's own design, not a house style.** PixelLab's getting-started tutorial
+  prompt is two words (`Human mage`); the shape, colours, and composition come from a sketch passed
+  as an init image, and the documentation calls that "one of the best ways to improve the results
+  you're getting from PixelLab". The description's job is a short, non-contradictory subject
+  statement. This repo already has that path as `initAssetId: concept:<filename>`.
+- **The description is still the strong axis.** `text_guidance_scale` (1-20, default 8) exists to
+  tune how literally the description is followed; no such control exists for the `(weakly guiding)`
+  structured fields. That asymmetry is why duplication between the two is kept and only
+  *contradiction* is acted on: a clause naming a different value of a field than the one being sent
+  is reported in `promptMetrics.controlConflicts`, and both signals are still sent. Deleting either
+  would make the server pick a winner the caller never asked for.
+- **Clause separation includes the sentence period.** It did not, while `prepare` joined its
+  sections with `". "` — so every clause it wrote straddled a sentence boundary and duplicate
+  removal never saw a whole clause. Following the intake procedure was the one way to defeat the
+  check. A period only separates when followed by whitespace or end of string, so `1.5` stays one
+  number.
+- **Kind framing is per clause and only added where the brief did not already ask for it.** A brief
+  answering `centered` used to get `full body centered` appended anyway. `readable` was dropped from
+  the framing entirely: legibility is what a reviewer judges, not a shape a model can put on a
+  canvas. Stripping the intake's labels and then appending the server's own production vocabulary
+  would have been the same mistake in a different place.
+- **Framing is left off when a starting image leads.** PixelLab documents `init_image_strength` by
+  purpose — 0-300 extremely rough colour guidance, 300-400 rough shapes and colours, 400-600
+  "variations on an existing image", 600-900 detail on a nearly finished piece. From
+  `REFERENCE_LEAD_STRENGTH` (400) up the reference states the composition in pixels, so framing
+  prose would argue with an image that already won. A *pose* reference is not the same thing —
+  keypoints are coordinates and carry no composition — and an unanswered strength keeps the framing,
+  because the provider's own default lands in an unknown band. Reported as
+  `promptMetrics.framingSuppressed`. Whether the framing earns its characters at all has never been
+  measured; `Src/McpServers/experiments/framing_ab.py` is the paid A/B that would settle it.
+- **A deterministic budget caps the description at `PROMPT_BUDGET` (400 characters)**, dropping
+  lowest-priority clauses from the tail and reporting them in `promptMetrics.droppedClauses`. It is
+  a guard rail against a call site pasting paragraphs, not a tuned value: a well-formed brief lands
+  near 120.
+- **`generate_2d_sprite` and `generate_ui_asset` both refuse a prompt that is not the brief's.** The
+  `briefId` gate pinned every generation *parameter* to a user's answer and left free the one field
+  the picture is actually made of, so the preflight proved nothing about the prompt it was gating.
+  `generate_ui_asset` took no brief at all and shares `_generate_prototype`, which made it the way
+  around the check rather than a second path to it — a gate on one of two tools is a gate on
+  neither.
+- **`seed`, `prompt_digest`, and `material_for` read the caller's raw prompt, not the composed one.**
+  Composition is a presentation step; feeding its output to the digest would rename every asset ever
+  generated, release every duplicate claim guarding an already-billed prompt, and change which
+  material ramp a tile or prop picks.
+- **`avoid` answers reach the provider on the path whose field is live.** They were collected by the
+  intake and then read by nothing: `negative_description` was wired only into
+  `generate_2d_variations`. A prototype request carrying a reference now sends them through
+  `create-image-bitforge`; a plain pixflux request cannot, because the field is `(Deprecated)`
+  there, and says so in `warnings` rather than leaving the caller to infer it.
+- **`generate_2d_rotations` derives eight facings from one approved sprite** through
+  `/generate-8-rotations-v2`. Asking for the same character eight times returns eight characters —
+  each generation is an independent sample — so consistency has to come from the endpoint rather
+  than from the prompt. Images arrive in a fixed order (`pixellab_client.ROTATION_ORDER`: south,
+  south-west, west, north-west, north, north-east, east, south-east) and each is registered as its
+  own `pending` asset named for its facing. The canvas must be square and one of 16, 32, 64, or 128;
+  stored sprites are `_PIXELLAB_UPSCALE` times their generated size, so the request is made at the
+  native canvas and the results are upscaled back. This is a second, independent reason `character`
+  is a square kind: a 32x64 sprite cannot be turned by this endpoint at all.
+- **`inpaint_asset` repairs one region instead of re-rolling the sprite** through `/inpaint-v3`
+  (32-512 per side). Regenerating to fix one wrong detail discards every detail that was right, and
+  the re-roll is a fresh sample, so it rarely returns them. `maskAssetId` takes a
+  `concept:<filename>` mask a human drew — white where the endpoint should generate, black where it
+  must preserve. The result is always a new `pending` asset: a repair is a proposal, and overwriting
+  the approved original would let an unreviewed image inherit its approval.
+- **API schema limits and subscription tier limits are different axes.** `BITFORGE_SIDE_RANGE`
+  (16-200) matches `CreateImageBitforgeRequest`'s declared `200x200`; the bitforge documentation
+  page's Tier 1 `80x80` and Tier 2+ `140x140` are UI tier caps. Likewise pixflux's schema is
+  `32x32`-`400x400` while the page lists free 200 / Tier 1 320 / Tier 2+ 400. Check a failure
+  against both before changing a constant.
+- **`generate_with_style`'s 1-4 `style_images` cap is the schema's**, not a conservative guess:
+  `GenerateWithStyleV2Request` declares a maximum of 4. The "Create images from style references
+  (Pro)" documentation page's larger allowance (64 at 32x32, 16 at 64x64) belongs to a *different*
+  endpoint and does not apply here — which also means the single-reference subject-leak measurement
+  above remains valid for this path.
 - The normal sequence is intake, one MCP prototype, human review, a revised intake when rejected,
   approval, and only then REST API variations.
 - Keep all output under `ASSET_ROOT`.

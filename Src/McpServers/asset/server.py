@@ -1086,6 +1086,260 @@ def _generate_prototype(
 # --------------------------------------------------------------------------
 
 
+def _approved_source(
+    asset_id: str, game_id: str | None, field: str, feature_id: str
+) -> tuple[dict[str, Any], dict[str, Any], str, Image.Image]:
+    """The approved sprite named by ``asset_id``, as ``(manifest, record, game, image)``.
+
+    Every derivation tool needs the same four things and the same three
+    refusals, and each one that grew its own copy grew a slightly different set
+    of them.
+    """
+
+    asset_id = _require(asset_id, field)
+    source_game = asset_id.split("__", 1)[0]
+    resolved_game = _resolve_game_id(game_id) if game_id else source_game
+    if resolved_game != source_game:
+        raise tool_error(VALIDATION_ERROR, f"gameId must match the {field} asset")
+
+    manifest = _load_manifest(resolved_game)
+    record = manifest["assets"].get(asset_id)
+    if record is None:
+        raise tool_error(VALIDATION_ERROR, f"unknown {field}: {asset_id}")
+    if record["status"] != APPROVED:
+        raise tool_error(
+            VALIDATION_ERROR, f"the {field} asset must be approved before deriving from it"
+        )
+    path = Path(record["asset_path"])
+    if not path.is_file():
+        raise tool_error(VALIDATION_ERROR, f"{field} file is missing: {path}")
+    with Image.open(path) as opened:
+        image = opened.convert("RGBA").copy()
+    if not pixellab_client.is_configured():
+        raise tool_error(MCP_ERROR, "PIXELLAB_API_KEY is not set", featureId=feature_id)
+    return manifest, record, resolved_game, image
+
+
+def _native(image: Image.Image) -> Image.Image:
+    """A stored sprite back at the canvas it was generated on.
+
+    Sprites are saved at ``_PIXELLAB_UPSCALE`` times their generated size, so
+    asking a provider to work on the stored size would be a different request
+    at a different canvas — and for rotation, one the endpoint refuses outright.
+    """
+
+    size = tuple(max(1, side // _PIXELLAB_UPSCALE) for side in image.size)
+    return image if size == image.size else image.resize(size, Image.NEAREST)
+
+
+@mcp.tool(
+    description=(
+        "Derive eight facings from one approved sprite through PixelLab's "
+        "generate-8-rotations-v2. Eight separate generations produce eight different "
+        "characters; this derives all eight from the same reference. The sprite must "
+        "have been generated on a square 16, 32, 64, or 128 canvas."
+    )
+)
+@expects_dict_return
+def generate_2d_rotations(
+    featureId: str,
+    sourceAssetId: str,
+    gameId: str | None = None,
+) -> dict[str, Any]:
+    """Eight facings from one approved sprite.
+
+    Facing used to be askable only as prose or as the ``direction`` field, both
+    of which re-roll the whole image: asking for the same character eight times
+    returns eight characters. This endpoint turns one reference instead, so the
+    eight frames are the same subject by construction.
+
+    Each frame lands as its own ``pending`` asset named for its facing, because
+    a rotation set is reviewed the way its source was — one bad facing is a bad
+    facing, not a bad set.
+    """
+
+    feature_id = _require_identifier(featureId, "featureId")
+    manifest, source, resolved_game, stored = _approved_source(
+        sourceAssetId, gameId, "sourceAssetId", feature_id
+    )
+    if not _is_pixellab_asset(source):
+        raise tool_error(VALIDATION_ERROR, "sourceAssetId must come from PixelLab")
+
+    reference = _native(stored)
+    style = load_or_create(ROOT, resolved_game, os.getenv("ASSET_ART_STYLE", DEFAULT_ART_STYLE))
+    try:
+        images, usage, job_id = pixellab_client.generate_rotations(
+            reference=reference, view=style.camera_view
+        )
+    except pixellab_client.PixelLabUnavailable as exc:
+        raise tool_error(
+            MCP_ERROR,
+            f"PixelLab rotation failed: {exc}",
+            featureId=feature_id,
+            sourceAssetId=sourceAssetId,
+        ) from exc
+
+    kind = source["kind"]
+    digest = hashlib.sha256(f"{sourceAssetId}|rotations".encode()).hexdigest()[:8]
+    set_id = f"{resolved_game}__{feature_id}__rotations__{digest}"
+    out_dir = ROOT / "assets" / resolved_game / "rotations" / f"{feature_id}_{digest}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    target = tuple(side * _PIXELLAB_UPSCALE for side in reference.size)
+    records: list[dict[str, Any]] = []
+    failures: set[str] = set()
+    for index, (facing, image) in enumerate(zip(pixellab_client.ROTATION_ORDER, images)):
+        if image.size != target:
+            image = image.resize(target, Image.NEAREST)
+        asset_id = f"{set_id}__{facing}"
+        path = out_dir / f"{index:02d}_{facing}.png"
+        image.save(path)
+        inspection = quality.inspect(image, kind, image.size)
+        failures.update(inspection["failures"])
+        manifest["assets"][asset_id] = {
+            "asset_id": asset_id,
+            "feature_id": feature_id,
+            "kind": kind,
+            "prompt": source.get("prompt", ""),
+            "provider_prompt": source.get("provider_prompt", ""),
+            "status": PENDING,
+            "asset_path": str(path),
+            "created_at": _now(),
+            "reviewed_at": None,
+            "review_note": None,
+            "prototype_asset_id": sourceAssetId,
+            "rotation_set_id": set_id,
+            "direction": facing,
+            "provenance": {
+                "method": "pixellab-api",
+                "endpoint": "generate-8-rotations-v2",
+                "job_id": job_id,
+                "direction": facing,
+                "source_asset_id": sourceAssetId,
+                "usage": usage,
+                "commercial_use": "see PixelLab terms of service",
+            },
+        }
+        records.append({"assetId": asset_id, "direction": facing, "assetPath": str(path)})
+    _save_manifest(manifest)
+
+    return {
+        "rotationSetId": set_id,
+        "gameId": resolved_game,
+        "kind": kind,
+        "sourceAssetId": sourceAssetId,
+        "status": PENDING,
+        "workflowStage": "rotations",
+        "rotations": records,
+        "technicalStatus": "fail" if failures else "pass",
+        "technicalFailures": sorted(failures),
+        "imagesGenerated": _images_generated(usage) or len(records),
+    }
+
+
+@mcp.tool(
+    description=(
+        "Redraw one region of an approved sprite through PixelLab's inpaint-v3 "
+        "instead of regenerating the whole thing. maskAssetId names a mask drawn "
+        "by a human under var/concept-art/<gameId>/ as concept:<filename>, white "
+        "where the region should be redrawn and black where it must be preserved."
+    )
+)
+@expects_dict_return
+def inpaint_asset(
+    featureId: str,
+    sourceAssetId: str,
+    description: str,
+    maskAssetId: str | None = None,
+    gameId: str | None = None,
+) -> dict[str, Any]:
+    """Repair one region rather than re-rolling the sprite.
+
+    Regenerating to fix one wrong detail throws away every detail that was
+    right, and the re-roll is a fresh sample so it rarely returns them. This is
+    the repair step PixelLab's own tutorial loop is built around.
+
+    The result is a new ``pending`` asset. The approved original is never
+    overwritten: a repair is a proposal, and the human gate that approved the
+    original is the one that decides whether the repair replaces it.
+    """
+
+    feature_id = _require_identifier(featureId, "featureId")
+    instruction = _require(description, "description")
+    manifest, source, resolved_game, stored = _approved_source(
+        sourceAssetId, gameId, "sourceAssetId", feature_id
+    )
+
+    image = _native(stored)
+    mask = None
+    if maskAssetId:
+        mask = _approved_reference(maskAssetId, resolved_game, "maskAssetId", feature_id)
+        if mask.size != image.size:
+            mask = mask.resize(image.size, Image.NEAREST)
+
+    try:
+        repaired, usage, job_id = pixellab_client.inpaint(
+            image=image, description=instruction, mask=mask
+        )
+    except pixellab_client.PixelLabUnavailable as exc:
+        raise tool_error(
+            MCP_ERROR,
+            f"PixelLab inpaint failed: {exc}",
+            featureId=feature_id,
+            sourceAssetId=sourceAssetId,
+        ) from exc
+
+    kind = source["kind"]
+    digest = hashlib.sha256(f"{sourceAssetId}|{instruction}".encode()).hexdigest()[:8]
+    asset_id = f"{resolved_game}__{feature_id}__{kind}__inpaint{digest}"
+    target = tuple(side * _PIXELLAB_UPSCALE for side in image.size)
+    if repaired.size != target:
+        repaired = repaired.resize(target, Image.NEAREST)
+    out_path = _asset_path(resolved_game, feature_id, kind, f"inpaint{digest}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    repaired.save(out_path)
+
+    inspection = quality.inspect(repaired, kind, repaired.size)
+    manifest["assets"][asset_id] = {
+        "asset_id": asset_id,
+        "feature_id": feature_id,
+        "kind": kind,
+        "prompt": instruction,
+        "provider_prompt": instruction,
+        "status": PENDING,
+        "asset_path": str(out_path),
+        "created_at": _now(),
+        "reviewed_at": None,
+        "review_note": None,
+        "prototype_asset_id": sourceAssetId,
+        "provenance": {
+            "method": "pixellab-api",
+            "endpoint": "inpaint-v3",
+            "job_id": job_id,
+            "source_asset_id": sourceAssetId,
+            "mask_asset_id": maskAssetId,
+            "masked": mask is not None,
+            "usage": usage,
+            "commercial_use": "see PixelLab terms of service",
+        },
+    }
+    _save_manifest(manifest)
+
+    return {
+        "assetId": asset_id,
+        "assetPath": str(out_path),
+        "gameId": resolved_game,
+        "kind": kind,
+        "sourceAssetId": sourceAssetId,
+        "masked": mask is not None,
+        "status": PENDING,
+        "workflowStage": "inpaint",
+        "technicalStatus": "fail" if inspection["failures"] else "pass",
+        "technicalFailures": sorted(inspection["failures"]),
+        "imagesGenerated": _images_generated(usage) or 1,
+    }
+
+
 @mcp.tool(
     description=(
         "Collect a complete asset brief and return a deterministic, kind-aware prompt "

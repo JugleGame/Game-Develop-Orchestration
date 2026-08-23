@@ -2111,3 +2111,209 @@ def test_a_pose_reference_does_not_suppress_the_framing(monkeypatch, tmp_path):
     )
 
     assert "connected silhouette" in seen[0]
+
+
+# --------------------------------------------------------------------------
+# Rotation and inpaint (issue #92, Phases 5-6)
+# --------------------------------------------------------------------------
+
+
+def _approved(tmp_path, game, asset_id, kind="character", size=(256, 256)):
+    """An approved PixelLab sprite in the manifest, stored at upscaled size."""
+
+    path = tmp_path / "assets" / game / f"{asset_id}.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGBA", size, (10, 20, 30, 255)).save(path)
+    manifest = {
+        "game_id": game,
+        "assets": {
+            asset_id: {
+                "asset_id": asset_id,
+                "feature_id": "f-src",
+                "kind": kind,
+                "prompt": "a young knight",
+                "provider_prompt": "a young knight, connected silhouette",
+                "status": server.APPROVED,
+                "asset_path": str(path),
+                "created_at": "2026-08-23T00:00:00Z",
+                "reviewed_at": "2026-08-23T00:00:00Z",
+                "review_note": None,
+                "provenance": {"method": "pixellab-mcp", "tool": "create-image-pixflux"},
+            }
+        },
+    }
+    server._save_manifest(manifest)
+    return manifest
+
+
+def test_rotation_sends_the_native_square_canvas(monkeypatch, tmp_path):
+    """Sprites are stored at four times their generated size, and the endpoint
+    accepts only 16/32/64/128 — so the stored 256 has to go back to 64."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    _approved(tmp_path, "t-rot", "t-rot__f-src__character__abcd1234")
+    seen: dict[str, object] = {}
+
+    def _rotate(*, reference, view, **kwargs):
+        seen["size"] = reference.size
+        seen["view"] = view
+        frames = [Image.new("RGBA", (64, 64), (1, 2, 3, 255)) for _ in range(8)]
+        return frames, {"generations": 8.0}, "job-1"
+
+    monkeypatch.setattr(server.pixellab_client, "generate_rotations", _rotate)
+
+    result = server.generate_2d_rotations(
+        featureId="f-rot", sourceAssetId="t-rot__f-src__character__abcd1234"
+    )
+
+    assert seen["size"] == (64, 64)
+    assert [row["direction"] for row in result["rotations"]] == list(
+        server.pixellab_client.ROTATION_ORDER
+    )
+
+
+def test_every_rotation_is_registered_pending_for_review(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    _approved(tmp_path, "t-rot2", "t-rot2__f-src__character__abcd1234")
+    monkeypatch.setattr(
+        server.pixellab_client,
+        "generate_rotations",
+        lambda **kwargs: (
+            [Image.new("RGBA", (64, 64), (1, 2, 3, 255)) for _ in range(8)],
+            {},
+            "job-2",
+        ),
+    )
+
+    result = server.generate_2d_rotations(
+        featureId="f-rot", sourceAssetId="t-rot2__f-src__character__abcd1234"
+    )
+    manifest = server._load_manifest("t-rot2")
+
+    assert len(result["rotations"]) == 8
+    for row in result["rotations"]:
+        record = manifest["assets"][row["assetId"]]
+        assert record["status"] == server.PENDING
+        assert record["direction"] == row["direction"]
+        # Stored back at the size the game's other sprites use.
+        with Image.open(record["asset_path"]) as opened:
+            assert opened.size == (256, 256)
+
+
+def test_rotation_refuses_an_unapproved_source(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    manifest = _approved(tmp_path, "t-rot3", "t-rot3__f-src__character__abcd1234")
+    manifest["assets"]["t-rot3__f-src__character__abcd1234"]["status"] = server.PENDING
+    server._save_manifest(manifest)
+
+    with pytest.raises(Exception) as excinfo:
+        server.generate_2d_rotations(
+            featureId="f-rot", sourceAssetId="t-rot3__f-src__character__abcd1234"
+        )
+
+    assert "must be approved" in str(excinfo.value)
+
+
+def test_a_non_square_canvas_is_refused_before_the_request(monkeypatch):
+    """Costs no generation, and says what the endpoint actually accepts."""
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(prompting.pixellab_client.PixelLabUnavailable) as excinfo:
+        prompting.pixellab_client.generate_rotations(
+            reference=Image.new("RGBA", (32, 64)), view="side"
+        )
+
+    assert "square canvas" in str(excinfo.value)
+
+
+def test_a_square_canvas_off_the_accepted_list_is_refused(monkeypatch):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(prompting.pixellab_client.PixelLabUnavailable):
+        prompting.pixellab_client.generate_rotations(
+            reference=Image.new("RGBA", (48, 48)), view="side"
+        )
+
+
+def test_inpaint_keeps_the_original_and_proposes_a_new_pending_asset(
+    monkeypatch, tmp_path
+):
+    """A repair is a proposal. Overwriting the approved sprite would let an
+    unreviewed image inherit its approval."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    source_id = "t-fix__f-src__character__abcd1234"
+    _approved(tmp_path, "t-fix", source_id)
+    monkeypatch.setattr(
+        server.pixellab_client,
+        "inpaint",
+        lambda **kwargs: (Image.new("RGBA", (64, 64), (9, 8, 7, 255)), {}, "job-3"),
+    )
+
+    result = server.inpaint_asset(
+        featureId="f-fix", sourceAssetId=source_id, description="repaint the cape red"
+    )
+    manifest = server._load_manifest("t-fix")
+
+    assert result["assetId"] != source_id
+    assert result["status"] == server.PENDING
+    assert manifest["assets"][source_id]["status"] == server.APPROVED
+    assert manifest["assets"][result["assetId"]]["prototype_asset_id"] == source_id
+    assert result["masked"] is False
+
+
+def test_inpaint_sends_a_mask_that_matches_the_native_canvas(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    source_id = "t-mask__f-src__character__abcd1234"
+    _approved(tmp_path, "t-mask", source_id)
+    monkeypatch.setattr(
+        server,
+        "_approved_reference",
+        lambda *args, **kwargs: Image.new("RGBA", (128, 128), (255, 255, 255, 255)),
+    )
+    seen: dict[str, object] = {}
+
+    def _inpaint(*, image, description, mask, **kwargs):
+        seen["image"] = image.size
+        seen["mask"] = None if mask is None else mask.size
+        return Image.new("RGBA", image.size, (9, 8, 7, 255)), {}, "job-4"
+
+    monkeypatch.setattr(server.pixellab_client, "inpaint", _inpaint)
+
+    result = server.inpaint_asset(
+        featureId="f-fix",
+        sourceAssetId=source_id,
+        description="repaint the cape red",
+        maskAssetId="concept:cape-mask.png",
+    )
+
+    assert seen["image"] == (64, 64)
+    assert seen["mask"] == (64, 64)
+    assert result["masked"] is True
+
+
+def test_inpaint_refuses_an_empty_description(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    source_id = "t-empty__f-src__character__abcd1234"
+    _approved(tmp_path, "t-empty", source_id)
+
+    with pytest.raises(Exception):
+        server.inpaint_asset(featureId="f-fix", sourceAssetId=source_id, description="  ")
+
+
+def test_inpaint_refuses_a_canvas_outside_the_endpoints_range(monkeypatch):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(prompting.pixellab_client.PixelLabUnavailable) as excinfo:
+        prompting.pixellab_client.inpaint(
+            image=Image.new("RGBA", (16, 16)), description="fix it"
+        )
+
+    assert "32-512" in str(excinfo.value)
