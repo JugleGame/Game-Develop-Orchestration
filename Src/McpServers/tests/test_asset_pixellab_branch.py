@@ -33,12 +33,6 @@ def rng():
     ("kind", "prompt", "framing"),
     [
         (
-            "character",
-            "2D pixel art, transparent background, side view, medium detail, "
-            "medium shading, 64x64, player character",
-            "full body centered",
-        ),
-        (
             "monster",
             "pixel art, no background, side view, medium detail, medium shading, "
             "64x64, slime monster",
@@ -50,22 +44,10 @@ def rng():
             "edge-to-edge tile",
         ),
         (
-            "prop",
-            "pixel art, transparent background, side view, flat shading, medium detail, "
-            "32x32, treasure chest prop",
-            "single centered isolated object",
-        ),
-        (
             "ui_panel",
             "2D pixel art, transparent background, flat shading, medium detail, "
             "128x64, inventory panel",
             "text-free panel",
-        ),
-        (
-            "icon",
-            "2D pixel art, transparent background, flat shading, medium detail, "
-            "32x32, quest marker icon",
-            "single centered item",
         ),
     ],
 )
@@ -91,8 +73,8 @@ def test_a_prepared_brief_still_gets_its_framing():
     reliable way to lose the framing."""
 
     prepared = prompting.prepare(
-        "prop",
-        subject="a brass lantern",
+        "monster",
+        subject="a swamp creature",
         purpose="a 32 px pickup",
         composition="centered with a broad base and narrow top handle",
         must_have=["one connected silhouette", "three support feet"],
@@ -105,10 +87,10 @@ def test_a_prepared_brief_still_gets_its_framing():
     )
     assert prepared["readyForPrototype"] is True
 
-    plan = prompting.compose(prepared["prompt"], "prop")
+    plan = prompting.compose(prepared["prompt"], "monster")
 
-    assert "single centered isolated object" in plan.prompt
-    assert "a brass lantern" in plan.prompt
+    assert "single centered creature" in plan.prompt
+    assert "a swamp creature" in plan.prompt
 
 
 # --------------------------------------------------------------------------
@@ -1131,6 +1113,10 @@ def test_prompt_metrics_keys_say_what_they_hold():
         "structuredClauses",
         "removedNegations",
         "negativeDescription",
+        "promptBudget",
+        "droppedClauses",
+        "framingSuppressed",
+        "controlConflicts",
     }
     assert plan.metadata()["structuredClauses"] == ["flat shading"]
     assert not hasattr(plan, "removed_structured_clauses")
@@ -1858,3 +1844,589 @@ async def test_a_posed_request_keeps_the_canvas_it_was_given(monkeypatch, tmp_pa
     assert result.is_error is False, result.content
     assert (captured["width"], captured["height"]) == (40, 80)
     assert any("used as given" in warning for warning in result.structured_content["warnings"])
+
+
+# --------------------------------------------------------------------------
+# Concise provider description (issue #92, Phase 1)
+# --------------------------------------------------------------------------
+
+
+def _knight_brief(**overrides):
+    answers = {
+        "subject": "a young female knight",
+        "purpose": "top-down field exploration at 32px readable scale",
+        "composition": "standing idle, sword in right hand",
+        "must_have": ["red cape", "centered", "single figure"],
+        "art_style": "16-bit pixel art",
+        "grid_size": 0,
+        "palette_lock": True,
+        "init_asset_id": "none",
+        "init_image_strength": 0,
+        "direction": "south",
+    }
+    return prompting.prepare("character", **{**answers, **overrides})
+
+
+def test_intake_labels_and_purpose_never_reach_the_provider():
+    """They describe the form, not the picture, and they used to be sent."""
+
+    brief = _knight_brief()
+    plan = prompting.compose(brief["prompt"], "character")
+
+    for label in ("Composition:", "Required visual structure:", "Readability target:"):
+        assert label not in plan.prompt
+    assert brief["purpose"] not in plan.prompt
+    # Kept as an answer rather than thrown away with the label.
+    assert brief["purpose"] == "top-down field exploration at 32px readable scale"
+
+
+def test_framing_a_brief_already_asked_for_is_not_repeated():
+    """"single centered creature" asked for twice is still one requirement.
+
+    Shown on a kind that still has framing: ``character`` lost its clauses in
+    round 8 (see ``_FRAMING``), so there is nothing left there to repeat.
+    """
+
+    prompt = "a swamp creature, single centered creature, dripping moss"
+    plan = prompting.compose(prompt, "monster")
+
+    assert plan.prompt.count("single centered creature") == 1
+    # The clauses the brief did *not* ask for still arrive.
+    assert "fully visible" in plan.prompt
+    assert "connected silhouette" in plan.prompt
+
+
+def test_a_prepared_brief_composes_shorter_than_it_used_to():
+    """The labelled form composed to 283 characters for this brief."""
+
+    plan = prompting.compose(_knight_brief()["prompt"], "character")
+
+    assert plan.composed_characters < 200
+
+
+def test_a_clause_separated_by_a_sentence_period_is_deduplicated():
+    """The separator ignored ".", so every clause ``prepare`` wrote straddled
+    a sentence boundary and the duplicate check never saw a whole one."""
+
+    plan = prompting.compose("a mossy rock. a mossy rock, flat shading", "prop")
+
+    assert plan.prompt.count("a mossy rock") == 1
+
+
+def test_a_decimal_point_is_not_a_clause_separator():
+    plan = prompting.compose("a 1.5 metre tall statue", "prop")
+
+    assert "1.5" in plan.prompt
+
+
+def test_wording_that_contradicts_a_structured_field_is_reported():
+    """Both are still sent — the description is strong and the field is
+    "(weakly guiding)", so deleting either would pick a winner nobody asked
+    for. The contradiction is named instead."""
+
+    plan = prompting.compose(
+        "a mossy rock, side view", "prop", {"view": "high top-down", "shading": "flat shading"}
+    )
+
+    assert "side view" in plan.prompt
+    assert plan.metadata()["controlConflicts"] == [
+        {"clause": "side view", "field": "view", "sent": "high top-down"}
+    ]
+
+
+def test_wording_that_merely_agrees_with_a_field_is_not_a_conflict():
+    plan = prompting.compose("a mossy rock, flat shading", "prop", {"shading": "flat shading"})
+
+    assert plan.metadata()["controlConflicts"] == []
+    assert "flat shading" in plan.prompt
+
+
+def test_a_runaway_prompt_is_cut_to_the_budget_and_says_what_it_dropped():
+    clauses = ["a swamp creature"] + [f"filler detail {index}" for index in range(40)]
+    plan = prompting.compose(", ".join(clauses), "monster")
+
+    assert plan.metadata()["promptBudget"] == prompting.PROMPT_BUDGET
+    assert plan.dropped_clauses
+    # The subject survives; the tail is what goes.
+    assert plan.prompt.startswith("a swamp creature")
+    assert "filler detail 39" in plan.dropped_clauses
+    assert "connected silhouette" in plan.prompt
+
+
+def test_composition_is_deterministic():
+    brief = _knight_brief()
+    controls = {"view": "high top-down", "shading": "medium shading"}
+    first = prompting.compose(brief["prompt"], "character", controls)
+    second = prompting.compose(brief["prompt"], "character", controls)
+
+    assert first == second
+
+
+def test_exclusions_travel_on_the_path_whose_field_is_live(monkeypatch, tmp_path):
+    """``avoid`` answers were collected by the intake and then dropped: nothing
+    on the prototype path read them, so the one question about what must not
+    appear had no effect (issue #92)."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    seen: dict[str, object] = {}
+
+    def _bitforge(**kwargs):
+        seen.update(kwargs)
+        return Image.new("RGBA", (kwargs["width"], kwargs["height"]), (1, 2, 3, 255)), {}
+
+    monkeypatch.setattr(server.pixellab_client, "create_image_bitforge", _bitforge)
+    monkeypatch.setattr(
+        server,
+        "_approved_reference",
+        lambda *args, **kwargs: Image.new("RGBA", (32, 32), (9, 9, 9, 255)),
+    )
+
+    result = server._generate_prototype(
+        "f-neg-bitforge",
+        "a brass lantern",
+        "t-neg",
+        forced_kind="prop",
+        init_asset_id="some-approved-asset",
+        exclusions=["floating parts", "text"],
+    )
+
+    assert seen["negative_description"] == "floating parts, text"
+    assert result["exclusionsSent"] is True
+
+
+def test_exclusions_are_reported_rather_than_sent_where_the_field_is_deprecated(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        server.pixellab_client,
+        "generate_prototype",
+        lambda **kwargs: (
+            Image.new("RGBA", (kwargs["width"], kwargs["height"]), (1, 2, 3, 255)),
+            {},
+            "create-image-pixflux",
+        ),
+    )
+
+    result = server._generate_prototype(
+        "f-neg-pixflux",
+        "a brass lantern",
+        "t-neg",
+        forced_kind="prop",
+        exclusions=["floating parts"],
+    )
+
+    assert result["exclusionsSent"] is False
+    assert any("not sent" in warning for warning in result.get("warnings", []))
+
+
+def test_framing_is_left_off_when_a_starting_image_leads():
+    """The framing says how the subject sits on the canvas. A reference at a
+    strength where it outranks the description already says that in pixels."""
+
+    prompt = "a swamp creature, dripping moss"
+    led = prompting.compose(prompt, "monster", reference_leads=True)
+    unled = prompting.compose(prompt, "monster", reference_leads=False)
+
+    assert "single centered creature" not in led.prompt
+    assert "single centered creature" in unled.prompt
+    assert led.metadata()["framingSuppressed"] is True
+    assert unled.metadata()["framingSuppressed"] is False
+
+
+def test_a_weak_starting_image_keeps_the_framing(monkeypatch, tmp_path):
+    """Below the variation band the reference is colour guidance, not
+    composition, so the description is still the one saying where things go."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        server, "_approved_reference", lambda *a, **k: Image.new("RGBA", (32, 32))
+    )
+    seen: list[str] = []
+
+    def _bitforge(**kwargs):
+        seen.append(kwargs["prompt"])
+        return Image.new("RGBA", (kwargs["width"], kwargs["height"]), (1, 2, 3, 255)), {}
+
+    monkeypatch.setattr(server.pixellab_client, "create_image_bitforge", _bitforge)
+
+    for strength in (300, 600):
+        server._generate_prototype(
+            f"f-lead-{strength}",
+            "a swamp creature",
+            "t-lead",
+            forced_kind="monster",
+            init_asset_id="approved",
+            init_image_strength=strength,
+        )
+
+    assert ("single centered creature" in seen[0]) is True
+    assert ("single centered creature" in seen[1]) is False
+
+
+def test_a_pose_reference_does_not_suppress_the_framing(monkeypatch, tmp_path):
+    """Keypoints are coordinates: they carry the pose and no composition."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        server, "_approved_reference", lambda *a, **k: Image.new("RGBA", (64, 64))
+    )
+    monkeypatch.setattr(
+        server.pixellab_client,
+        "estimate_skeleton",
+        lambda image: ([{"label": "head", "x": 0.5, "y": 0.2}], {}),
+    )
+    seen: list[str] = []
+
+    def _bitforge(**kwargs):
+        seen.append(kwargs["prompt"])
+        return Image.new("RGBA", (kwargs["width"], kwargs["height"]), (1, 2, 3, 255)), {}
+
+    monkeypatch.setattr(server.pixellab_client, "create_image_bitforge", _bitforge)
+
+    server._generate_prototype(
+        "f-posed",
+        "an armoured knight",
+        "t-posed",
+        forced_kind="monster",
+        pose_from_asset_id="approved",
+        init_image_strength=900,
+    )
+
+    assert "connected silhouette" in seen[0]
+
+
+# --------------------------------------------------------------------------
+# Rotation and inpaint (issue #92, Phases 5-6)
+# --------------------------------------------------------------------------
+
+
+def _approved(tmp_path, game, asset_id, kind="character", size=(256, 256)):
+    """An approved PixelLab sprite in the manifest, stored at upscaled size."""
+
+    path = tmp_path / "assets" / game / f"{asset_id}.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGBA", size, (10, 20, 30, 255)).save(path)
+    manifest = {
+        "game_id": game,
+        "assets": {
+            asset_id: {
+                "asset_id": asset_id,
+                "feature_id": "f-src",
+                "kind": kind,
+                "prompt": "a young knight",
+                "provider_prompt": "a young knight, connected silhouette",
+                "status": server.APPROVED,
+                "asset_path": str(path),
+                "created_at": "2026-08-23T00:00:00Z",
+                "reviewed_at": "2026-08-23T00:00:00Z",
+                "review_note": None,
+                "provenance": {"method": "pixellab-mcp", "tool": "create-image-pixflux"},
+            }
+        },
+    }
+    server._save_manifest(manifest)
+    return manifest
+
+
+def test_rotation_sends_the_native_square_canvas(monkeypatch, tmp_path):
+    """Sprites are stored at four times their generated size, and the endpoint
+    accepts only 16/32/64/128 — so the stored 256 has to go back to 64."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    _approved(tmp_path, "t-rot", "t-rot__f-src__character__abcd1234")
+    seen: dict[str, object] = {}
+
+    def _rotate(*, reference, view, **kwargs):
+        seen["size"] = reference.size
+        seen["view"] = view
+        frames = [Image.new("RGBA", (64, 64), (1, 2, 3, 255)) for _ in range(8)]
+        return frames, {"generations": 8.0}, "job-1"
+
+    monkeypatch.setattr(server.pixellab_client, "generate_rotations", _rotate)
+
+    result = server.generate_2d_rotations(
+        featureId="f-rot", sourceAssetId="t-rot__f-src__character__abcd1234"
+    )
+
+    assert seen["size"] == (64, 64)
+    assert [row["direction"] for row in result["rotations"]] == list(
+        server.pixellab_client.ROTATION_ORDER
+    )
+
+
+def test_every_rotation_is_registered_pending_for_review(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    _approved(tmp_path, "t-rot2", "t-rot2__f-src__character__abcd1234")
+    monkeypatch.setattr(
+        server.pixellab_client,
+        "generate_rotations",
+        lambda **kwargs: (
+            [Image.new("RGBA", (64, 64), (1, 2, 3, 255)) for _ in range(8)],
+            {},
+            "job-2",
+        ),
+    )
+
+    result = server.generate_2d_rotations(
+        featureId="f-rot", sourceAssetId="t-rot2__f-src__character__abcd1234"
+    )
+    manifest = server._load_manifest("t-rot2")
+
+    assert len(result["rotations"]) == 8
+    for row in result["rotations"]:
+        record = manifest["assets"][row["assetId"]]
+        assert record["status"] == server.PENDING
+        assert record["direction"] == row["direction"]
+        # Stored back at the size the game's other sprites use.
+        with Image.open(record["asset_path"]) as opened:
+            assert opened.size == (256, 256)
+
+
+def test_rotation_refuses_an_unapproved_source(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    manifest = _approved(tmp_path, "t-rot3", "t-rot3__f-src__character__abcd1234")
+    manifest["assets"]["t-rot3__f-src__character__abcd1234"]["status"] = server.PENDING
+    server._save_manifest(manifest)
+
+    with pytest.raises(Exception) as excinfo:
+        server.generate_2d_rotations(
+            featureId="f-rot", sourceAssetId="t-rot3__f-src__character__abcd1234"
+        )
+
+    assert "must be approved" in str(excinfo.value)
+
+
+def test_a_non_square_canvas_is_refused_before_the_request(monkeypatch):
+    """Costs no generation, and says what the endpoint actually accepts."""
+
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(prompting.pixellab_client.PixelLabUnavailable) as excinfo:
+        prompting.pixellab_client.generate_rotations(
+            reference=Image.new("RGBA", (32, 64)), view="side"
+        )
+
+    assert "square canvas" in str(excinfo.value)
+
+
+def test_a_square_canvas_off_the_accepted_list_is_refused(monkeypatch):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(prompting.pixellab_client.PixelLabUnavailable):
+        prompting.pixellab_client.generate_rotations(
+            reference=Image.new("RGBA", (48, 48)), view="side"
+        )
+
+
+def test_inpaint_keeps_the_original_and_proposes_a_new_pending_asset(
+    monkeypatch, tmp_path
+):
+    """A repair is a proposal. Overwriting the approved sprite would let an
+    unreviewed image inherit its approval."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    source_id = "t-fix__f-src__character__abcd1234"
+    _approved(tmp_path, "t-fix", source_id)
+    monkeypatch.setattr(
+        server.pixellab_client,
+        "inpaint",
+        lambda **kwargs: (Image.new("RGBA", (64, 64), (9, 8, 7, 255)), {}, "job-3"),
+    )
+
+    result = server.inpaint_asset(
+        featureId="f-fix", sourceAssetId=source_id, description="repaint the cape red"
+    )
+    manifest = server._load_manifest("t-fix")
+
+    assert result["assetId"] != source_id
+    assert result["status"] == server.PENDING
+    assert manifest["assets"][source_id]["status"] == server.APPROVED
+    assert manifest["assets"][result["assetId"]]["prototype_asset_id"] == source_id
+    assert result["masked"] is False
+
+
+def test_inpaint_sends_a_mask_that_matches_the_native_canvas(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    source_id = "t-mask__f-src__character__abcd1234"
+    _approved(tmp_path, "t-mask", source_id)
+    monkeypatch.setattr(
+        server,
+        "_approved_reference",
+        lambda *args, **kwargs: Image.new("RGBA", (128, 128), (255, 255, 255, 255)),
+    )
+    seen: dict[str, object] = {}
+
+    def _inpaint(*, image, description, mask, **kwargs):
+        seen["image"] = image.size
+        seen["mask"] = None if mask is None else mask.size
+        return Image.new("RGBA", image.size, (9, 8, 7, 255)), {}, "job-4"
+
+    monkeypatch.setattr(server.pixellab_client, "inpaint", _inpaint)
+
+    result = server.inpaint_asset(
+        featureId="f-fix",
+        sourceAssetId=source_id,
+        description="repaint the cape red",
+        maskAssetId="concept:cape-mask.png",
+    )
+
+    assert seen["image"] == (64, 64)
+    assert seen["mask"] == (64, 64)
+    assert result["masked"] is True
+
+
+def test_inpaint_refuses_an_empty_description(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    source_id = "t-empty__f-src__character__abcd1234"
+    _approved(tmp_path, "t-empty", source_id)
+
+    with pytest.raises(Exception):
+        server.inpaint_asset(featureId="f-fix", sourceAssetId=source_id, description="  ")
+
+
+def test_inpaint_refuses_a_canvas_outside_the_endpoints_range(monkeypatch):
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+
+    with pytest.raises(prompting.pixellab_client.PixelLabUnavailable) as excinfo:
+        prompting.pixellab_client.inpaint(
+            image=Image.new("RGBA", (16, 16)), description="fix it"
+        )
+
+    assert "32-512" in str(excinfo.value)
+
+
+def test_measured_kinds_carry_no_framing_and_tile_still_does():
+    """Round 8 (issue #92): six pairs each for character, prop, and icon found no
+    technical failure, no warning, and no centring advantage from the framing.
+    Round 7 found the opposite for tile — without it the result is debris on a
+    transparent canvas rather than a tile. See ``_FRAMING`` for the numbers."""
+
+    for kind in ("character", "prop", "icon"):
+        assert prompting.compose("a test subject", kind).prompt == "a test subject", kind
+
+    assert "edge-to-edge tile" in prompting.compose("a stone floor", "tile").prompt
+    # Not measured, so not changed.
+    assert "single centered creature" in prompting.compose("a slime", "monster").prompt
+
+
+# --------------------------------------------------------------------------
+# PixelLab prompt fields are English only (issue #92)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "붉은 망토를 두른 기사",  # syllables
+        "a knight, 붉은 망토",  # mixed in with English
+        "ㄱㄴㄷ",  # compatibility jamo alone
+    ],
+)
+def test_korean_in_a_prompt_field_is_refused(text):
+    """It used to be "passed through unchanged", which billed a generation for a
+    description the model cannot read. This server never calls a model, so it
+    cannot translate and does not pretend to."""
+
+    with pytest.raises(server.pixellab_client.PixelLabUnavailable) as excinfo:
+        server.pixellab_client._reject_hangul(prompt=text)
+
+    assert "English only" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a young female knight, red cape",
+        "64×64 tile",  # the size clause's own multiplication sign
+        "a café sign",  # accents are not Korean
+    ],
+)
+def test_non_korean_text_is_not_refused(text):
+    """Blocking every non-ASCII character would refuse the × that
+    ``_SIZE_CLAUSE`` itself matches."""
+
+    server.pixellab_client._reject_hangul(prompt=text)
+
+
+def _korean_brief(**overrides):
+    answers = {
+        "subject": "a young knight",
+        "purpose": "a 32 px sprite",
+        "composition": "standing idle",
+        "must_have": ["a red cape"],
+        "art_style": "pixel art",
+        "grid_size": 32,
+        "palette_lock": True,
+        "init_asset_id": "none",
+        "init_image_strength": 0,
+        "direction": "south",
+    }
+    return prompting.prepare("character", **{**answers, **overrides})
+
+
+def test_the_intake_asks_for_english_rather_than_refusing():
+    """A refusal was the first shape of this and it was wrong for the intake.
+    A Korean answer means the host has not written the English yet, which is a
+    question — and asking questions is this tool's whole job."""
+
+    brief = _korean_brief(subject="붉은 망토를 두른 기사")
+
+    asked = {q["field"]: q for q in brief["questions"] if "koreanText" in q}
+    assert asked["subject"]["koreanText"] == "붉은 망토를 두른 기사"
+    assert asked["subject"]["required"] is True
+    # Both ways through are named, because the server can take neither itself.
+    assert "translate it yourself" in asked["subject"]["question"]
+    assert "confirm the intended English with the user" in asked["subject"]["question"]
+    # Nothing can generate from it until the English arrives.
+    assert brief["readyForPrototype"] is False
+    assert brief["prompt"] is None
+
+
+def test_the_intake_asks_about_every_free_text_answer_not_only_the_subject():
+    brief = _korean_brief(must_have=["a red cape", "금색 검"])
+
+    asked = {q["field"] for q in brief["questions"] if "koreanText" in q}
+    assert asked == {"mustHave[1]"}
+
+
+def test_an_english_answer_raises_no_translation_question():
+    brief = _korean_brief()
+
+    assert not [q for q in brief["questions"] if "koreanText" in q]
+    assert brief["readyForPrototype"] is True
+
+
+def test_korean_never_reaches_the_provider_through_the_prototype_path(
+    monkeypatch, tmp_path
+):
+    """The client guard is the one that protects the bill: it catches the paths
+    that never touch prepare() or compose()."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        server.pixellab_client,
+        "_generate_prototype_async",
+        lambda **kwargs: pytest.fail("a Korean prompt reached the provider"),
+    )
+
+    with pytest.raises(Exception) as excinfo:
+        server._generate_prototype(
+            "f-korean", "붉은 망토를 두른 기사", "t-korean", forced_kind="character"
+        )
+
+    assert "English only" in str(excinfo.value)
+    # Refused before the prompt was reserved against double billing, so the
+    # claim directory is untouched by a request that was never sent.
+    assert not list((tmp_path / "assets" / "claims").rglob("*.json"))

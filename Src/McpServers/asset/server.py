@@ -309,6 +309,29 @@ def _brief_parameter(
     return answered
 
 
+def _brief_prompt(brief: dict[str, Any], passed: str, feature_id: str) -> str:
+    """The brief's own prompt, refusing a call that rewrote it.
+
+    The ``briefId`` gate pinned every generation *parameter* to an answer the
+    user gave and left the one field the picture is actually made of free. A
+    caller could answer five questions, take the id, then generate from an
+    unrelated paragraph — so the preflight proved nothing about the prompt it
+    was gating. The brief is the prompt now; restating it is allowed, changing
+    it is not.
+    """
+
+    canonical = str(brief.get("prompt") or "").strip()
+    if passed.strip() and passed.strip() != canonical:
+        raise tool_error(
+            VALIDATION_ERROR,
+            f"prompt does not match the brief, which composed {canonical!r}. "
+            "Re-run prepare_asset_prompt with new answers to change the picture "
+            "rather than rewording the prompt here.",
+            featureId=feature_id,
+        )
+    return canonical
+
+
 def _load_manifest(game_id: str) -> dict[str, Any]:
     path = _manifest_path(game_id)
     if not path.exists():
@@ -749,6 +772,7 @@ def _generate_prototype(
     skeleton_guidance: float | None = None,
     init_image_strength: int | None = None,
     canvas: list[int] | None = None,
+    exclusions: list[str] | None = None,
 ) -> dict[str, Any]:
     """Generate the reviewable style prototype.
 
@@ -760,13 +784,41 @@ def _generate_prototype(
     feature_id = _require_identifier(feature_id, "featureId")
     direction = _direction(direction, feature_id)
     prompt = _require(prompt, "prompt")
+    # Before the claim file, not just before the request. The client refuses
+    # Korean too — that is the gate every path shares — but by then this
+    # function has already reserved the prompt against double billing, and a
+    # refusal would leave that reservation behind for a request that was never
+    # going to be sent.
+    try:
+        pixellab_client._reject_hangul(prompt=prompt)
+    except pixellab_client.PixelLabUnavailable as exc:
+        raise tool_error(VALIDATION_ERROR, str(exc), featureId=feature_id) from exc
     resolved_game = _resolve_game_id(game_id)
     style = load_or_create(
         ROOT, resolved_game, art_style or os.getenv("ASSET_ART_STYLE", DEFAULT_ART_STYLE)
     )
     kind = forced_kind or render.classify(prompt)
-    prompt_plan = prompting.compose(prompt, kind)
+    # The structured payload is built here rather than at the request so the
+    # composer can see it: wording that contradicts a field it is sent
+    # alongside is reported instead of quietly competing with it.
+    style_params = _pixellab_style_params(style, kind, direction)
+    # A starting image at a strength where it leads states the composition in
+    # pixels, so the kind framing would be prose arguing with an image that has
+    # already won. A pose reference is not the same thing: keypoints carry the
+    # pose and nothing else, so framing still has something to say there.
+    # An unanswered strength means the provider's own default applies and we do
+    # not know which band it lands in, so the framing stays.
+    reference_leads = bool(init_asset_id) and (init_image_strength or 0) >= (
+        prompting.REFERENCE_LEAD_STRENGTH
+    )
+    prompt_plan = prompting.compose(
+        prompt, kind, style_params, reference_leads=reference_leads
+    )
     width, height = _resolve_size(style, kind, grid_size, feature_id, canvas)
+    # The *caller's* prompt seeds the generation and names the asset, not the
+    # composed one. Composition is a presentation step that this change just
+    # rewrote; feeding its output to the digest would rename every asset ever
+    # generated and unblock every duplicate claim guarding a paid prompt.
     seed = render.rng_for(style, feature_id, prompt).getrandbits(32)
     # The grid joins the digest only when overridden, so digests written before
     # this parameter existed still resolve to the same asset id and file. The
@@ -900,10 +952,23 @@ def _generate_prototype(
             if warning:
                 warnings.append(warning)
 
+    # ``avoid`` answers were collected by the intake and then dropped on the
+    # floor: nothing here ever read them, so the one question that asks what
+    # must not appear had no effect on a prototype. They are live on bitforge
+    # and ``(Deprecated)`` on pixflux, so they travel on one path only — and
+    # the result says which, rather than leaving the caller to infer it.
+    negatives = ", ".join(
+        dict.fromkeys(
+            part
+            for part in (prompt_plan.negative_description, *(exclusions or []))
+            if part and part.strip()
+        )
+    )
     try:
         if posed:
             image, usage = pixellab_client.create_image_bitforge(
                 prompt=prompt_plan.prompt,
+                negative_description=negatives,
                 width=width,
                 height=height,
                 seed=seed,
@@ -912,7 +977,7 @@ def _generate_prototype(
                 init_image=init_image,
                 init_image_strength=init_image_strength,
                 forced_palette=palette_rgb,
-                **_pixellab_style_params(style, kind, direction),
+                **style_params,
             )
             tool_name = "create-image-bitforge"
         else:
@@ -923,7 +988,7 @@ def _generate_prototype(
                 kind=kind,
                 seed=seed,
                 style_description=style.art_style,
-                style_params=_pixellab_style_params(style, kind, direction),
+                style_params=style_params,
                 palette=palette,
             )
     except pixellab_client.PixelLabUnavailable as exc:
@@ -1002,7 +1067,15 @@ def _generate_prototype(
         "styleSeed": style.seed,
         "generatedBy": provenance["method"],
         "promptMetrics": prompt_plan.metadata(),
+        "exclusionsSent": bool(posed and negatives),
+        "exclusions": negatives or None,
     }
+    if negatives and not posed:
+        warnings.append(
+            "exclusions were not sent: negative_description is (Deprecated) on the "
+            "pixflux path. State the replacement positively in mustHave, or generate "
+            "with a reference so the request goes through create-image-bitforge"
+        )
     if skeleton:
         result["skeletonKeypoints"] = len(skeleton)
     if (width, height) != requested_size:
@@ -1022,12 +1095,270 @@ def _generate_prototype(
 # --------------------------------------------------------------------------
 
 
+def _approved_source(
+    asset_id: str, game_id: str | None, field: str, feature_id: str
+) -> tuple[dict[str, Any], dict[str, Any], str, Image.Image]:
+    """The approved sprite named by ``asset_id``, as ``(manifest, record, game, image)``.
+
+    Every derivation tool needs the same four things and the same three
+    refusals, and each one that grew its own copy grew a slightly different set
+    of them.
+    """
+
+    asset_id = _require(asset_id, field)
+    source_game = asset_id.split("__", 1)[0]
+    resolved_game = _resolve_game_id(game_id) if game_id else source_game
+    if resolved_game != source_game:
+        raise tool_error(VALIDATION_ERROR, f"gameId must match the {field} asset")
+
+    manifest = _load_manifest(resolved_game)
+    record = manifest["assets"].get(asset_id)
+    if record is None:
+        raise tool_error(VALIDATION_ERROR, f"unknown {field}: {asset_id}")
+    if record["status"] != APPROVED:
+        raise tool_error(
+            VALIDATION_ERROR, f"the {field} asset must be approved before deriving from it"
+        )
+    path = Path(record["asset_path"])
+    if not path.is_file():
+        raise tool_error(VALIDATION_ERROR, f"{field} file is missing: {path}")
+    with Image.open(path) as opened:
+        image = opened.convert("RGBA").copy()
+    if not pixellab_client.is_configured():
+        raise tool_error(MCP_ERROR, "PIXELLAB_API_KEY is not set", featureId=feature_id)
+    return manifest, record, resolved_game, image
+
+
+def _native(image: Image.Image) -> Image.Image:
+    """A stored sprite back at the canvas it was generated on.
+
+    Sprites are saved at ``_PIXELLAB_UPSCALE`` times their generated size, so
+    asking a provider to work on the stored size would be a different request
+    at a different canvas — and for rotation, one the endpoint refuses outright.
+    """
+
+    size = tuple(max(1, side // _PIXELLAB_UPSCALE) for side in image.size)
+    return image if size == image.size else image.resize(size, Image.NEAREST)
+
+
+@mcp.tool(
+    description=(
+        "Derive eight facings from one approved sprite through PixelLab's "
+        "generate-8-rotations-v2. Eight separate generations produce eight different "
+        "characters; this derives all eight from the same reference. The sprite must "
+        "have been generated on a square 16, 32, 64, or 128 canvas."
+    )
+)
+@expects_dict_return
+def generate_2d_rotations(
+    featureId: str,
+    sourceAssetId: str,
+    gameId: str | None = None,
+) -> dict[str, Any]:
+    """Eight facings from one approved sprite.
+
+    Facing used to be askable only as prose or as the ``direction`` field, both
+    of which re-roll the whole image: asking for the same character eight times
+    returns eight characters. This endpoint turns one reference instead, so the
+    eight frames are the same subject by construction.
+
+    Each frame lands as its own ``pending`` asset named for its facing, because
+    a rotation set is reviewed the way its source was — one bad facing is a bad
+    facing, not a bad set.
+    """
+
+    feature_id = _require_identifier(featureId, "featureId")
+    manifest, source, resolved_game, stored = _approved_source(
+        sourceAssetId, gameId, "sourceAssetId", feature_id
+    )
+    if not _is_pixellab_asset(source):
+        raise tool_error(VALIDATION_ERROR, "sourceAssetId must come from PixelLab")
+
+    reference = _native(stored)
+    style = load_or_create(ROOT, resolved_game, os.getenv("ASSET_ART_STYLE", DEFAULT_ART_STYLE))
+    try:
+        images, usage, job_id = pixellab_client.generate_rotations(
+            reference=reference, view=style.camera_view
+        )
+    except pixellab_client.PixelLabUnavailable as exc:
+        raise tool_error(
+            MCP_ERROR,
+            f"PixelLab rotation failed: {exc}",
+            featureId=feature_id,
+            sourceAssetId=sourceAssetId,
+        ) from exc
+
+    kind = source["kind"]
+    digest = hashlib.sha256(f"{sourceAssetId}|rotations".encode()).hexdigest()[:8]
+    set_id = f"{resolved_game}__{feature_id}__rotations__{digest}"
+    out_dir = ROOT / "assets" / resolved_game / "rotations" / f"{feature_id}_{digest}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    target = tuple(side * _PIXELLAB_UPSCALE for side in reference.size)
+    records: list[dict[str, Any]] = []
+    failures: set[str] = set()
+    for index, (facing, image) in enumerate(zip(pixellab_client.ROTATION_ORDER, images)):
+        if image.size != target:
+            image = image.resize(target, Image.NEAREST)
+        asset_id = f"{set_id}__{facing}"
+        path = out_dir / f"{index:02d}_{facing}.png"
+        image.save(path)
+        inspection = quality.inspect(image, kind, image.size)
+        failures.update(inspection["failures"])
+        manifest["assets"][asset_id] = {
+            "asset_id": asset_id,
+            "feature_id": feature_id,
+            "kind": kind,
+            "prompt": source.get("prompt", ""),
+            "provider_prompt": source.get("provider_prompt", ""),
+            "status": PENDING,
+            "asset_path": str(path),
+            "created_at": _now(),
+            "reviewed_at": None,
+            "review_note": None,
+            "prototype_asset_id": sourceAssetId,
+            "rotation_set_id": set_id,
+            "direction": facing,
+            "provenance": {
+                "method": "pixellab-api",
+                "endpoint": "generate-8-rotations-v2",
+                "job_id": job_id,
+                "direction": facing,
+                "source_asset_id": sourceAssetId,
+                "usage": usage,
+                "commercial_use": "see PixelLab terms of service",
+            },
+        }
+        records.append({"assetId": asset_id, "direction": facing, "assetPath": str(path)})
+    _save_manifest(manifest)
+
+    return {
+        "rotationSetId": set_id,
+        "gameId": resolved_game,
+        "kind": kind,
+        "sourceAssetId": sourceAssetId,
+        "status": PENDING,
+        "workflowStage": "rotations",
+        "rotations": records,
+        "technicalStatus": "fail" if failures else "pass",
+        "technicalFailures": sorted(failures),
+        "imagesGenerated": _images_generated(usage) or len(records),
+    }
+
+
+@mcp.tool(
+    description=(
+        "Redraw one region of an approved sprite through PixelLab's inpaint-v3 "
+        "instead of regenerating the whole thing. maskAssetId names a mask drawn "
+        "by a human under var/concept-art/<gameId>/ as concept:<filename>, white "
+        "where the region should be redrawn and black where it must be preserved."
+    )
+)
+@expects_dict_return
+def inpaint_asset(
+    featureId: str,
+    sourceAssetId: str,
+    description: str,
+    maskAssetId: str | None = None,
+    gameId: str | None = None,
+) -> dict[str, Any]:
+    """Repair one region rather than re-rolling the sprite.
+
+    Regenerating to fix one wrong detail throws away every detail that was
+    right, and the re-roll is a fresh sample so it rarely returns them. This is
+    the repair step PixelLab's own tutorial loop is built around.
+
+    The result is a new ``pending`` asset. The approved original is never
+    overwritten: a repair is a proposal, and the human gate that approved the
+    original is the one that decides whether the repair replaces it.
+    """
+
+    feature_id = _require_identifier(featureId, "featureId")
+    instruction = _require(description, "description")
+    manifest, source, resolved_game, stored = _approved_source(
+        sourceAssetId, gameId, "sourceAssetId", feature_id
+    )
+
+    image = _native(stored)
+    mask = None
+    if maskAssetId:
+        mask = _approved_reference(maskAssetId, resolved_game, "maskAssetId", feature_id)
+        if mask.size != image.size:
+            mask = mask.resize(image.size, Image.NEAREST)
+
+    try:
+        repaired, usage, job_id = pixellab_client.inpaint(
+            image=image, description=instruction, mask=mask
+        )
+    except pixellab_client.PixelLabUnavailable as exc:
+        raise tool_error(
+            MCP_ERROR,
+            f"PixelLab inpaint failed: {exc}",
+            featureId=feature_id,
+            sourceAssetId=sourceAssetId,
+        ) from exc
+
+    kind = source["kind"]
+    digest = hashlib.sha256(f"{sourceAssetId}|{instruction}".encode()).hexdigest()[:8]
+    asset_id = f"{resolved_game}__{feature_id}__{kind}__inpaint{digest}"
+    target = tuple(side * _PIXELLAB_UPSCALE for side in image.size)
+    if repaired.size != target:
+        repaired = repaired.resize(target, Image.NEAREST)
+    out_path = _asset_path(resolved_game, feature_id, kind, f"inpaint{digest}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    repaired.save(out_path)
+
+    inspection = quality.inspect(repaired, kind, repaired.size)
+    manifest["assets"][asset_id] = {
+        "asset_id": asset_id,
+        "feature_id": feature_id,
+        "kind": kind,
+        "prompt": instruction,
+        "provider_prompt": instruction,
+        "status": PENDING,
+        "asset_path": str(out_path),
+        "created_at": _now(),
+        "reviewed_at": None,
+        "review_note": None,
+        "prototype_asset_id": sourceAssetId,
+        "provenance": {
+            "method": "pixellab-api",
+            "endpoint": "inpaint-v3",
+            "job_id": job_id,
+            "source_asset_id": sourceAssetId,
+            "mask_asset_id": maskAssetId,
+            "masked": mask is not None,
+            "usage": usage,
+            "commercial_use": "see PixelLab terms of service",
+        },
+    }
+    _save_manifest(manifest)
+
+    return {
+        "assetId": asset_id,
+        "assetPath": str(out_path),
+        "gameId": resolved_game,
+        "kind": kind,
+        "sourceAssetId": sourceAssetId,
+        "masked": mask is not None,
+        "status": PENDING,
+        "workflowStage": "inpaint",
+        "technicalStatus": "fail" if inspection["failures"] else "pass",
+        "technicalFailures": sorted(inspection["failures"]),
+        "imagesGenerated": _images_generated(usage) or 1,
+    }
+
+
 @mcp.tool(
     description=(
         "Collect a complete asset brief and return a deterministic, kind-aware prompt "
         "plus the briefId generate_2d_sprite requires. This preflight does not generate "
         "an image or call a model. Questions it returns are for the user to answer, not "
-        "for the caller to fill in."
+        "for the caller to fill in. One exception: an answer written in Korean comes "
+        "back as a question carrying koreanText, because PixelLab prompt fields are "
+        "English only and this server cannot translate. You can — translate it when the "
+        "meaning is unambiguous, or settle the wording with the user when a choice of "
+        "words would change the picture, then call this tool again with the English."
     )
 )
 @expects_dict_return
@@ -1198,7 +1529,7 @@ def generate_2d_sprite(
     palette_lock = _brief_parameter(brief, "paletteLock", paletteLock, featureId)
     return _generate_prototype(
         featureId,
-        prompt,
+        _brief_prompt(brief, prompt, featureId),
         gameId,
         forced_kind=kind,
         art_style=artStyle,
@@ -1211,18 +1542,33 @@ def generate_2d_sprite(
         skeleton_guidance=skeletonGuidance,
         init_image_strength=initImageStrength,
         canvas=canvas,
+        exclusions=brief.get("exclusions") or [],
     )
 
 
-@mcp.tool(description="Generate an initial UI prototype through PixelLab's official MCP.")
+@mcp.tool(
+    description=(
+        "Generate an initial UI prototype through PixelLab's official MCP. Requires a "
+        "briefId from prepare_asset_prompt, the same as generate_2d_sprite: it shares "
+        "the same generation path, so without one the brief's prompt could be bypassed "
+        "by calling this tool instead."
+    )
+)
 @expects_dict_return
 def generate_ui_asset(
     featureId: str,
     prompt: str,
+    briefId: str,
     gameId: str | None = None,
     artStyle: str | None = None,
     assetKind: str | None = None,
 ) -> dict[str, Any]:
+    """``briefId`` is required here for the reason it is required on
+    ``generate_2d_sprite``: both tools share ``_generate_prototype``, so a gate
+    on one of them is a gate on neither. This tool took no brief at all, which
+    made it the way around the canonical prompt rather than a second path to
+    the same check."""
+
     explicit = _asset_kind(assetKind)
     kind = explicit or render.classify(prompt)
     if not kind.startswith("ui_") and kind != "icon":
@@ -1232,13 +1578,15 @@ def generate_ui_asset(
     # Inference is safe here in a way it was not for sprites: every outcome is
     # a UI kind, so a wrong guess picks the wrong UI shape rather than turning
     # a character into a tile.
+    brief = _answered_brief(briefId, featureId)
     return _generate_prototype(
         featureId,
-        prompt,
+        _brief_prompt(brief, prompt, featureId),
         gameId,
         forced_kind=kind,
         art_style=artStyle,
         kind_source="explicit" if explicit else "inferred",
+        exclusions=brief.get("exclusions") or [],
     )
 
 

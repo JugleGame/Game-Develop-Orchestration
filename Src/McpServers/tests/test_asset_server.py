@@ -15,7 +15,7 @@ from mcp import ClientSession
 from mcp import Client
 from PIL import Image
 
-from conftest import sprite_call
+from conftest import sprite_call, ui_call
 from asset import pixellab_client
 from asset.render import classify
 from asset.server import DEFAULT_ASSET_ROOT, _configured_asset_root, mcp
@@ -121,8 +121,18 @@ async def test_prompt_preflight_orders_structure_and_revision_feedback():
     prompt = body["prompt"]
     assert body["readyForPrototype"] is True
     assert body["feedbackApplied"] is True
-    assert prompt.index("Required visual structure") < prompt.index("Revision target")
-    assert prompt.index("Revision target") < prompt.index("Readability target")
+    # Clauses in priority order, with no intake labels: "Composition:" and
+    # "Required visual structure:" describe the form, not the picture, and
+    # they used to reach the provider verbatim.
+    assert prompt.index("one connected body") < prompt.index("warm glass color")
+    assert prompt.index("warm glass color") < prompt.index(
+        "replace the flat base with three visible feet"
+    )
+    for label in ("Composition:", "Required visual structure:", "Readability target:"):
+        assert label not in prompt
+    # The production purpose is kept as an answer, not drawn as scenery.
+    assert body["purpose"] == "a 32 px gameplay pickup"
+    assert body["purpose"] not in prompt
     assert body["artStyle"] not in prompt
     # Exclusions are recorded but never handed to PixelLab: it draws the noun
     # and drops the negation, so the list would summon what it forbids.
@@ -320,9 +330,8 @@ async def test_generate_ui_asset_always_produces_ui():
     """Whatever the wording, this tool must not emit a terrain tile."""
 
     async with session() as client:
-        result = await client.call_tool(
-            "generate_ui_asset",
-            {"featureId": "f-ui", "prompt": "grass terrain", "gameId": "t-ui"},
+        result = await ui_call(
+            client, {"featureId": "f-ui", "prompt": "grass terrain", "gameId": "t-ui"}
         )
 
     assert result.structured_content["kind"].startswith("ui_")
@@ -1461,8 +1470,8 @@ async def test_ui_assets_still_infer_between_button_panel_and_icon():
     UI kinds by wording cannot pick a wrong canvas ratio family."""
 
     async with session() as client:
-        result = await client.call_tool(
-            "generate_ui_asset",
+        result = await ui_call(
+            client,
             {"featureId": "f-ui", "prompt": "an inventory panel", "gameId": "t-ui-infer"},
         )
 
@@ -1470,4 +1479,56 @@ async def test_ui_assets_still_infer_between_button_panel_and_icon():
     assert result.is_error is False
     assert body["kind"] == "ui_panel"
     assert body["kindSource"] == "inferred"
+
+
+
+async def test_a_call_site_prompt_that_rewrites_the_brief_is_refused():
+    """The briefId gate pinned every generation parameter to an answer and left
+    the field the picture is made of free (issue #92)."""
+
+    async with session() as client:
+        prepared = await client.call_tool(
+            "prepare_asset_prompt",
+            {
+                "assetKind": "prop",
+                "subject": "a brass lantern",
+                "purpose": "a 32 px pickup",
+                "composition": "centered with a broad base",
+                "mustHave": ["one connected silhouette"],
+                "artStyle": "pixel art",
+                "gridSize": 32,
+                "paletteLock": True,
+                "initAssetId": "none",
+                "initImageStrength": 0,
+                "direction": "none",
+            },
+        )
+        body = prepared.structured_content
+        assert body["readyForPrototype"] is True
+
+        refused = await client.call_tool(
+            "generate_2d_sprite",
+            {
+                "featureId": "f-lantern",
+                "assetKind": "prop",
+                "briefId": body["briefId"],
+                "prompt": "an entirely different subject, a castle at dusk, wide scene",
+            },
+        )
+
+    text = str(refused.content)
+    assert '"errorCode": 1000' in text
+    assert "does not match the brief" in text
+
+
+async def test_generate_ui_asset_requires_a_brief():
+    """It shares _generate_prototype, so a gate on only one tool is no gate."""
+
+    async with session() as client:
+        refused = await client.call_tool(
+            "generate_ui_asset",
+            {"featureId": "f-ui-gate", "prompt": "an inventory panel", "gameId": "t-ui-gate"},
+        )
+
+    assert refused.is_error is True
 

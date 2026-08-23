@@ -19,9 +19,11 @@ tested — this module targets v2 because it is the only version PixelLab
 currently documents as current.
 
 No prompt-enhancement or translation step here — PixelLab has no such
-endpoint (§3-3, confirmed) and the Korean ``assetsNeeded`` strings are passed
-through unchanged. A translation layer is a separate, undecided piece of work
-(12문서 §5).
+endpoint (§3-3, confirmed) and this server never calls a model, so it has
+nothing to translate with. Korean text in a prompt field is therefore refused
+before the request rather than passed through: see ``_reject_hangul``. It used
+to be passed through unchanged, which billed a generation for a description the
+model cannot read.
 """
 
 from __future__ import annotations
@@ -620,6 +622,7 @@ def generate_prototype(
 ) -> tuple[Image.Image, dict[str, Any], str]:
     """Generate one style prototype through PixelLab's official remote MCP."""
 
+    _reject_hangul(prompt=prompt, style_description=style_description)
     return anyio.run(
         partial(
             _generate_prototype_async,
@@ -710,6 +713,7 @@ def generate_image(
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
         raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    _reject_hangul(prompt=prompt)
 
     payload: dict[str, Any] = {
         "description": prompt,
@@ -997,6 +1001,7 @@ def create_image_bitforge(
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
         raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    _reject_hangul(prompt=prompt, negative_description=negative_description)
 
     payload: dict[str, Any] = {
         "description": prompt,
@@ -1113,6 +1118,7 @@ def generate_with_style(
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
         raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    _reject_hangul(prompt=prompt, style_description=style_description)
     if not 1 <= len(style_images) <= 4:
         raise PixelLabUnavailable("style_images must contain between 1 and 4 images")
 
@@ -1208,6 +1214,46 @@ def generate_with_style(
     return images, dict(usage), job_id
 
 
+#: Hangul: syllables, conjoining jamo, compatibility jamo, and the two extended
+#: blocks. The provider's text encoder is trained on English prompts, and this
+#: repository's hosts write Korean everywhere else — so Korean reaching a prompt
+#: field is a leak from the conversation into the request, not a translation
+#: anybody chose. Refused rather than stripped: dropping the words would spend a
+#: generation on a description missing whatever they said.
+_HANGUL = re.compile(r"[\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\ud7b0-\ud7ff]")
+
+
+def contains_hangul(value: str | None) -> bool:
+    """Whether this text carries Korean.
+
+    Split out from the refusal because the two callers want opposite things
+    from the same answer. The generation gates want to stop; the intake wants
+    to ask a question, because a Korean answer at intake is a host that has not
+    written the English yet, not a caller doing something forbidden.
+    """
+
+    return bool(value and _HANGUL.search(value))
+
+
+def _reject_hangul(**fields: str | None) -> None:
+    """Fail before the request when a text field carries Korean.
+
+    The module used to say the Korean ``assetsNeeded`` strings were "passed
+    through unchanged" and that a translation layer was undecided work. Passing
+    them through is a decision too, and it is the one that bills a generation
+    for a prompt the model cannot read. The host writes the English; this server
+    never calls a model, so it cannot translate and does not pretend to.
+    """
+
+    for field, value in fields.items():
+        if contains_hangul(value):
+            raise PixelLabUnavailable(
+                f"{field} contains Korean text: {value!r}. PixelLab prompt fields are "
+                "English only — write the English description at the call site. This "
+                "server does not translate."
+            )
+
+
 def _reject_style_enums(endpoint: str, **values: str | None) -> None:
     """Fail before the request when a style value is wrong for this endpoint.
 
@@ -1293,6 +1339,11 @@ def create_tileset(
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
         raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    _reject_hangul(
+        lower_description=lower_description,
+        upper_description=upper_description,
+        transition_description=transition_description,
+    )
 
     payload: dict[str, Any] = {
         "lower_description": lower_description,
@@ -1429,6 +1480,7 @@ def create_animation(
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
         raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    _reject_hangul(action=action, description=description)
     if frame_count not in ANIMATION_FRAME_COUNTS:
         raise PixelLabUnavailable(
             f"frame_count must be one of {ANIMATION_FRAME_COUNTS}"
@@ -1510,6 +1562,203 @@ def create_animation(
 #: ``CreateMapObjectRequest.image_size`` starts at 32, not at pixflux's 16.
 MAP_OBJECT_SIDE_RANGE = (32, 400)
 
+#: The order ``/generate-8-rotations-v2`` returns its images in. Fixed by the
+#: endpoint, not chosen by the request, so a caller names each frame by its
+#: position rather than guessing the facing from the picture.
+ROTATION_ORDER = (
+    "south",
+    "south-west",
+    "west",
+    "north-west",
+    "north",
+    "north-east",
+    "east",
+    "south-east",
+)
+
+#: Canvases the rotation endpoints accept. Square only — a second, independent
+#: reason ``character`` is a square kind: a 32x64 sprite cannot be turned by
+#: this endpoint at all.
+ROTATION_SIZES = (16, 32, 64, 128)
+
+#: ``InpaintV3Request`` image bounds.
+INPAINT_SIDE_RANGE = (32, 512)
+
+
+def generate_rotations(
+    *,
+    reference: Image.Image,
+    view: str,
+    poll_seconds: float = 5.0,
+    max_polls: int = 60,
+) -> tuple[list[Image.Image], dict[str, Any], str]:
+    """Turn one approved sprite into eight facings — ``(images, usage, job_id)``.
+
+    Asking for eight facings as eight separate generations produces eight
+    different characters, because each one is an independent sample. This
+    endpoint derives all eight from a single reference, so the consistency is
+    structural rather than something the prompt has to beg for.
+
+    The canvas must be square and one of :data:`ROTATION_SIZES` — the provider
+    documents that outright rather than as a quality caveat. Images come back in
+    :data:`ROTATION_ORDER`, the endpoint's own fixed order.
+    """
+
+    api_key = os.getenv("PIXELLAB_API_KEY")
+    if not api_key:
+        raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    width, height = reference.size
+    if width != height or width not in ROTATION_SIZES:
+        raise PixelLabUnavailable(
+            f"rotation needs a square canvas of {ROTATION_SIZES}; got {width}x{height}"
+        )
+    _reject_style_enums("create-image-pixflux", view=view)
+
+    payload: dict[str, Any] = {
+        "method": "rotate_character",
+        "reference_image": {
+            "image": {"type": "base64", "base64": _image_b64(reference)},
+            "width": width,
+            "height": height,
+        },
+        "image_size": {"width": width, "height": height},
+        "view": view,
+    }
+    images, usage, job_id = _run_background_job(
+        "/generate-8-rotations-v2", payload, api_key, "rotation", poll_seconds, max_polls
+    )
+    if len(images) != len(ROTATION_ORDER):
+        raise PixelLabUnavailable(
+            f"expected {len(ROTATION_ORDER)} rotations, got {len(images)}"
+        )
+    return images, usage, job_id
+
+
+def inpaint(
+    *,
+    image: Image.Image,
+    description: str,
+    mask: Image.Image | None = None,
+    poll_seconds: float = 5.0,
+    max_polls: int = 60,
+) -> tuple[Image.Image, dict[str, Any], str]:
+    """Redraw part of an approved sprite — ``(image, usage, job_id)``.
+
+    ``mask`` is white where the endpoint should generate and black where it must
+    preserve. Omitting it lets the endpoint choose the region, which is rarely
+    what a targeted fix wants.
+
+    This is the step PixelLab's own tutorial loop is built around: repair the
+    one region that is wrong instead of regenerating the whole sprite and losing
+    the parts that were already right.
+    """
+
+    api_key = os.getenv("PIXELLAB_API_KEY")
+    if not api_key:
+        raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    _reject_hangul(description=description)
+    if not description.strip():
+        raise PixelLabUnavailable("description must not be empty")
+    floor, ceiling = INPAINT_SIDE_RANGE
+    width, height = image.size
+    if not (floor <= width <= ceiling and floor <= height <= ceiling):
+        raise PixelLabUnavailable(
+            f"inpaint accepts {floor}-{ceiling} pixels per side; got {width}x{height}"
+        )
+    if mask is not None and mask.size != image.size:
+        raise PixelLabUnavailable(
+            f"mask {mask.size[0]}x{mask.size[1]} must match the image {width}x{height}"
+        )
+
+    payload: dict[str, Any] = {
+        "description": description.strip(),
+        "image_size": {"width": width, "height": height},
+        "inpainting_image": {"type": "base64", "base64": _image_b64(image)},
+        # The static paths all ask for the cut-out; a repaired sprite needs the
+        # same alpha as the sprite it replaces.
+        "remove_background": True,
+    }
+    if mask is not None:
+        payload["mask_image"] = {"type": "base64", "base64": _image_b64(mask)}
+
+    images, usage, job_id = _run_background_job(
+        "/inpaint-v3", payload, api_key, "inpaint", poll_seconds, max_polls
+    )
+    return images[0], usage, job_id
+
+
+def _run_background_job(
+    path: str,
+    payload: dict[str, Any],
+    api_key: str,
+    label: str,
+    poll_seconds: float,
+    max_polls: int,
+) -> tuple[list[Image.Image], dict[str, Any], str]:
+    """POST, poll ``/background-jobs/<id>``, and decode the images it returns.
+
+    ``generate_with_style`` and ``create_animation`` each grew their own copy of
+    this loop before there was a third caller. This is that loop, once.
+    """
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        with httpx.Client(timeout=_TIMEOUT_SECONDS) as client:
+            created = client.post(f"{BASE_URL}{path}", json=payload, headers=headers)
+            if created.status_code >= 400:
+                raise PixelLabUnavailable(
+                    f"PixelLab rejected the {label} request ({created.status_code}): "
+                    f"{created.text[:400]}"
+                )
+            created_data = created.json()
+            job_id = created_data.get("background_job_id")
+            if not job_id:
+                raise PixelLabUnavailable("PixelLab returned no background_job_id")
+
+            data: dict[str, Any] | None = None
+            for _ in range(max_polls):
+                candidate = _poll_json(
+                    client,
+                    f"{BASE_URL}/background-jobs/{job_id}",
+                    headers,
+                    poll_seconds=poll_seconds,
+                    max_polls=1,
+                )
+                status = candidate.get("status")
+                if status == "failed":
+                    raise PixelLabUnavailable(
+                        f"PixelLab {label} job failed: {candidate.get('last_response')!r}"
+                    )
+                if status == "completed":
+                    data = candidate
+                    break
+                time.sleep(poll_seconds)
+            if data is None:
+                raise PixelLabUnavailable(
+                    f"{label} job {job_id} not ready after {max_polls * poll_seconds:.0f}s"
+                )
+    except httpx.HTTPError as exc:
+        raise PixelLabUnavailable(f"PixelLab {label} request failed: {exc}") from exc
+
+    response = data.get("last_response") or {}
+    response_dict = response if isinstance(response, dict) else {}
+    encoded: list[str] = []
+    raw_images = response_dict.get("images")
+    if isinstance(raw_images, list):
+        for item in raw_images:
+            found = _encoded_image(item)
+            if found:
+                encoded.append(found)
+    else:
+        found = _encoded_image(response)
+        if found:
+            encoded.append(found)
+    if not encoded:
+        raise PixelLabUnavailable(f"malformed PixelLab {label} response: no images")
+
+    usage = data.get("usage") or created_data.get("usage") or response_dict.get("usage") or {}
+    return [_decode(item) for item in encoded], dict(usage), str(job_id)
+
 
 def create_map_object(
     *,
@@ -1559,6 +1808,7 @@ def create_map_object(
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
         raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    _reject_hangul(description=description)
 
     payload: dict[str, Any] = {
         "description": description,
@@ -1629,7 +1879,10 @@ def _decode(encoded: str) -> Image.Image:
 
 __all__ = [
     "PixelLabUnavailable",
+    "contains_hangul",
     "create_map_object",
+    "generate_rotations",
+    "inpaint",
     "create_tileset",
     "generate_image",
     "generate_prototype",
