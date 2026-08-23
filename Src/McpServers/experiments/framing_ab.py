@@ -21,7 +21,8 @@ The framing's own claims are what gets measured, using the server's existing
 
 * **Round 6** (4 generations, one seed per kind) read a fidelity loss into the
   framing arm — a lost face, lost glass panels. It did not replicate. One sample
-  per arm cannot separate an effect from a draw, and that reading is withdrawn.
+  per arm cannot separate an effect from a draw, so that reading is withdrawn and
+  its output was deleted; only the mistake is worth keeping.
 * **Round 7** (16 generations, 4 kinds x 2 seeds) settled ``tile``: the framing
   roughly doubles edge coverage at both seeds, and without it the result is
   scattered debris on transparency rather than a tile. ``character``, ``prop``,
