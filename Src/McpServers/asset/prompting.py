@@ -298,6 +298,20 @@ def prepare(
     host: this server never calls a model.
     """
 
+    # Refused at intake, not at generation. The client refuses it too — that is
+    # the gate that actually protects the bill — but finding out here costs a
+    # question instead of a round trip, and the answer is still in front of the
+    # person who wrote it.
+    pixellab_client._reject_hangul(
+        subject=subject,
+        composition=composition,
+        artStyle=art_style,
+        **{f"mustHave[{index}]": item for index, item in enumerate(must_have or [])},
+        **{f"avoid[{index}]": item for index, item in enumerate(avoid or [])},
+        **{f"preserve[{index}]": item for index, item in enumerate(preserve or [])},
+        **{f"change[{index}]": item for index, item in enumerate(change or [])},
+    )
+
     subject = _SPACE.sub(" ", subject).strip(" .")
     purpose = _SPACE.sub(" ", purpose).strip(" .")
     composition = _SPACE.sub(" ", composition).strip(" .")

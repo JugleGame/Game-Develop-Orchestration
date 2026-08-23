@@ -2318,3 +2318,108 @@ def test_measured_kinds_carry_no_framing_and_tile_still_does():
     assert "edge-to-edge tile" in prompting.compose("a stone floor", "tile").prompt
     # Not measured, so not changed.
     assert "single centered creature" in prompting.compose("a slime", "monster").prompt
+
+
+# --------------------------------------------------------------------------
+# PixelLab prompt fields are English only (issue #92)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "붉은 망토를 두른 기사",  # syllables
+        "a knight, 붉은 망토",  # mixed in with English
+        "ㄱㄴㄷ",  # compatibility jamo alone
+    ],
+)
+def test_korean_in_a_prompt_field_is_refused(text):
+    """It used to be "passed through unchanged", which billed a generation for a
+    description the model cannot read. This server never calls a model, so it
+    cannot translate and does not pretend to."""
+
+    with pytest.raises(server.pixellab_client.PixelLabUnavailable) as excinfo:
+        server.pixellab_client._reject_hangul(prompt=text)
+
+    assert "English only" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a young female knight, red cape",
+        "64×64 tile",  # the size clause's own multiplication sign
+        "a café sign",  # accents are not Korean
+    ],
+)
+def test_non_korean_text_is_not_refused(text):
+    """Blocking every non-ASCII character would refuse the × that
+    ``_SIZE_CLAUSE`` itself matches."""
+
+    server.pixellab_client._reject_hangul(prompt=text)
+
+
+def test_the_intake_refuses_korean_before_a_brief_exists():
+    """Refused at question time, where the answer is still in front of whoever
+    wrote it, rather than one round trip later."""
+
+    with pytest.raises(server.pixellab_client.PixelLabUnavailable) as excinfo:
+        prompting.prepare(
+            "character",
+            subject="붉은 망토를 두른 기사",
+            purpose="a 32 px sprite",
+            composition="standing idle",
+            must_have=["a red cape"],
+            art_style="pixel art",
+            grid_size=32,
+            palette_lock=True,
+            init_asset_id="none",
+            init_image_strength=0,
+            direction="south",
+        )
+
+    assert "subject" in str(excinfo.value)
+
+
+def test_the_intake_checks_every_free_text_answer_not_only_the_subject():
+    with pytest.raises(server.pixellab_client.PixelLabUnavailable) as excinfo:
+        prompting.prepare(
+            "character",
+            subject="a young knight",
+            purpose="a 32 px sprite",
+            composition="standing idle",
+            must_have=["a red cape", "붉은 망토"],
+            art_style="pixel art",
+            grid_size=32,
+            palette_lock=True,
+            init_asset_id="none",
+            init_image_strength=0,
+            direction="south",
+        )
+
+    assert "mustHave[1]" in str(excinfo.value)
+
+
+def test_korean_never_reaches_the_provider_through_the_prototype_path(
+    monkeypatch, tmp_path
+):
+    """The client guard is the one that protects the bill: it catches the paths
+    that never touch prepare() or compose()."""
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setenv("PIXELLAB_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        server.pixellab_client,
+        "_generate_prototype_async",
+        lambda **kwargs: pytest.fail("a Korean prompt reached the provider"),
+    )
+
+    with pytest.raises(Exception) as excinfo:
+        server._generate_prototype(
+            "f-korean", "붉은 망토를 두른 기사", "t-korean", forced_kind="character"
+        )
+
+    assert "English only" in str(excinfo.value)
+    # Refused before the prompt was reserved against double billing, so the
+    # claim directory is untouched by a request that was never sent.
+    assert not list((tmp_path / "assets" / "claims").rglob("*.json"))

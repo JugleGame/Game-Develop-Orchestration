@@ -784,6 +784,15 @@ def _generate_prototype(
     feature_id = _require_identifier(feature_id, "featureId")
     direction = _direction(direction, feature_id)
     prompt = _require(prompt, "prompt")
+    # Before the claim file, not just before the request. The client refuses
+    # Korean too — that is the gate every path shares — but by then this
+    # function has already reserved the prompt against double billing, and a
+    # refusal would leave that reservation behind for a request that was never
+    # going to be sent.
+    try:
+        pixellab_client._reject_hangul(prompt=prompt)
+    except pixellab_client.PixelLabUnavailable as exc:
+        raise tool_error(VALIDATION_ERROR, str(exc), featureId=feature_id) from exc
     resolved_game = _resolve_game_id(game_id)
     style = load_or_create(
         ROOT, resolved_game, art_style or os.getenv("ASSET_ART_STYLE", DEFAULT_ART_STYLE)

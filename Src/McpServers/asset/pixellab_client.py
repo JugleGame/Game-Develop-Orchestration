@@ -19,9 +19,11 @@ tested — this module targets v2 because it is the only version PixelLab
 currently documents as current.
 
 No prompt-enhancement or translation step here — PixelLab has no such
-endpoint (§3-3, confirmed) and the Korean ``assetsNeeded`` strings are passed
-through unchanged. A translation layer is a separate, undecided piece of work
-(12문서 §5).
+endpoint (§3-3, confirmed) and this server never calls a model, so it has
+nothing to translate with. Korean text in a prompt field is therefore refused
+before the request rather than passed through: see ``_reject_hangul``. It used
+to be passed through unchanged, which billed a generation for a description the
+model cannot read.
 """
 
 from __future__ import annotations
@@ -620,6 +622,7 @@ def generate_prototype(
 ) -> tuple[Image.Image, dict[str, Any], str]:
     """Generate one style prototype through PixelLab's official remote MCP."""
 
+    _reject_hangul(prompt=prompt, style_description=style_description)
     return anyio.run(
         partial(
             _generate_prototype_async,
@@ -710,6 +713,7 @@ def generate_image(
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
         raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    _reject_hangul(prompt=prompt)
 
     payload: dict[str, Any] = {
         "description": prompt,
@@ -997,6 +1001,7 @@ def create_image_bitforge(
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
         raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    _reject_hangul(prompt=prompt, negative_description=negative_description)
 
     payload: dict[str, Any] = {
         "description": prompt,
@@ -1113,6 +1118,7 @@ def generate_with_style(
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
         raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    _reject_hangul(prompt=prompt, style_description=style_description)
     if not 1 <= len(style_images) <= 4:
         raise PixelLabUnavailable("style_images must contain between 1 and 4 images")
 
@@ -1208,6 +1214,34 @@ def generate_with_style(
     return images, dict(usage), job_id
 
 
+#: Hangul: syllables, conjoining jamo, compatibility jamo, and the two extended
+#: blocks. The provider's text encoder is trained on English prompts, and this
+#: repository's hosts write Korean everywhere else — so Korean reaching a prompt
+#: field is a leak from the conversation into the request, not a translation
+#: anybody chose. Refused rather than stripped: dropping the words would spend a
+#: generation on a description missing whatever they said.
+_HANGUL = re.compile(r"[\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\ud7b0-\ud7ff]")
+
+
+def _reject_hangul(**fields: str | None) -> None:
+    """Fail before the request when a text field carries Korean.
+
+    The module used to say the Korean ``assetsNeeded`` strings were "passed
+    through unchanged" and that a translation layer was undecided work. Passing
+    them through is a decision too, and it is the one that bills a generation
+    for a prompt the model cannot read. The host writes the English; this server
+    never calls a model, so it cannot translate and does not pretend to.
+    """
+
+    for field, value in fields.items():
+        if value and _HANGUL.search(value):
+            raise PixelLabUnavailable(
+                f"{field} contains Korean text: {value!r}. PixelLab prompt fields are "
+                "English only — write the English description at the call site. This "
+                "server does not translate."
+            )
+
+
 def _reject_style_enums(endpoint: str, **values: str | None) -> None:
     """Fail before the request when a style value is wrong for this endpoint.
 
@@ -1293,6 +1327,11 @@ def create_tileset(
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
         raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    _reject_hangul(
+        lower_description=lower_description,
+        upper_description=upper_description,
+        transition_description=transition_description,
+    )
 
     payload: dict[str, Any] = {
         "lower_description": lower_description,
@@ -1429,6 +1468,7 @@ def create_animation(
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
         raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    _reject_hangul(action=action, description=description)
     if frame_count not in ANIMATION_FRAME_COUNTS:
         raise PixelLabUnavailable(
             f"frame_count must be one of {ANIMATION_FRAME_COUNTS}"
@@ -1604,6 +1644,7 @@ def inpaint(
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
         raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    _reject_hangul(description=description)
     if not description.strip():
         raise PixelLabUnavailable("description must not be empty")
     floor, ceiling = INPAINT_SIDE_RANGE
@@ -1755,6 +1796,7 @@ def create_map_object(
     api_key = os.getenv("PIXELLAB_API_KEY")
     if not api_key:
         raise PixelLabUnavailable("PIXELLAB_API_KEY not set")
+    _reject_hangul(description=description)
 
     payload: dict[str, Any] = {
         "description": description,

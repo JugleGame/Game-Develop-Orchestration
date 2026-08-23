@@ -587,6 +587,21 @@ Server: `AssetGenMcpServer`.
   to it, and it did not replicate at the next seed. That reading is withdrawn and its output was
   deleted with it — a retracted finding's images are not evidence of anything. One sample cannot
   separate an effect from a draw, and neither can two.
+- **PixelLab prompt fields are English only, and Korean is refused rather than passed through.**
+  `pixellab_client` used to state that the Korean `assetsNeeded` strings were "passed through
+  unchanged" and that a translation layer was undecided work — but passing them through is a
+  decision too, and it is the one that bills a generation for a description the model cannot read.
+  `_reject_hangul` refuses any prompt field carrying Hangul (syllables, conjoining jamo,
+  compatibility jamo, and both extended blocks) and names the offending field. It is checked in
+  three places for three different reasons: `prepare_asset_prompt` refuses at intake, where the
+  answer is still in front of whoever wrote it; `_generate_prototype` refuses before
+  `_claim_paid_prototype` reserves the prompt, so a request that was never going to be sent leaves
+  no claim behind; and every text-taking client function refuses last, because tilesets, map
+  objects, animations, and inpaint never pass through `prepare` or `compose` at all. Refusal, not
+  stripping: dropping the words would spend a generation on a description missing whatever they
+  said. This server never calls a model, so it cannot translate and does not pretend to — the host
+  writes the English. Only Hangul is matched, not every non-ASCII character, because `_SIZE_CLAUSE`
+  itself matches the `×` in `64×64`.
 - **A deterministic budget caps the description at `PROMPT_BUDGET` (400 characters)**, dropping
   lowest-priority clauses from the tail and reporting them in `promptMetrics.droppedClauses`. It is
   a guard rail against a call site pasting paragraphs, not a tuned value: a well-formed brief lands
