@@ -111,12 +111,32 @@ _NEGATION_LEAD = re.compile(
 # the provider about our review process. Dropping the intake labels and then
 # appending our own production vocabulary would have been the same mistake in a
 # different place.
+# Measured 2026-08-23 (`var/assets/experiments/round-7-framing/`,
+# `round-8-framing/`, 40 paid generations, decision rule fixed before the run —
+# see `Src/McpServers/experiments/framing_ab.py`).
+#
+# ``character``, ``prop``, and ``icon`` are empty because six pairs each, same
+# seed per pair, produced **no** technical failure or warning in either arm and
+# no centring advantage: 3/1, 0/1, and 1/0 pairs better-vs-worse against a
+# two-thirds bar. The clauses asked for centring, full visibility, and a
+# connected silhouette; the generator delivered all three without being told,
+# and the wording spent 22-70 characters on the one axis that has a strength
+# control (`text_guidance_scale`) to say it.
+#
+# ``tile`` keeps its clauses because the same method found the opposite: at both
+# seeds the framing roughly doubled edge coverage (0.498 vs 0.435, 0.309 vs
+# 0.150), and without it the result is scattered debris on a transparent canvas
+# rather than a tile. That was measured through pixflux, not `/tilesets`.
+#
+# ``monster`` and the UI kinds keep theirs because they were **not** measured,
+# not because they were measured and passed. Extrapolating from ``character`` to
+# ``monster`` is the inference this experiment exists to avoid making.
 _FRAMING: dict[AssetKind, tuple[str, ...]] = {
-    "character": ("full body centered", "connected silhouette"),
+    "character": (),
     "monster": ("single centered creature", "fully visible", "connected silhouette"),
     "tile": ("edge-to-edge tile", "repeatable boundaries", "consistent projection"),
-    "prop": ("single centered isolated object", "connected silhouette", "visible support"),
-    "icon": ("single centered item", "connected silhouette"),
+    "prop": (),
+    "icon": (),
     "ui_button": ("text-free button with a clean border",),
     "ui_panel": ("text-free panel with a clean border",),
 }

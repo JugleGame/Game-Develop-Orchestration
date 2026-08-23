@@ -546,7 +546,8 @@ Server: `AssetGenMcpServer`.
   answering `centered` used to get `full body centered` appended anyway. `readable` was dropped from
   the framing entirely: legibility is what a reviewer judges, not a shape a model can put on a
   canvas. Stripping the intake's labels and then appending the server's own production vocabulary
-  would have been the same mistake in a different place.
+  would have been the same mistake in a different place. Which kinds carry framing at all is a
+  measured question — see the table below.
 - **Framing is left off when a starting image leads.** PixelLab documents `init_image_strength` by
   purpose — 0-300 extremely rough colour guidance, 300-400 rough shapes and colours, 400-600
   "variations on an existing image", 600-900 detail on a nearly finished piece. From
@@ -556,6 +557,35 @@ Server: `AssetGenMcpServer`.
   because the provider's own default lands in an unknown band. Reported as
   `promptMetrics.framingSuppressed`. Whether the framing earns its characters at all has never been
   measured; `Src/McpServers/experiments/framing_ab.py` is the paid A/B that would settle it.
+- **Kind framing is applied per kind because it was measured per kind, not because it reads
+  consistent.** Measured 2026-08-23 across three rounds, 44 paid generations, in
+  `var/assets/experiments/round-{6,7,8}-framing/`; the method and the decision rule are in
+  `Src/McpServers/experiments/framing_ab.py`. Same seed per pair, one arm with the framing and one
+  without, scored with this server's own `quality.inspect` rather than a metric invented for the
+  experiment: `centered` against the subject box's offset from the canvas centre, `fully visible`
+  against `subject_may_be_clipped`, `edge-to-edge tile` against `tile_has_transparent_gaps`.
+
+  | kind | pairs | flags with / without | centring better / worse | outcome |
+  | --- | --- | --- | --- | --- |
+  | `character` | 6 | 0 / 0 | 3 / 1 | framing removed |
+  | `prop` | 6 | 0 / 0 | 0 / 1 | framing removed |
+  | `icon` | 6 | 0 / 0 | 1 / 0 | framing removed |
+  | `tile` | 2 | 4 / 4 | 0 / 0 | framing kept |
+
+  For the three isolated-subject kinds the generator already centred the subject, kept it whole, and
+  kept the silhouette connected without being told, so the clauses were spending 22-70 characters on
+  the one axis that has a strength control (`text_guidance_scale`) to restate what was already
+  happening. `tile` went the other way and decisively: at both seeds the framing roughly doubled
+  edge coverage (0.498 vs 0.435, 0.309 vs 0.150) and the arm without it returned scattered debris on
+  a transparent canvas rather than a tile. That was measured through pixflux, not `/tilesets`, so it
+  governs the pixflux tile path.
+
+  `monster` and the UI kinds keep their framing because they were **not** measured — not because
+  they were measured and passed. `monster` is the obvious candidate to extrapolate `character` onto,
+  and extrapolation is the failure this experiment exists to avoid: round 6 read a fidelity loss
+  (a lost face, lost glass panels) out of a single pair per kind, attached a mechanism to it, and it
+  did not replicate at the next seed. That reading is withdrawn. One sample cannot separate an
+  effect from a draw, and neither can two.
 - **A deterministic budget caps the description at `PROMPT_BUDGET` (400 characters)**, dropping
   lowest-priority clauses from the tail and reporting them in `promptMetrics.droppedClauses`. It is
   a guard rail against a call site pasting paragraphs, not a tuned value: a well-formed brief lands

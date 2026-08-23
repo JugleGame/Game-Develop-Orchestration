@@ -33,12 +33,6 @@ def rng():
     ("kind", "prompt", "framing"),
     [
         (
-            "character",
-            "2D pixel art, transparent background, side view, medium detail, "
-            "medium shading, 64x64, player character",
-            "full body centered",
-        ),
-        (
             "monster",
             "pixel art, no background, side view, medium detail, medium shading, "
             "64x64, slime monster",
@@ -50,22 +44,10 @@ def rng():
             "edge-to-edge tile",
         ),
         (
-            "prop",
-            "pixel art, transparent background, side view, flat shading, medium detail, "
-            "32x32, treasure chest prop",
-            "single centered isolated object",
-        ),
-        (
             "ui_panel",
             "2D pixel art, transparent background, flat shading, medium detail, "
             "128x64, inventory panel",
             "text-free panel",
-        ),
-        (
-            "icon",
-            "2D pixel art, transparent background, flat shading, medium detail, "
-            "32x32, quest marker icon",
-            "single centered item",
         ),
     ],
 )
@@ -91,8 +73,8 @@ def test_a_prepared_brief_still_gets_its_framing():
     reliable way to lose the framing."""
 
     prepared = prompting.prepare(
-        "prop",
-        subject="a brass lantern",
+        "monster",
+        subject="a swamp creature",
         purpose="a 32 px pickup",
         composition="centered with a broad base and narrow top handle",
         must_have=["one connected silhouette", "three support feet"],
@@ -105,10 +87,10 @@ def test_a_prepared_brief_still_gets_its_framing():
     )
     assert prepared["readyForPrototype"] is True
 
-    plan = prompting.compose(prepared["prompt"], "prop")
+    plan = prompting.compose(prepared["prompt"], "monster")
 
-    assert "single centered isolated object" in plan.prompt
-    assert "a brass lantern" in plan.prompt
+    assert "single centered creature" in plan.prompt
+    assert "a swamp creature" in plan.prompt
 
 
 # --------------------------------------------------------------------------
@@ -1899,13 +1881,18 @@ def test_intake_labels_and_purpose_never_reach_the_provider():
 
 
 def test_framing_a_brief_already_asked_for_is_not_repeated():
-    """"centered" and "full body centered" are one requirement, not two."""
+    """"single centered creature" asked for twice is still one requirement.
 
-    plan = prompting.compose(_knight_brief()["prompt"], "character")
+    Shown on a kind that still has framing: ``character`` lost its clauses in
+    round 8 (see ``_FRAMING``), so there is nothing left there to repeat.
+    """
 
-    assert "full body centered" not in plan.prompt
-    assert plan.prompt.count("centered") == 1
-    # The half the brief did *not* ask for still arrives.
+    prompt = "a swamp creature, single centered creature, dripping moss"
+    plan = prompting.compose(prompt, "monster")
+
+    assert plan.prompt.count("single centered creature") == 1
+    # The clauses the brief did *not* ask for still arrive.
+    assert "fully visible" in plan.prompt
     assert "connected silhouette" in plan.prompt
 
 
@@ -1955,13 +1942,13 @@ def test_wording_that_merely_agrees_with_a_field_is_not_a_conflict():
 
 
 def test_a_runaway_prompt_is_cut_to_the_budget_and_says_what_it_dropped():
-    clauses = ["a brass lantern"] + [f"filler detail {index}" for index in range(40)]
-    plan = prompting.compose(", ".join(clauses), "prop")
+    clauses = ["a swamp creature"] + [f"filler detail {index}" for index in range(40)]
+    plan = prompting.compose(", ".join(clauses), "monster")
 
     assert plan.metadata()["promptBudget"] == prompting.PROMPT_BUDGET
     assert plan.dropped_clauses
     # The subject survives; the tail is what goes.
-    assert plan.prompt.startswith("a brass lantern")
+    assert plan.prompt.startswith("a swamp creature")
     assert "filler detail 39" in plan.dropped_clauses
     assert "connected silhouette" in plan.prompt
 
@@ -2039,12 +2026,12 @@ def test_framing_is_left_off_when_a_starting_image_leads():
     """The framing says how the subject sits on the canvas. A reference at a
     strength where it outranks the description already says that in pixels."""
 
-    prompt = "a brass lantern, a warm glass panel"
-    led = prompting.compose(prompt, "prop", reference_leads=True)
-    unled = prompting.compose(prompt, "prop", reference_leads=False)
+    prompt = "a swamp creature, dripping moss"
+    led = prompting.compose(prompt, "monster", reference_leads=True)
+    unled = prompting.compose(prompt, "monster", reference_leads=False)
 
-    assert "single centered isolated object" not in led.prompt
-    assert "single centered isolated object" in unled.prompt
+    assert "single centered creature" not in led.prompt
+    assert "single centered creature" in unled.prompt
     assert led.metadata()["framingSuppressed"] is True
     assert unled.metadata()["framingSuppressed"] is False
 
@@ -2066,18 +2053,18 @@ def test_a_weak_starting_image_keeps_the_framing(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server.pixellab_client, "create_image_bitforge", _bitforge)
 
-    for strength, expected in ((300, True), (600, False)):
+    for strength in (300, 600):
         server._generate_prototype(
             f"f-lead-{strength}",
-            "a brass lantern",
+            "a swamp creature",
             "t-lead",
-            forced_kind="prop",
+            forced_kind="monster",
             init_asset_id="approved",
             init_image_strength=strength,
         )
 
-    assert ("single centered isolated object" in seen[0]) is True
-    assert ("single centered isolated object" in seen[1]) is False
+    assert ("single centered creature" in seen[0]) is True
+    assert ("single centered creature" in seen[1]) is False
 
 
 def test_a_pose_reference_does_not_suppress_the_framing(monkeypatch, tmp_path):
@@ -2105,7 +2092,7 @@ def test_a_pose_reference_does_not_suppress_the_framing(monkeypatch, tmp_path):
         "f-posed",
         "an armoured knight",
         "t-posed",
-        forced_kind="character",
+        forced_kind="monster",
         pose_from_asset_id="approved",
         init_image_strength=900,
     )
@@ -2317,3 +2304,17 @@ def test_inpaint_refuses_a_canvas_outside_the_endpoints_range(monkeypatch):
         )
 
     assert "32-512" in str(excinfo.value)
+
+
+def test_measured_kinds_carry_no_framing_and_tile_still_does():
+    """Round 8 (issue #92): six pairs each for character, prop, and icon found no
+    technical failure, no warning, and no centring advantage from the framing.
+    Round 7 found the opposite for tile — without it the result is debris on a
+    transparent canvas rather than a tile. See ``_FRAMING`` for the numbers."""
+
+    for kind in ("character", "prop", "icon"):
+        assert prompting.compose("a test subject", kind).prompt == "a test subject", kind
+
+    assert "edge-to-edge tile" in prompting.compose("a stone floor", "tile").prompt
+    # Not measured, so not changed.
+    assert "single centered creature" in prompting.compose("a slime", "monster").prompt
